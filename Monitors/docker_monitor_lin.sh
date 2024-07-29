@@ -26,10 +26,10 @@ if ! test -f /usr/local/bin/check_docker; then
   chmod a+rx /usr/local/bin/check_docker
 fi
 
-CONTAINER = $(docker ps --filter "status=running" --format \'{{.Names}}\')
+CONTAINERS=$(docker ps --filter "status=running" --format \'{{.Names}}\' |tr -d \')
 
-
-CHECK_DOCKER_OUTPUT=$(/usr/local/bin/check_docker --containers $CONTAINER --no-ok --cpu $CPU --memory $MEMORY) && {
+CHECK_DOCKER_OUTPUT=$(/usr/local/bin/check_docker --no-ok --cpu 90:95 --memory 90:95:% --containers "$CONTAINERS" ) && {
+#CHECK_DOCKER_OUTPUT=$(/usr/local/bin/check_docker --containers $CONTAINER --no-ok --cpu $CPU --memory $MEMORY) && {
         write_DRMMAlert "Healthy"
 } || {
         write_DRMMAlert "Unhealthy"
