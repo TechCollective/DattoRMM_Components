@@ -1,0 +1,15 @@
+{
+  "general": {
+    "name": "Domain Trust",
+    "category": "monitors",
+    "description": "Test-ComputerSecureChannel\nand nltest /sc_verify:$domain",
+    "uid": "32794eee-0268-4724-8b4d-c9069ee0931b",
+    "hash": "",
+    "version": "4",
+    "timeout": "3600",
+    "securityLevel": "5",
+    "installType": "powershell"
+  },
+  "body": "active-directory-domain-trust-secure-channel-win.ps1",
+  "variables": []
+}

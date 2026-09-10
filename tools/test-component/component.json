@@ -1,0 +1,49 @@
+{
+  "general": {
+    "name": "Component Packaging Self-Test [Win]",
+    "category": "scripts",
+    "description": "Verifies that a .cpt built by tools/cpt.py imports into Datto RMM with its input variables intact. Reads its own variables back and prints a pass/fail report. Makes no change to the endpoint.",
+    "uid": "eb3e57db-b748-477a-8b46-1067b6809067",
+    "hash": "",
+    "version": "1",
+    "timeout": "600",
+    "securityLevel": "1",
+    "installType": "powershell"
+  },
+  "body": "component-packaging-self-test-win.ps1",
+  "variables": [
+    {
+      "name": "TestString",
+      "type": "string",
+      "direction": "false",
+      "description": "Arrives as arbitrary text. Leave the default to let the self-test pass.",
+      "defaultVal": "hello from the manifest"
+    },
+    {
+      "name": "TestEmpty",
+      "type": "string",
+      "direction": "false",
+      "description": "Declared with an empty default, to prove <defaultVal/> survives the round trip.",
+      "defaultVal": ""
+    },
+    {
+      "name": "TestBoolean",
+      "type": "boolean",
+      "direction": "false",
+      "description": "Arrives as the literal text 'true' or 'false', never a real boolean.",
+      "defaultVal": "true"
+    },
+    {
+      "name": "TestChoice",
+      "type": "map",
+      "direction": "false",
+      "description": "A drop-down. The UI shows the name, the script receives the value.",
+      "defaultVal": "Second choice",
+      "options": [
+        { "name": "First choice", "value": "alpha" },
+        { "name": "Second choice", "value": "beta" },
+        { "name": "Third choice", "value": "gamma" }
+      ]
+    }
+  ]
+}
