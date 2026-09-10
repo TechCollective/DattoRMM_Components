@@ -6,23 +6,35 @@ establish by reading exports alone.
 **It changes nothing on the endpoint.** It reads its own working directory and
 reports what it finds. Delete it from Datto once it has answered.
 
-## The questions
+## What it established
 
-### 1. What is `<hash>`?
+The experiment has been run. The results are recorded in full in
+[`tools/README.md`](../README.md#what-a-round-trip-through-datto-changes); in
+short:
 
-Of the three real exports studied, two have `<hash/>` empty and one carries
-`baea7e9d07601880a587eef94d6ce863`. The one with a value is the only one with an
-attachment, which suggests hash is tied to the payload — but it is **not** a
-plain MD5 of it. That was tested against the MSI alone, the MSI concatenated
-with the body, all four files in order, and the filename; none matched.
+**`hash` is generated server-side.** Sent empty, it came back as
+`86bec201b89c606b45925784638e48bb` — an MD5-shaped value matching nothing
+derivable from the archive: not the payload, the body, the icon, any
+concatenation of them, the filename, or the uid. Author it empty and let Datto
+fill it in.
 
-So hash is server-side, and what it actually digests is unknown.
+**`uid` is not preserved.** Datto replaced the one it was sent with its own,
+which is why every manifest in this repo now leaves `uid` blank, and why an
+import **creates** a component rather than updating one.
 
-### 2. Does a packed attachment reach the endpoint intact?
+**A packed attachment survives byte-for-byte.** The 161-byte payload came back
+with an identical MD5, as did the icon. That is the reassurance worth having
+before shipping an Applications component with a vendor MSI in it.
 
-`cpt.py` puts anything in `files/` at the archive root. Nothing has confirmed
-Datto lays it down beside the script at run time, or that it survives byte-for-
-byte.
+**Datto strips the trailing newline from `command.bat`.** `cpt.py` now does the
+same, so a build here is byte-identical to Datto's own export.
+
+## Why it is kept
+
+As a fixture for the attachment path, which nothing else in this repo covers.
+Rebuild and import it if you change how `cpt.py` handles `files/`, or if an
+Applications component ever comes back with a payload that does not work on the
+endpoint — it will tell you whether the packaging or the component is at fault.
 
 ## Build it
 
