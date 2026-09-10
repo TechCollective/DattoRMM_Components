@@ -3,7 +3,7 @@
     "name": "Component Packaging Self-Test [Win]",
     "category": "scripts",
     "description": "Verifies that a .cpt built by tools/cpt.py imports into Datto RMM with its input variables intact. Reads its own variables back and prints a pass/fail report. Makes no change to the endpoint.",
-    "uid": "eb3e57db-b748-477a-8b46-1067b6809067",
+    "uid": "",
     "hash": "",
     "version": "1",
     "timeout": "600",
@@ -40,9 +40,18 @@
       "description": "A drop-down. The UI shows the name, the script receives the value.",
       "defaultVal": "Second choice",
       "options": [
-        { "name": "First choice", "value": "alpha" },
-        { "name": "Second choice", "value": "beta" },
-        { "name": "Third choice", "value": "gamma" }
+        {
+          "name": "First choice",
+          "value": "alpha"
+        },
+        {
+          "name": "Second choice",
+          "value": "beta"
+        },
+        {
+          "name": "Third choice",
+          "value": "gamma"
+        }
       ]
     }
   ]

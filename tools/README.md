@@ -114,19 +114,18 @@ Types seen in real exports: `string`, `boolean`, `map`.
 * Every variable arrives at the script as an environment variable of the same
   name, always as text.
 
-### About `uid`
+### About `uid` — leave it blank
 
-A UUID identifying the component. Generate one per component, commit it in
-`component.json`, and never change it.
-
-Be careful about what it does on import. Datto **replaces a uid it does not
-recognise with one of its own** — measured, not assumed; see
+Datto **replaces a uid it does not recognise with one of its own** on import —
+measured, not assumed; see
 [What a round trip through Datto changes](#what-a-round-trip-through-datto-changes).
-So a uid authored here does not become the component's identity in Datto, and
-importing a component Datto has not seen creates a new one.
+A uid authored here therefore never becomes the component's identity in Datto.
 
-Whether Datto honours a uid it *does* recognise, updating that component in
-place, is untested. Until it is, do not rely on an import to update anything.
+So `uid` is optional, and every manifest in this repo leaves it empty. Chasing
+one down was a step a component builder had to take for no benefit.
+
+The consequence to remember: an import **creates** a component. It does not
+update an existing one. Import, then delete whatever it supersedes.
 
 ## The component directory
 
@@ -248,3 +247,102 @@ a regression in this.
   no export we have exercises them. `cpt.py` passes any `type` through
   unchanged, so an unknown type is not blocked, just unverified.
 * Whether entry order in the ZIP matters. `cpt.py` matches Datto's order anyway.
+
+## In CI
+
+[`.github/workflows/build-components.yml`](../.github/workflows/build-components.yml)
+runs on every pull request touching a category folder or `tools/`, and does three
+things:
+
+1. **`cpt.py audit`** — fails the build if any `.cpt` is committed under a
+   category folder. Exports are built, not stored.
+2. **`cpt.py verify`** — reproduces any reference export in `samples/` byte for
+   byte, so a change to the packer that breaks the format is caught here.
+   `samples/` is gitignored, so on GitHub this is normally a no-op.
+3. **`cpt.py pack-all`** — builds every component that has a `component.json`
+   and uploads them as the **component-exports** artifact.
+
+On a push to `main` a fourth step publishes the same exports to the rolling
+**`latest`** release, so each has a permanent URL rather than expiring with the
+artifact:
+
+    https://github.com/TechCollective/DattoRMM_Components/releases/latest
+
+**Nothing is ever committed.** Built exports are artifacts and release assets,
+never files in git: an Applications export bundles the vendor's installer and
+this repo is public, and a zip in the tree goes stale in silence because no diff
+shows it drifting from the script beside it. `audit` enforces it.
+
+Artifacts are named for the component as Datto displays it — `Domain Trust.cpt`,
+not `active-directory-domain-trust-secure-channel-win.cpt` — so a reviewer
+downloading one recognises what they are about to import.
+
+### What is never published
+
+`cpt.py stage-release` drops any export carrying an attachment before the
+release is cut, for two independent reasons:
+
+- A release asset on a public repo is a permanent, unauthenticated download
+  link. Publishing a vendor's installer through one is the redistribution
+  `CONTRIBUTING.md` forbids.
+- Payload files live in `files/` and are not in git, so an Applications export
+  built in CI would not contain its installer anyway. Publishing it would hand
+  someone a component that imports cleanly and then fails on the endpoint.
+
+Excluded components are listed in the release notes, saying what was dropped
+and why. Export those from Datto directly.
+
+### Releases are distribution, not an archive
+
+The `latest` tag moves with `main`, so it is a pointer at the current state, not
+a history. Nothing is lost by that: builds are deterministic, so any commit
+rebuilds its exports byte for byte. Git is the archive; the release is the
+convenient way to hand someone a file.
+
+### Re-checking the format
+
+[`tools/test-component`](test-component/) is a self-test component kept as a
+regression fixture. It changes nothing on an endpoint: it reads its own input
+variables back out of the environment and reports whether each arrived as
+declared, exercising the part of the format most likely to break — a string
+default, an empty default, a boolean, and a `map` drop-down's name/value split.
+
+Rebuild it, import it, and run it whenever you want to know the format still
+holds:
+
+    python3 tools/cpt.py pack tools/test-component -o "dist/Component Packaging Self-Test WIN.cpt"
+
+Worth doing after a change to `cpt.py`, or when a Datto update makes an import
+behave oddly. Delete the component from Datto once it has told you what you
+needed — it should not sit in the Component Library where it can be scheduled.
+
+It last passed on 2026-09-10: imported clean, all four variables intact.
+
+### Adding a manifest to an existing component
+
+A component folder is only built once it has a `component.json`. Four of the
+monitors in this repo predate the manifest and are reported as `skip` until one
+is written.
+
+Write one by hand — `name`, `category`, `installType`, `timeout`,
+`securityLevel`, and the input variables. Leave `uid` and `hash` blank. Nothing
+needs looking up in Datto.
+
+If you happen to have an export already, `unpack` writes the manifest rather
+than you typing it:
+
+    python3 tools/cpt.py unpack "Some Component.cpt" -o Monitors/some-component
+
+Check the body it extracted matches the one already committed, delete the
+duplicate body it writes, and point `"body"` at the committed file.
+
+## Later: reading this out of Datto
+
+Everything in `component.json` beyond the script — the inputs, the timeout, the
+security level — is retyped from what Datto already knows. A function that
+pulled it from Datto's API would remove that step, and would also let something
+finally check this repo against the live Component Library.
+
+Worth checking before planning around it: this repo's own README states there is
+no component API to check against. If that holds, the manifest stays
+hand-written, and `unpack` on an existing export is the only shortcut there is.

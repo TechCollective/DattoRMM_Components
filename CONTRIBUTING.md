@@ -54,7 +54,9 @@ so GitHub highlights it and the diff is readable.
 | `README.md` | Yes | Same commit as the script. See [`COMPONENT-README-TEMPLATE.md`](COMPONENT-README-TEMPLATE.md). |
 | `component.json` | No | The component's metadata and input variables, in a form that diffs. When present, CI builds an importable `.cpt` for you on every pull request — see [`tools/README.md`](tools/README.md). |
 | `icon.png` | No | 48x48 RGBA. Without one, a built export gets the TechCollective logo. |
-| `.cpt` export | No | Datto's own export. Restores input variables without retyping them, so it is worth having for anything with more than two. It is a zip — it does not diff, and it is not the source of truth. If you commit one, it must match the script in the same commit. **Open it before you commit it** — see below. |
+
+**Never commit a `.cpt`.** They are built, not stored — CI fails if it finds one.
+See [below](#exports-are-built-never-committed).
 
 ### Let CI build the export
 
@@ -67,21 +69,20 @@ Once merged, the same export is published to the
 than a 30-day artifact. Exports carrying an attachment are excluded there for
 the same reason they are never committed — see below.
 
-When adding a manifest for a component that **already exists in Datto**, take
-its `uid` from a real export rather than inventing one:
+Leave `uid` blank. Datto assigns its own on import, so there is nothing to
+match and nothing to look up. An import makes a **new** component — check the
+Component Library afterwards and delete the one it supersedes.
+
+If you already have an export of the component, `unpack` writes the manifest for
+you rather than typing it out:
 
     python3 tools/cpt.py unpack "Some Component.cpt" -o Monitors/some-component
-
-Datto replaces a uid it does not recognise with one of its own, so an import is
-reliably a *create*, not an *update*. Whether it honours a uid it already knows
-is untested — so treat importing as "this makes a new component", check the
-Component Library afterwards, and delete the superseded one by hand.
 
 CI also checks every committed `.cpt` for the two things the review checklist
 asks you to check by hand — that it carries no attachment, and that it matches
 the script committed beside it. Both fail the build.
 
-### Never commit a `.cpt` that carries an attachment
+### Exports are built, never committed
 
 A `.cpt` is a zip of `command.bat`, `resource.xml`, an icon — **and every file
 attached to the component**. For a deployment component that is the installer
@@ -93,16 +94,12 @@ installer under a licence we have no right to apply to it, and git history is
 permanent — a later `git rm` does not remove it from the clone anyone already
 took.
 
-So, before committing any `.cpt`:
+A committed export also goes stale in silence. It is a zip, so no diff ever
+shows it drifting away from the script beside it.
 
-    unzip -l "the-export.cpt"
-
-If it lists anything beyond `command.bat`, `resource.xml` and `icon.png`, do not
-commit it. Commit the script and record the attachment in the README instead —
-its filename, its version, and the vendor URL it is downloaded from.
-
-In practice this means **Applications components rarely have a committable
-`.cpt`**, and monitors and scripts usually do.
+So none are committed. `component.json` carries the metadata in a form that
+*does* diff, CI builds the export from it, and `python3 tools/cpt.py audit`
+fails the build if a `.cpt` appears under a category folder.
 
 ## The steps
 
@@ -166,7 +163,7 @@ Whoever reviews the pull request confirms all of it. The
 - [ ] It does not always exit 0. A component that always succeeds hides its own failures
 - [ ] A monitor emits exactly one result block, on every path including unexpected death
 - [ ] Provenance and licence recorded, if it came from outside
-- [ ] A `.cpt` committed here, if any, matches the script in this PR **and carries no attachment** — `unzip -l` shows only `command.bat`, `resource.xml` and `icon.png`
+- [ ] No `.cpt` committed — exports are built by CI, not stored (enforced)
 
 **Before it goes wide:**
 

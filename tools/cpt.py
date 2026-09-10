@@ -164,7 +164,7 @@ def validate(manifest: dict) -> list:
     problems = []
     general = manifest.get("general", {})
 
-    for key in ("name", "category", "uid", "installType"):
+    for key in ("name", "category", "installType"):
         if not general.get(key):
             problems.append(f"general.{key} is required")
 
@@ -436,53 +436,32 @@ def attachments(archive: pathlib.Path) -> list:
 
 
 def audit(root: pathlib.Path) -> int:
-    """Enforce the rules CONTRIBUTING.md sets for a committed .cpt.
+    """Fail if any .cpt is committed under a category folder.
 
-    Both are review-checklist items that a human is currently expected to catch:
-      * a committed .cpt must carry no attachment, because this repo is public
-        and an Applications export bundles the vendor's installer;
-      * a committed .cpt must match the script committed beside it.
+    Exports are built, never committed. An Applications export bundles the
+    vendor's installer and this repo is public, and a committed export silently
+    goes stale against the script beside it - it is a zip, so no diff shows it
+    drifting. component.json holds the metadata in a form that does diff, which
+    is what a .cpt in the tree used to be for.
     """
-    problems = []
-
     categories = {c.capitalize() for c in CATEGORIES}
-    for archive in sorted(root.glob("*/*/*.cpt")):
-        # glob returns the path as given, so compare against the category
-        # relative to the repo root rather than to the filesystem root.
-        if archive.relative_to(root).parts[0] not in categories:
-            continue
-        directory = archive.parent
+    committed = [
+        a for a in sorted(root.glob("*/*/*.cpt"))
+        if a.relative_to(root).parts[0] in categories
+    ]
 
-        with zipfile.ZipFile(archive) as z:
-            names = z.namelist()
-            extra = attachments(archive)
-            if extra:
-                problems.append(
-                    f"{archive}: carries {len(extra)} attachment(s) ({', '.join(extra)}). "
-                    f"This repo is public - see CONTRIBUTING.md."
-                )
-                continue
+    for archive in committed:
+        extra = attachments(archive)
+        detail = f" - and it carries {', '.join(extra)}" if extra else ""
+        print(f"FAIL  {archive.relative_to(root)}: exports are built, not committed{detail}")
 
-            if "command.bat" not in names:
-                problems.append(f"{archive}: no command.bat")
-                continue
-            packaged = z.read("command.bat")
+    if committed:
+        print("\nBuild one instead:  python3 tools/cpt.py pack <component-dir>")
+        print("See CONTRIBUTING.md.")
+        return 1
 
-        bodies = [p for p in directory.iterdir() if p.suffix in (".sh", ".ps1", ".bat", ".py")]
-        if len(bodies) != 1:
-            problems.append(f"{archive}: cannot tell which file it should match ({len(bodies)} candidates)")
-            continue
-
-        if normalise_body(packaged) != normalise_body(bodies[0].read_bytes()):
-            problems.append(
-                f"{archive}: its command.bat does not match {bodies[0].name} in the same commit"
-            )
-
-    for problem in problems:
-        print(f"FAIL  {problem}")
-    if not problems:
-        print("all committed .cpt files carry no attachment and match their script")
-    return 1 if problems else 0
+    print("no committed .cpt files")
+    return 0
 
 
 def stage_release(directory: pathlib.Path) -> int:
