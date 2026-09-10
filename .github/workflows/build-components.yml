@@ -1,0 +1,91 @@
+name: Build components
+
+# Every pull request produces a downloadable, importable .cpt for each component
+# that carries a component.json, so a reviewer can import the thing the PR
+# actually describes instead of pasting a script body into Datto by hand.
+#
+# Nothing here commits to the repository. The .cpt files are workflow artifacts:
+# an Applications export bundles the vendor's installer, and this repo is
+# public, so built exports must never land in git history. See CONTRIBUTING.md.
+
+on:
+  pull_request:
+    paths:
+      - 'Applications/**'
+      - 'Scripts/**'
+      - 'Monitors/**'
+      - 'tools/**'
+      - '.github/workflows/build-components.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Package and audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Enforces the two review-checklist items in CONTRIBUTING.md that a human
+      # is otherwise expected to catch: a committed .cpt must carry no
+      # attachment, and must match the script committed beside it.
+      - name: Audit committed .cpt files
+        run: python3 tools/cpt.py audit
+
+      # Proves the packer still reproduces a real Datto export byte for byte,
+      # whenever a reference export is available to check against. samples/ is
+      # gitignored, so this is normally a no-op and never fails the build.
+      - name: Verify packer against reference exports
+        run: |
+          shopt -s nullglob
+          references=(samples/*/*.cpt)
+          if [ ${#references[@]} -eq 0 ]; then
+            echo "No reference exports in samples/ - skipping."
+            exit 0
+          fi
+          python3 tools/cpt.py verify "${references[@]}"
+
+      - name: Build every component with a manifest
+        id: build
+        run: |
+          python3 tools/cpt.py pack-all --out-dir dist | tee build.log
+          echo "count=$(find dist -name '*.cpt' | wc -l)" >> "$GITHUB_OUTPUT"
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Datto RMM component exports"
+            echo
+            if [ -s build.log ]; then
+              echo '```'
+              cat build.log
+              echo '```'
+            fi
+            echo
+            echo "Download the **component-exports** artifact below, then import each"
+            echo "\`.cpt\` in Datto RMM via **Components → New Component → Import Component**."
+            echo
+            echo "> A component folder is only built once it has a \`component.json\`."
+            echo "> To add one to an existing component, export it from Datto and run"
+            echo "> \`python3 tools/cpt.py unpack \"export.cpt\" -o <folder>\` — that keeps the"
+            echo "> component's existing \`uid\`, so importing updates it rather than"
+            echo "> creating a duplicate."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload exports
+        if: steps.build.outputs.count != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: component-exports
+          path: dist/*.cpt
+          if-no-files-found: error
+          retention-days: 30

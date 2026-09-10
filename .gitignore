@@ -20,3 +20,10 @@ job-results/
 # than committed: an Applications .cpt bundles the vendor's installer, and this
 # repo is public. Remove this line only after opening each one with `unzip -l`.
 samples/
+
+# Built component exports. Regenerate with tools/cpt.py; never commit.
+dist/
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc

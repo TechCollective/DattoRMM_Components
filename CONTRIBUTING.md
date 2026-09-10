@@ -52,7 +52,25 @@ so GitHub highlights it and the diff is readable.
 |---|---|---|
 | The script | Yes | This is what gets reviewed. |
 | `README.md` | Yes | Same commit as the script. See [`COMPONENT-README-TEMPLATE.md`](COMPONENT-README-TEMPLATE.md). |
+| `component.json` | No | The component's metadata and input variables, in a form that diffs. When present, CI builds an importable `.cpt` for you on every pull request — see [`tools/README.md`](tools/README.md). |
+| `icon.png` | No | 48x48 RGBA. Without one, a built export gets the TechCollective logo. |
 | `.cpt` export | No | Datto's own export. Restores input variables without retyping them, so it is worth having for anything with more than two. It is a zip — it does not diff, and it is not the source of truth. If you commit one, it must match the script in the same commit. **Open it before you commit it** — see below. |
+
+### Let CI build the export
+
+If a component has a `component.json`, every pull request attaches a built
+`.cpt` as the **component-exports** artifact, ready to import. That is the
+easiest way to get a reviewer the actual component rather than a script body.
+
+Adding a manifest to a component that **already exists in Datto** means taking
+its `uid` from a real export, not inventing one — a new uid makes the import
+create a duplicate component instead of updating the original:
+
+    python3 tools/cpt.py unpack "Some Component.cpt" -o Monitors/some-component
+
+CI also checks every committed `.cpt` for the two things the review checklist
+asks you to check by hand — that it carries no attachment, and that it matches
+the script committed beside it. Both fail the build.
 
 ### Never commit a `.cpt` that carries an attachment
 
