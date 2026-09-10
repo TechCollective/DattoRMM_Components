@@ -1,8 +1,26 @@
-# Datto RMM - Linux Disk Space Monitor
+# Disk Space - Free Space Below Threshold [Lin]
 
-**Status: Not Validated**
-Created 2026-09-09. Reviewed against the monitor contract and security checklist
-the same day; nine findings fixed. Not yet run outside a test container.
+A Datto RMM custom monitor for Linux. Checks every measurable filesystem against
+a percent-used threshold and an optional free-GB floor, and understands btrfs
+metadata exhaustion and LVM thin pool exhaustion, which `df` alone cannot see.
+
+> **Status: Not Validated.** Created 2026-09-09. Reviewed against the monitor
+> contract and security checklist the same day; nine findings fixed. Not yet run
+> outside a test container.
+
+---
+
+## Contents
+
+| Path | What it is |
+|---|---|
+| `disk-space-free-space-below-threshold-lin.sh` | The component body. This file is the source of truth — paste it into Datto, don't edit it there. |
+| `README.md` | This file. |
+
+No `.cpt` export yet — this component has not been saved into Datto. Export one
+once it has, so its six input variables can be restored without retyping.
+
+---
 
 ## Source and provenance
 

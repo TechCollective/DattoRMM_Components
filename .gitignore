@@ -1,0 +1,22 @@
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
+
+# Local scratch. Nothing that is not a component belongs in this repo.
+scratch/
+tmp/
+*.log
+
+# Datto job output and exports pulled down for comparison. Run output must
+# never be committed - it is captured from real devices.
+*.out
+job-results/
+
+# Local reference exports pulled out of Datto for comparison. Ignored rather
+# than committed: an Applications .cpt bundles the vendor's installer, and this
+# repo is public. Remove this line only after opening each one with `unzip -l`.
+samples/
