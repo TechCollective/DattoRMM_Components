@@ -205,14 +205,42 @@ things:
 3. **`cpt.py pack-all`** — builds every component that has a `component.json`
    and uploads them as the **component-exports** artifact.
 
-**The workflow commits nothing.** Built exports are artifacts, never files in
-git: an Applications export bundles the vendor's installer and this repo is
-public. That is the same rule `CONTRIBUTING.md` states for committing a `.cpt`
-by hand, and `audit` is what enforces it.
+On a push to `main` a fourth step publishes the same exports to the rolling
+**`latest`** release, so each has a permanent URL rather than expiring with the
+artifact:
+
+    https://github.com/TechCollective/DattoRMM_Components/releases/latest
+
+**The workflow commits nothing.** Built exports are artifacts and release
+assets, never files in git: an Applications export bundles the vendor's
+installer and this repo is public. That is the same rule `CONTRIBUTING.md`
+states for committing a `.cpt` by hand, and `audit` is what enforces it.
 
 Artifacts are named for the component as Datto displays it — `Domain Trust.cpt`,
 not `active-directory-domain-trust-secure-channel-win.cpt` — so a reviewer
 downloading one recognises what they are about to import.
+
+### What is never published
+
+`cpt.py stage-release` drops any export carrying an attachment before the
+release is cut, for two independent reasons:
+
+- A release asset on a public repo is a permanent, unauthenticated download
+  link. Publishing a vendor's installer through one is the redistribution
+  `CONTRIBUTING.md` forbids.
+- Payload files live in `files/` and are not in git, so an Applications export
+  built in CI would not contain its installer anyway. Publishing it would hand
+  someone a component that imports cleanly and then fails on the endpoint.
+
+Excluded components are listed in the release notes, saying what was dropped
+and why. Export those from Datto directly.
+
+### Releases are distribution, not an archive
+
+The `latest` tag moves with `main`, so it is a pointer at the current state, not
+a history. Nothing is lost by that: builds are deterministic, so any commit
+rebuilds its exports byte for byte. Git is the archive; the release is the
+convenient way to hand someone a file.
 
 ### Adopting an existing component
 

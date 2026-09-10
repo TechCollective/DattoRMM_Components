@@ -62,6 +62,11 @@ If a component has a `component.json`, every pull request attaches a built
 `.cpt` as the **component-exports** artifact, ready to import. That is the
 easiest way to get a reviewer the actual component rather than a script body.
 
+Once merged, the same export is published to the
+[latest release](../../releases/latest), which gives it a permanent link rather
+than a 30-day artifact. Exports carrying an attachment are excluded there for
+the same reason they are never committed — see below.
+
 Adding a manifest to a component that **already exists in Datto** means taking
 its `uid` from a real export, not inventing one — a new uid makes the import
 create a duplicate component instead of updating the original:

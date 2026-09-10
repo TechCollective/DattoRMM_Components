@@ -394,6 +394,16 @@ def pack_all(root: pathlib.Path, out_dir: pathlib.Path) -> int:
     return 1 if failures else 0
 
 
+def attachments(archive: pathlib.Path) -> list:
+    """Files in a .cpt beyond the three every component has.
+
+    For a deployment component this is the vendor's installer. It is the reason
+    a built export must never be committed or published from this public repo.
+    """
+    with zipfile.ZipFile(archive) as z:
+        return [n for n in z.namelist() if n not in CORE_FILES and not n.endswith("/")]
+
+
 def audit(root: pathlib.Path) -> int:
     """Enforce the rules CONTRIBUTING.md sets for a committed .cpt.
 
@@ -414,7 +424,7 @@ def audit(root: pathlib.Path) -> int:
 
         with zipfile.ZipFile(archive) as z:
             names = z.namelist()
-            extra = [n for n in names if n not in CORE_FILES]
+            extra = attachments(archive)
             if extra:
                 problems.append(
                     f"{archive}: carries {len(extra)} attachment(s) ({', '.join(extra)}). "
@@ -444,6 +454,85 @@ def audit(root: pathlib.Path) -> int:
     return 1 if problems else 0
 
 
+def stage_release(directory: pathlib.Path) -> int:
+    """Drop from a build directory every export that must not be published.
+
+    A release asset on a public repository is a permanent, unauthenticated
+    download link, so an export carrying a vendor's installer cannot go into
+    one - the same rule CONTRIBUTING.md sets for committing a .cpt.
+
+    There is a second reason, independent of licensing: payload files live in
+    files/ and are not in git, so an Applications export built in CI would not
+    contain its installer anyway. Publishing it would hand someone a component
+    that imports cleanly and then fails on the endpoint. Absent beats broken.
+
+    Writes RELEASE_NOTES.md beside the exports. Excluding a component is normal,
+    not a failure, so this returns 0 unless nothing publishable is left.
+    """
+    kept, dropped = [], []
+    for archive in sorted(directory.glob("*.cpt")):
+        extra = attachments(archive)
+        if extra:
+            archive.unlink()
+            dropped.append((archive.name, extra))
+        else:
+            kept.append(archive)
+
+    for name, extra in dropped:
+        print(f"excluded {name}: carries {', '.join(extra)}")
+    for archive in kept:
+        print(f"publishing {archive.name}")
+
+    rows = []
+    for archive in kept:
+        with zipfile.ZipFile(archive) as z:
+            general = parse_resource_xml(z.read("resource.xml"))["general"]
+        rows.append(
+            (general.get("name", archive.stem),
+             general.get("category", "?"),
+             general.get("version", "?"),
+             archive.name)
+        )
+
+    notes = ["Importable Datto RMM component exports, rebuilt from `main`.", ""]
+    if rows:
+        notes += ["| Component | Category | Version | File |", "|---|---|---|---|"]
+        notes += [f"| {n} | {c} | {v} | `{f}` |" for n, c, v, f in sorted(rows)]
+        notes.append("")
+    notes += [
+        "Download a `.cpt` and import it in Datto RMM via "
+        "**Components → New Component → Import Component**.",
+        "",
+        "Each file keeps its component's `uid`, so importing one that already "
+        "exists updates it rather than creating a duplicate.",
+        "",
+    ]
+    if dropped:
+        notes += [
+            "### Not published here",
+            "",
+            "These carry an attachment, so they are neither committed nor released "
+            "from this public repository:",
+            "",
+        ]
+        notes += [f"- `{name}` — {', '.join(extra)}" for name, extra in dropped]
+        notes += [
+            "",
+            "A build here would not contain the installer in any case, since payload "
+            "files are not in git. Export those from Datto directly.",
+            "",
+        ]
+    notes.append("Built by `tools/cpt.py`. Builds are deterministic: the same commit "
+                 "rebuilds these byte for byte.")
+
+    (directory / "RELEASE_NOTES.md").write_text("\n".join(notes) + "\n", encoding="utf-8")
+
+    if not kept:
+        print("nothing publishable")
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -466,6 +555,9 @@ def main() -> int:
     p = sub.add_parser("audit", help="enforce CONTRIBUTING.md's rules for a committed .cpt")
     p.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."))
 
+    p = sub.add_parser("stage-release", help="drop exports that must not be published")
+    p.add_argument("--dir", type=pathlib.Path, default=pathlib.Path("dist"))
+
     args = parser.parse_args()
 
     if args.command == "pack":
@@ -485,6 +577,9 @@ def main() -> int:
 
     if args.command == "audit":
         return audit(args.root.resolve())
+
+    if args.command == "stage-release":
+        return stage_release(args.dir)
 
     failures = 0
     for archive in args.archives:
