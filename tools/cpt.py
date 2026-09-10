@@ -238,9 +238,7 @@ def pack(directory: pathlib.Path, out: pathlib.Path) -> pathlib.Path:
         sys.exit(1)
 
     body_path = find_body(directory, manifest)
-    # Datto stores the body with LF endings regardless of the target OS, and a
-    # PowerShell body with CRLF round-trips badly through the component editor.
-    body = body_path.read_bytes().replace(b"\r\n", b"\n")
+    body = normalise_body(body_path.read_bytes())
 
     icon_path = directory / "icon.png"
     icon = icon_path.read_bytes() if icon_path.is_file() else default_icon()
@@ -321,14 +319,31 @@ def verify(archive: pathlib.Path) -> int:
 
     with zipfile.ZipFile(archive) as z:
         original = z.read("resource.xml")
+        original_body = z.read("command.bat") if "command.bat" in z.namelist() else None
 
     with tempfile.TemporaryDirectory() as tmp:
         work = pathlib.Path(tmp) / archive.stem
         unpack(archive, work)
-        rebuilt = build_resource_xml(json.loads((work / "component.json").read_text()))
+        manifest = json.loads((work / "component.json").read_text())
+        rebuilt = build_resource_xml(manifest)
+        rebuilt_body = normalise_body((work / manifest["body"]).read_bytes())
+
+    # The body is checked as well as the metadata. A Datto export strips the
+    # trailing newline from command.bat, so this catches a regression in that
+    # normalisation - which would otherwise only surface as a false audit
+    # failure much later.
+    if original_body is not None and rebuilt_body != original_body:
+        print(
+            f"  command.bat differs after round-trip "
+            f"({len(original_body)} bytes in, {len(rebuilt_body)} out)",
+            file=sys.stderr,
+        )
+        return 1
 
     if rebuilt == original:
         print(f"  resource.xml round-trips byte-identically ({len(original)} bytes)")
+        if original_body is not None:
+            print(f"  command.bat  round-trips byte-identically ({len(original_body)} bytes)")
         return 0
 
     import difflib
@@ -394,6 +409,22 @@ def pack_all(root: pathlib.Path, out_dir: pathlib.Path) -> int:
     return 1 if failures else 0
 
 
+def normalise_body(data: bytes) -> bytes:
+    """The body exactly as Datto stores it in command.bat.
+
+    Datto keeps LF endings whatever the target OS, and strips the trailing
+    newline - confirmed by exporting a component back out after import and
+    diffing it against what was sent. Normalising here means a .cpt this tool
+    builds is byte-identical to Datto's own export of the same component, and
+    that audit does not report a false mismatch against a repo script whose
+    editor left a trailing newline on it.
+    """
+    data = data.replace(b"\r\n", b"\n")
+    if data.endswith(b"\n"):
+        data = data[:-1]
+    return data
+
+
 def attachments(archive: pathlib.Path) -> list:
     """Files in a .cpt beyond the three every component has.
 
@@ -442,7 +473,7 @@ def audit(root: pathlib.Path) -> int:
             problems.append(f"{archive}: cannot tell which file it should match ({len(bodies)} candidates)")
             continue
 
-        if packaged != bodies[0].read_bytes().replace(b"\r\n", b"\n"):
+        if normalise_body(packaged) != normalise_body(bodies[0].read_bytes()):
             problems.append(
                 f"{archive}: its command.bat does not match {bodies[0].name} in the same commit"
             )

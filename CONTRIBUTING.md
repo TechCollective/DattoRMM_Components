@@ -67,11 +67,15 @@ Once merged, the same export is published to the
 than a 30-day artifact. Exports carrying an attachment are excluded there for
 the same reason they are never committed — see below.
 
-Adding a manifest to a component that **already exists in Datto** means taking
-its `uid` from a real export, not inventing one — a new uid makes the import
-create a duplicate component instead of updating the original:
+When adding a manifest for a component that **already exists in Datto**, take
+its `uid` from a real export rather than inventing one:
 
     python3 tools/cpt.py unpack "Some Component.cpt" -o Monitors/some-component
+
+Datto replaces a uid it does not recognise with one of its own, so an import is
+reliably a *create*, not an *update*. Whether it honours a uid it already knows
+is untested — so treat importing as "this makes a new component", check the
+Component Library afterwards, and delete the superseded one by hand.
 
 CI also checks every committed `.cpt` for the two things the review checklist
 asks you to check by hand — that it carries no attachment, and that it matches

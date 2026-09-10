@@ -116,9 +116,17 @@ Types seen in real exports: `string`, `boolean`, `map`.
 
 ### About `uid`
 
-The uid is how Datto recognises a component on import. Reusing one means
-"update that component"; a fresh one means "create a new component". Generate a
-uid once per component, commit it in `component.json`, and never change it.
+A UUID identifying the component. Generate one per component, commit it in
+`component.json`, and never change it.
+
+Be careful about what it does on import. Datto **replaces a uid it does not
+recognise with one of its own** — measured, not assumed; see
+[What a round trip through Datto changes](#what-a-round-trip-through-datto-changes).
+So a uid authored here does not become the component's identity in Datto, and
+importing a component Datto has not seen creates a new one.
+
+Whether Datto honours a uid it *does* recognise, updating that component in
+place, is untested. Until it is, do not rely on an import to update anything.
 
 ## The component directory
 
@@ -180,100 +188,55 @@ files in `files/` and they land at the archive root.
 `.gitignore` for exactly that reason. A build pipeline for application
 components has to source the installer from somewhere other than git.
 
-## What is not established
+## What a round trip through Datto changes
 
-* `hash` — empty on two of three exports, and not an MD5 of any file or obvious
-  concatenation. Import with it empty and see whether Datto minds.
+Established by importing a component built here, then exporting it straight back
+out and diffing. The probe that did it is
+[`tools/test-component-attachment`](test-component-attachment/).
+
+**Preserved exactly:** `name`, `category`, `description`, `timeout`,
+`installType`. The icon and any attachment come back **byte-identical** — a
+161-byte text payload survived untouched, which is the reassurance that matters
+for a binary like an MSI.
+
+**Changed by Datto:**
+
+| Field | Sent | Returned | What it means |
+|---|---|---|---|
+| `uid` | `b10dea05-…` | `026f0de7-…` | **Datto assigned its own.** The uid in an imported file is not honoured. |
+| `hash` | empty | `86bec201…` | Generated server-side on import. |
+| `version` | `1` | `4` | Not carried across; Datto manages it. |
+| `securityLevel` | `1` | `5` | Changed. Whether Datto defaulted it or a person edited it in the UI is not established. |
+
+`hash` is an MD5-shaped value that matches nothing derivable from the archive —
+not the payload, the body, the icon, any concatenation of them, the filename or
+the uid. It is opaque. **Author it empty and let Datto fill it in.**
+
+### The uid does not survive an import
+
+This is the one with consequences. A `.cpt` carrying a uid Datto has not seen
+gets a fresh uid assigned, so **importing creates a new component**. Whether
+Datto honours a uid it *does* recognise — updating in place rather than
+duplicating — is untested, and is the next thing worth establishing, because it
+decides how an existing component is updated from this repo.
+
+Until that is known, treat an import as "creates a component" and delete the old
+one by hand.
+
+### Datto strips the trailing newline from the body
+
+A component exported after import has `command.bat` one byte shorter than what
+was sent: the final `\n` is gone. `normalise_body` in `cpt.py` does the same, so
+a `.cpt` built here is byte-identical to Datto's own export, and `audit` does
+not report a false mismatch against a repo script whose editor left a newline on
+it. `verify` checks the body as well as the metadata, which is what would catch
+a regression in this.
+
+## What is still not established
+
+* Whether Datto honours a uid it already knows, per above.
+* What `hash` actually digests.
 * Variable types beyond `string`, `boolean` and `map`. Datto's UI offers more;
-  we have no export that exercises them. `cpt.py` passes any `type` through
+  no export we have exercises them. `cpt.py` passes any `type` through
   unchanged, so an unknown type is not blocked, just unverified.
 * Whether entry order in the ZIP matters. `cpt.py` matches Datto's order anyway.
-
-## In CI
-
-[`.github/workflows/build-components.yml`](../.github/workflows/build-components.yml)
-runs on every pull request touching a category folder or `tools/`, and does three
-things:
-
-1. **`cpt.py audit`** — enforces the two review-checklist items in
-   `CONTRIBUTING.md` that a human is otherwise expected to catch: a committed
-   `.cpt` must carry no attachment, and must match the script committed beside
-   it. Both fail the build.
-2. **`cpt.py verify`** — reproduces any reference export in `samples/` byte for
-   byte, so a change to the packer that breaks the format is caught here.
-   `samples/` is gitignored, so on GitHub this is normally a no-op.
-3. **`cpt.py pack-all`** — builds every component that has a `component.json`
-   and uploads them as the **component-exports** artifact.
-
-On a push to `main` a fourth step publishes the same exports to the rolling
-**`latest`** release, so each has a permanent URL rather than expiring with the
-artifact:
-
-    https://github.com/TechCollective/DattoRMM_Components/releases/latest
-
-**The workflow commits nothing.** Built exports are artifacts and release
-assets, never files in git: an Applications export bundles the vendor's
-installer and this repo is public. That is the same rule `CONTRIBUTING.md`
-states for committing a `.cpt` by hand, and `audit` is what enforces it.
-
-Artifacts are named for the component as Datto displays it — `Domain Trust.cpt`,
-not `active-directory-domain-trust-secure-channel-win.cpt` — so a reviewer
-downloading one recognises what they are about to import.
-
-### What is never published
-
-`cpt.py stage-release` drops any export carrying an attachment before the
-release is cut, for two independent reasons:
-
-- A release asset on a public repo is a permanent, unauthenticated download
-  link. Publishing a vendor's installer through one is the redistribution
-  `CONTRIBUTING.md` forbids.
-- Payload files live in `files/` and are not in git, so an Applications export
-  built in CI would not contain its installer anyway. Publishing it would hand
-  someone a component that imports cleanly and then fails on the endpoint.
-
-Excluded components are listed in the release notes, saying what was dropped
-and why. Export those from Datto directly.
-
-### Releases are distribution, not an archive
-
-The `latest` tag moves with `main`, so it is a pointer at the current state, not
-a history. Nothing is lost by that: builds are deterministic, so any commit
-rebuilds its exports byte for byte. Git is the archive; the release is the
-convenient way to hand someone a file.
-
-### Re-checking the format
-
-[`tools/test-component`](test-component/) is a self-test component kept as a
-regression fixture. It changes nothing on an endpoint: it reads its own input
-variables back out of the environment and reports whether each arrived as
-declared, exercising the part of the format most likely to break — a string
-default, an empty default, a boolean, and a `map` drop-down's name/value split.
-
-Rebuild it, import it, and run it whenever you want to know the format still
-holds:
-
-    python3 tools/cpt.py pack tools/test-component -o "dist/Component Packaging Self-Test WIN.cpt"
-
-Worth doing after a change to `cpt.py`, or when a Datto update makes an import
-behave oddly. Delete the component from Datto once it has told you what you
-needed — it should not sit in the Component Library where it can be scheduled.
-
-It last passed on 2026-09-10: imported clean, all four variables intact.
-
-### Adopting an existing component
-
-A component folder is only built once it has a `component.json`. Four of the
-monitors in this repo predate the manifest and are reported as `skip` until one
-is written.
-
-Do **not** hand-write a manifest for a component that already exists in Datto.
-The `uid` is its identity: invent a new one and importing creates a *duplicate*
-component rather than updating the original. Export the real thing from Datto
-and let the tool read the uid out of it:
-
-    python3 tools/cpt.py unpack "Some Component.cpt" -o Monitors/some-component
-
-That writes `component.json` next to the existing script. Check the body it
-extracted matches the one already committed, delete the duplicate body it
-writes, and point `"body"` at the committed file.
