@@ -4,9 +4,13 @@ name: Build components
 # that carries a component.json, so a reviewer can import the thing the PR
 # actually describes instead of pasting a script body into Datto by hand.
 #
-# Nothing here commits to the repository. The .cpt files are workflow artifacts:
-# an Applications export bundles the vendor's installer, and this repo is
-# public, so built exports must never land in git history. See CONTRIBUTING.md.
+# Nothing here commits to the repository. On a pull request the .cpt files are
+# workflow artifacts; on main they are also published to the rolling `latest`
+# release, which gives them a permanent URL instead of a 30-day expiry.
+#
+# Neither path ever publishes an export carrying an attachment. An Applications
+# export bundles the vendor's installer, and this repo is public. See
+# CONTRIBUTING.md.
 
 on:
   pull_request:
@@ -89,3 +93,45 @@ jobs:
           path: dist/*.cpt
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    name: Publish to the latest release
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Only this job writes. The build job above stays read-only.
+    permissions:
+      contents: write
+    # A second merge landing mid-publish would race the tag move.
+    concurrency:
+      group: publish-latest-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Rebuilt rather than carried over from the build job, so this job needs
+      # no artifact plumbing. Builds are deterministic, so it is the same bytes.
+      - name: Build
+        run: python3 tools/cpt.py pack-all --out-dir dist
+
+      # Drops any export that must not be published, and writes the notes.
+      - name: Stage
+        run: python3 tools/cpt.py stage-release --dir dist
+
+      # `latest` is a moving pointer at the current main, so the release and its
+      # tag are replaced rather than edited - gh cannot retarget a tag in place.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest dist/*.cpt \
+            --title "Component exports" \
+            --notes-file dist/RELEASE_NOTES.md \
+            --target "$GITHUB_SHA"
+          echo "Published $(find dist -name '*.cpt' | wc -l) export(s)." >> "$GITHUB_STEP_SUMMARY"
+          gh release view latest --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
