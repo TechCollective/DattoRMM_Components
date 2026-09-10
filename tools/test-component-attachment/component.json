@@ -1,0 +1,15 @@
+{
+  "general": {
+    "name": "Component Hash and Attachment Test [Win]",
+    "category": "scripts",
+    "description": "Probe. Built with an empty <hash/> and one known-content attachment, to establish what Datto does with each. Makes no change to the endpoint. Delete after reading the result.",
+    "uid": "b10dea05-74b0-48b4-b16e-a1a2b0f2f4f1",
+    "hash": "",
+    "version": "1",
+    "timeout": "600",
+    "securityLevel": "1",
+    "installType": "powershell"
+  },
+  "body": "component-hash-and-attachment-test-win.ps1",
+  "variables": []
+}

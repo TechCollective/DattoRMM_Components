@@ -1,0 +1,3 @@
+TechCollective Datto RMM packaging probe.
+This file is a deliberate, known-content attachment.
+It exists only so the component can prove what Datto did with it.
