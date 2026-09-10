@@ -242,6 +242,25 @@ a history. Nothing is lost by that: builds are deterministic, so any commit
 rebuilds its exports byte for byte. Git is the archive; the release is the
 convenient way to hand someone a file.
 
+### Re-checking the format
+
+[`tools/test-component`](test-component/) is a self-test component kept as a
+regression fixture. It changes nothing on an endpoint: it reads its own input
+variables back out of the environment and reports whether each arrived as
+declared, exercising the part of the format most likely to break — a string
+default, an empty default, a boolean, and a `map` drop-down's name/value split.
+
+Rebuild it, import it, and run it whenever you want to know the format still
+holds:
+
+    python3 tools/cpt.py pack tools/test-component -o "dist/Component Packaging Self-Test WIN.cpt"
+
+Worth doing after a change to `cpt.py`, or when a Datto update makes an import
+behave oddly. Delete the component from Datto once it has told you what you
+needed — it should not sit in the Component Library where it can be scheduled.
+
+It last passed on 2026-09-10: imported clean, all four variables intact.
+
 ### Adopting an existing component
 
 A component folder is only built once it has a `component.json`. Four of the
