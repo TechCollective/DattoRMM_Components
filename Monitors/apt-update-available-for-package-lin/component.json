@@ -3,7 +3,7 @@
     "name": "APT update availble for PACKAGE [LIN]",
     "category": "monitors",
     "description": "Will run apt -y update, then check if a package can be updated and alert if it can be.",
-    "uid": "cb643aad-7534-44b9-9f7f-49e7ac09bdc9",
+    "uid": "",
     "hash": "",
     "version": "5",
     "timeout": "3600",

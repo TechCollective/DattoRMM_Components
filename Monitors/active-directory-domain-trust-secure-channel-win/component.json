@@ -3,7 +3,7 @@
     "name": "Domain Trust",
     "category": "monitors",
     "description": "Test-ComputerSecureChannel\nand nltest /sc_verify:$domain",
-    "uid": "32794eee-0268-4724-8b4d-c9069ee0931b",
+    "uid": "",
     "hash": "",
     "version": "4",
     "timeout": "3600",

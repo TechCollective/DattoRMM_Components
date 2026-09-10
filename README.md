@@ -32,7 +32,11 @@ in lowercase with hyphens and the OS tag as a trailing token:
     Monitors/disk-space-free-space-below-threshold-lin/
       disk-space-free-space-below-threshold-lin.sh    the component body
       README.md                                       what it is, how to install it, its inputs
-      disk-space-free-space-below-threshold-lin.cpt   optional Datto export
+      component.json                                  optional: inputs and settings, so CI can
+                                                      build an importable .cpt for you
+
+Datto's `.cpt` export is **built, never committed**. See
+[`tools/README.md`](tools/README.md).
 
 The component's real name — `Disk Space - Free Space Below Threshold [Lin]`,
 brackets and casing intact — lives in its README and in Datto. Only the path is

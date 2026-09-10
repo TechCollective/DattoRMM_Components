@@ -114,11 +114,18 @@ Types seen in real exports: `string`, `boolean`, `map`.
 * Every variable arrives at the script as an environment variable of the same
   name, always as text.
 
-### About `uid`
+### About `uid` — leave it blank
 
-The uid is how Datto recognises a component on import. Reusing one means
-"update that component"; a fresh one means "create a new component". Generate a
-uid once per component, commit it in `component.json`, and never change it.
+Datto **replaces a uid it does not recognise with one of its own** on import —
+measured, not assumed; see
+[What a round trip through Datto changes](#what-a-round-trip-through-datto-changes).
+A uid authored here therefore never becomes the component's identity in Datto.
+
+So `uid` is optional, and every manifest in this repo leaves it empty. Chasing
+one down was a step a component builder had to take for no benefit.
+
+The consequence to remember: an import **creates** a component. It does not
+update an existing one. Import, then delete whatever it supersedes.
 
 ## The component directory
 
@@ -180,12 +187,64 @@ files in `files/` and they land at the archive root.
 `.gitignore` for exactly that reason. A build pipeline for application
 components has to source the installer from somewhere other than git.
 
-## What is not established
+## What a round trip through Datto changes
 
-* `hash` — empty on two of three exports, and not an MD5 of any file or obvious
-  concatenation. Import with it empty and see whether Datto minds.
+Established by importing a component built here, then exporting it straight back
+out and diffing. The probe that did it is
+[`tools/test-component-attachment`](test-component-attachment/).
+
+**Preserved exactly:** `name`, `category`, `description`, `timeout`,
+`installType`. The icon and any attachment come back **byte-identical** — a
+161-byte text payload survived untouched, which is the reassurance that matters
+for a binary like an MSI.
+
+**Changed by Datto:**
+
+| Field | Sent | Returned | What it means |
+|---|---|---|---|
+| `uid` | `b10dea05-…` | `026f0de7-…` | **Datto assigned its own.** The uid in an imported file is not honoured. |
+| `hash` | empty | `86bec201…` | Generated server-side on import. |
+
+**Changed by hand during the test, not by Datto:** `securityLevel` went `1` → `5`
+because the component was locked down in the UI while it sat in the Component
+Library. So securityLevel is authored here and respected, not overridden.
+
+`version` likewise read `4` on the way back out having been sent as `1`, and the
+component was edited in the UI between the two. That is consistent with version
+being carried across on import and then incremented on each save, rather than
+reset by the import — but the edits were not counted, and only one import has
+been measured, so it is the likely reading rather than a settled one.
+
+`hash` is an MD5-shaped value that matches nothing derivable from the archive —
+not the payload, the body, the icon, any concatenation of them, the filename or
+the uid. It is opaque. **Author it empty and let Datto fill it in.**
+
+### The uid does not survive an import
+
+This is the one with consequences. A `.cpt` carrying a uid Datto has not seen
+gets a fresh uid assigned, so **importing creates a new component**. Whether
+Datto honours a uid it *does* recognise — updating in place rather than
+duplicating — is untested, and is the next thing worth establishing, because it
+decides how an existing component is updated from this repo.
+
+Until that is known, treat an import as "creates a component" and delete the old
+one by hand.
+
+### Datto strips the trailing newline from the body
+
+A component exported after import has `command.bat` one byte shorter than what
+was sent: the final `\n` is gone. `normalise_body` in `cpt.py` does the same, so
+a `.cpt` built here is byte-identical to Datto's own export, and `audit` does
+not report a false mismatch against a repo script whose editor left a newline on
+it. `verify` checks the body as well as the metadata, which is what would catch
+a regression in this.
+
+## What is still not established
+
+* Whether Datto honours a uid it already knows, per above.
+* What `hash` actually digests.
 * Variable types beyond `string`, `boolean` and `map`. Datto's UI offers more;
-  we have no export that exercises them. `cpt.py` passes any `type` through
+  no export we have exercises them. `cpt.py` passes any `type` through
   unchanged, so an unknown type is not blocked, just unverified.
 * Whether entry order in the ZIP matters. `cpt.py` matches Datto's order anyway.
 
@@ -195,10 +254,8 @@ components has to source the installer from somewhere other than git.
 runs on every pull request touching a category folder or `tools/`, and does three
 things:
 
-1. **`cpt.py audit`** — enforces the two review-checklist items in
-   `CONTRIBUTING.md` that a human is otherwise expected to catch: a committed
-   `.cpt` must carry no attachment, and must match the script committed beside
-   it. Both fail the build.
+1. **`cpt.py audit`** — fails the build if any `.cpt` is committed under a
+   category folder. Exports are built, not stored.
 2. **`cpt.py verify`** — reproduces any reference export in `samples/` byte for
    byte, so a change to the packer that breaks the format is caught here.
    `samples/` is gitignored, so on GitHub this is normally a no-op.
@@ -211,10 +268,10 @@ artifact:
 
     https://github.com/TechCollective/DattoRMM_Components/releases/latest
 
-**The workflow commits nothing.** Built exports are artifacts and release
-assets, never files in git: an Applications export bundles the vendor's
-installer and this repo is public. That is the same rule `CONTRIBUTING.md`
-states for committing a `.cpt` by hand, and `audit` is what enforces it.
+**Nothing is ever committed.** Built exports are artifacts and release assets,
+never files in git: an Applications export bundles the vendor's installer and
+this repo is public, and a zip in the tree goes stale in silence because no diff
+shows it drifting from the script beside it. `audit` enforces it.
 
 Artifacts are named for the component as Datto displays it — `Domain Trust.cpt`,
 not `active-directory-domain-trust-secure-channel-win.cpt` — so a reviewer
@@ -261,19 +318,31 @@ needed — it should not sit in the Component Library where it can be scheduled.
 
 It last passed on 2026-09-10: imported clean, all four variables intact.
 
-### Adopting an existing component
+### Adding a manifest to an existing component
 
 A component folder is only built once it has a `component.json`. Four of the
 monitors in this repo predate the manifest and are reported as `skip` until one
 is written.
 
-Do **not** hand-write a manifest for a component that already exists in Datto.
-The `uid` is its identity: invent a new one and importing creates a *duplicate*
-component rather than updating the original. Export the real thing from Datto
-and let the tool read the uid out of it:
+Write one by hand — `name`, `category`, `installType`, `timeout`,
+`securityLevel`, and the input variables. Leave `uid` and `hash` blank. Nothing
+needs looking up in Datto.
+
+If you happen to have an export already, `unpack` writes the manifest rather
+than you typing it:
 
     python3 tools/cpt.py unpack "Some Component.cpt" -o Monitors/some-component
 
-That writes `component.json` next to the existing script. Check the body it
-extracted matches the one already committed, delete the duplicate body it
-writes, and point `"body"` at the committed file.
+Check the body it extracted matches the one already committed, delete the
+duplicate body it writes, and point `"body"` at the committed file.
+
+## Later: reading this out of Datto
+
+Everything in `component.json` beyond the script — the inputs, the timeout, the
+security level — is retyped from what Datto already knows. A function that
+pulled it from Datto's API would remove that step, and would also let something
+finally check this repo against the live Component Library.
+
+Worth checking before planning around it: this repo's own README states there is
+no component API to check against. If that holds, the manifest stays
+hand-written, and `unpack` on an existing export is the only shortcut there is.
