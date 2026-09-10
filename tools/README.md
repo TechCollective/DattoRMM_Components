@@ -205,8 +205,16 @@ for a binary like an MSI.
 |---|---|---|---|
 | `uid` | `b10dea05-…` | `026f0de7-…` | **Datto assigned its own.** The uid in an imported file is not honoured. |
 | `hash` | empty | `86bec201…` | Generated server-side on import. |
-| `version` | `1` | `4` | Not carried across; Datto manages it. |
-| `securityLevel` | `1` | `5` | Changed. Whether Datto defaulted it or a person edited it in the UI is not established. |
+
+**Changed by hand during the test, not by Datto:** `securityLevel` went `1` → `5`
+because the component was locked down in the UI while it sat in the Component
+Library. So securityLevel is authored here and respected, not overridden.
+
+`version` likewise read `4` on the way back out having been sent as `1`, and the
+component was edited in the UI between the two. That is consistent with version
+being carried across on import and then incremented on each save, rather than
+reset by the import — but the edits were not counted, and only one import has
+been measured, so it is the likely reading rather than a settled one.
 
 `hash` is an MD5-shaped value that matches nothing derivable from the archive —
 not the payload, the body, the icon, any concatenation of them, the filename or
