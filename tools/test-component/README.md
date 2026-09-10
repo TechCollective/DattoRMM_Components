@@ -46,8 +46,13 @@ at is documented in [`tools/README.md`](../README.md).
 
 ## After the test
 
-Delete the component from Datto. It has served its purpose, and it should not
-sit in the Component Library where someone can schedule it.
+Delete the component from Datto. It should not sit in the Component Library
+where someone can schedule it.
+
+**Keep the folder.** This is a regression fixture, not a one-off. Rebuild and
+re-import it whenever you want to confirm the format still holds — after a
+change to [`cpt.py`](../cpt.py), or when a Datto update makes an import behave
+oddly. It is the cheapest way to tell a packer bug apart from a Datto change.
 
 ## What each variable is for
 
