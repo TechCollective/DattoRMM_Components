@@ -125,6 +125,25 @@ jobs:
           python3 tools/cpt.py stage-release --dir dist
           echo "count=$(find dist -name '*.cpt' | wc -l)" >> "$GITHUB_OUTPUT"
 
+      # Republishing recreates the release and its tag, which resets download
+      # counts, so it should only happen when the exports actually differ.
+      # Builds are deterministic, so comparing the staged fingerprint against
+      # the one already on the release is enough to tell. A docs-only merge,
+      # or a refactor of cpt.py that does not change its output, skips.
+      - name: Has anything changed?
+        id: changed
+        if: steps.stage.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p previous
+          gh release download latest --pattern SHA256SUMS --dir previous 2>/dev/null || true
+          if [ -f previous/SHA256SUMS ] && cmp -s previous/SHA256SUMS dist/SHA256SUMS; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # `latest` is a moving pointer at the current main, so the release and its
       # tag are replaced rather than edited - gh cannot retarget a tag in place.
       #
@@ -134,7 +153,7 @@ jobs:
       # as a character class and matches nothing. Handing gh a bracket-free
       # pattern and letting it do the expansion avoids the problem entirely.
       - name: Publish
-        if: steps.stage.outputs.count != '0'
+        if: steps.changed.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -143,11 +162,17 @@ jobs:
             --title "Component exports" \
             --notes-file dist/RELEASE_NOTES.md \
             --target "$GITHUB_SHA"
-          gh release upload latest 'dist/*.cpt' --clobber
+          gh release upload latest 'dist/*.cpt' 'dist/SHA256SUMS' --clobber
           {
             echo "Published ${{ steps.stage.outputs.count }} export(s)."
             gh release view latest --json url --jq .url
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Unchanged
+        if: steps.changed.outputs.changed == 'false'
+        run: |
+          echo "Exports are byte-identical to the current release; left it alone." \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: Nothing to publish
         if: steps.stage.outputs.count == '0'

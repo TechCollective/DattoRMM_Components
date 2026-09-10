@@ -235,6 +235,21 @@ release is cut, for two independent reasons:
 Excluded components are listed in the release notes, saying what was dropped
 and why. Export those from Datto directly.
 
+### The release is only republished when it would differ
+
+`stage-release` writes a `SHA256SUMS` fingerprint covering the exports and the
+release notes, and publishes it as an asset. The next run compares against it
+and skips publishing when nothing has changed.
+
+That matters because republishing recreates the release and its tag, which
+resets download counts. Without the check, a merge that only touched a README
+would churn the release for no reason. Builds are deterministic, so the
+comparison is exact — and it holds for any no-op change, including a refactor of
+`cpt.py` that does not alter its output.
+
+The notes are in the fingerprint because they can change while no `.cpt` does:
+adding a component that gets excluded rewrites them and nothing else.
+
 ### Releases are distribution, not an archive
 
 The `latest` tag moves with `main`, so it is a pointer at the current state, not

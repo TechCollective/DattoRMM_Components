@@ -26,6 +26,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import pathlib
 import sys
@@ -525,7 +526,19 @@ def stage_release(directory: pathlib.Path) -> int:
     notes.append("Built by `tools/cpt.py`. Builds are deterministic: the same commit "
                  "rebuilds these byte for byte.")
 
-    (directory / "RELEASE_NOTES.md").write_text("\n".join(notes) + "\n", encoding="utf-8")
+    notes_path = directory / "RELEASE_NOTES.md"
+    notes_path.write_text("\n".join(notes) + "\n", encoding="utf-8")
+
+    # A fingerprint of everything the release would carry, so a later run can
+    # tell whether republishing would actually change anything. Builds are
+    # deterministic, so identical inputs give an identical file here. The notes
+    # are included because they can change while no .cpt does - adding a
+    # component that gets excluded rewrites them and nothing else.
+    fingerprint = []
+    for path in sorted(kept + [notes_path], key=lambda p: p.name):
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        fingerprint.append(f"{digest}  {path.name}")
+    (directory / "SHA256SUMS").write_text("\n".join(fingerprint) + "\n", encoding="utf-8")
 
     if not kept:
         print("nothing publishable")
