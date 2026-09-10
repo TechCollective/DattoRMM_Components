@@ -120,18 +120,35 @@ jobs:
 
       # Drops any export that must not be published, and writes the notes.
       - name: Stage
-        run: python3 tools/cpt.py stage-release --dir dist
+        id: stage
+        run: |
+          python3 tools/cpt.py stage-release --dir dist
+          echo "count=$(find dist -name '*.cpt' | wc -l)" >> "$GITHUB_OUTPUT"
 
       # `latest` is a moving pointer at the current main, so the release and its
       # tag are replaced rather than edited - gh cannot retarget a tag in place.
+      #
+      # Assets are uploaded separately, and the glob is passed QUOTED so that gh
+      # expands it rather than bash. gh globs each asset argument it is given,
+      # so a component whose name contains brackets - "... [LIN].cpt" - is read
+      # as a character class and matches nothing. Handing gh a bracket-free
+      # pattern and letting it do the expansion avoids the problem entirely.
       - name: Publish
+        if: steps.stage.outputs.count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest dist/*.cpt \
+          gh release create latest \
             --title "Component exports" \
             --notes-file dist/RELEASE_NOTES.md \
             --target "$GITHUB_SHA"
-          echo "Published $(find dist -name '*.cpt' | wc -l) export(s)." >> "$GITHUB_STEP_SUMMARY"
-          gh release view latest --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
+          gh release upload latest 'dist/*.cpt' --clobber
+          {
+            echo "Published ${{ steps.stage.outputs.count }} export(s)."
+            gh release view latest --json url --jq .url
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nothing to publish
+        if: steps.stage.outputs.count == '0'
+        run: echo "No publishable exports; release left unchanged." >> "$GITHUB_STEP_SUMMARY"
