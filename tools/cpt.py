@@ -529,7 +529,6 @@ def stage_release(directory: pathlib.Path) -> int:
 
     if not kept:
         print("nothing publishable")
-        return 1
     return 0
 
 
