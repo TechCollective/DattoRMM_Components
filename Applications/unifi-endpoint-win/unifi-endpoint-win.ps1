@@ -20,6 +20,9 @@
         version monitor's auto-response) cannot reset them. CHECK_UPDATE is
         always taken from usrCheckUpdate (default 0: users are not admins).
       * Verifies the result in the registry after msiexec returns.
+      * Removes a stale registration left by Ubiquiti's .exe installer (a WiX
+        Burn bundle in the Package Cache) once a newer MSI is in place, using
+        the bundle's own signed uninstaller, then re-checks the MSI.
 
     Never reboots. A reboot-required result (3010) is reported as a WARNING line
     and still exits 0.
@@ -59,10 +62,12 @@ if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Forc
 if ((Test-Path $TranscriptLog) -and ((Get-Item $TranscriptLog).Length -gt 5MB)) {
     Move-Item -Path $TranscriptLog -Destination "$TranscriptLog.old" -Force
 }
-# Keep the ten newest msiexec logs.
-Get-ChildItem -Path $LogDir -Filter 'msi-*.log' -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending | Select-Object -Skip 10 |
-    Remove-Item -Force -ErrorAction SilentlyContinue
+# Keep the ten newest msiexec logs, and the ten newest installer-bundle logs.
+foreach ($pattern in @('msi-*.log', 'bundle-*.log')) {
+    Get-ChildItem -Path $LogDir -Filter $pattern -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -Skip 10 |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
 
 # Datto RMM component variables arrive as environment variables (always strings).
 function Get-Var {
@@ -170,11 +175,21 @@ try {
                 $hit = $false
                 foreach ($p in $NamePatterns) { if ($name -like $p) { $hit = $true; break } }
                 if (-not $hit -or $found.ContainsKey($sub)) { continue }
+                # Ubiquiti's .exe installer is a WiX Burn bundle: it registers
+                # itself (always in the 32-bit view) with an uninstaller in the
+                # Package Cache, and chains a hidden MSI. When our MSI upgrades
+                # that MSI, the bundle's entry is left behind.
+                $uninst = [string]$k.GetValue('UninstallString')
+                $isMsi  = ($k.GetValue('WindowsInstaller') -eq 1)
                 $found[$sub] = [pscustomobject]@{
                     DisplayName     = $name
                     DisplayVersion  = [string]$k.GetValue('DisplayVersion')
                     ProductCode     = $sub
                     InstallLocation = [string]$k.GetValue('InstallLocation')
+                    UninstallString = $uninst
+                    IsMsi           = $isMsi
+                    IsBundle        = (-not $isMsi) -and ($uninst -match '\\Package Cache\\\{[0-9A-Fa-f\-]{36}\}\\[^\\"]+\.exe"?\s+/uninstall')
+                    View            = $viewName
                 }
             }
         }
@@ -421,8 +436,48 @@ try {
         return (Invoke-Msi -Arguments $msiArgs -Action 'Install')
     }
 
+    # Runs a Burn bundle's own cached uninstaller quietly. Success is judged by
+    # the registration disappearing, not the exit code: Burn relaunches itself
+    # from a temp copy, so the process we start can exit before the work is done.
+    function Remove-BurnBundle {
+        param($App)
+        $fail = { param($m) Write-Diag "WARNING: $m"; @{ Success = $false; Reboot = $false; Code = -1 } }
+        if ($App.UninstallString -notmatch '^\s*"?(?<exe>[A-Za-z]:\\[^"]+?\.exe)"?\s+/uninstall') {
+            return (& $fail "Unrecognised uninstall string for $($App.ProductCode).")
+        }
+        $exe   = $Matches['exe']
+        $cache = (Join-Path $env:ProgramData 'Package Cache') + '\'
+        if (-not $exe.StartsWith($cache, [StringComparison]::OrdinalIgnoreCase)) {
+            return (& $fail "Bundle uninstaller is outside the Package Cache ($exe); not running it.")
+        }
+        if (-not (Test-Path -LiteralPath $exe)) {
+            return (& $fail "Bundle uninstaller is missing from the Package Cache ($exe).")
+        }
+        try { Assert-UbiquitiSignature -Path $exe } catch { return (& $fail $_.Exception.Message) }
+
+        $log = Join-Path $LogDir ("bundle-{0:yyyyMMdd-HHmmss}.log" -f (Get-Date))
+        Write-Diag "Running bundle uninstaller: $exe /uninstall /quiet /norestart"
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName        = $exe
+        $psi.Arguments       = "/uninstall /quiet /norestart /log `"$log`""
+        $psi.UseShellExecute = $false
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if (-not $p.WaitForExit(900000)) { return (& $fail 'Bundle uninstaller did not finish within 15 minutes.') }
+        $code = $p.ExitCode
+        Write-Diag "Bundle uninstall exit code: $code"
+
+        for ($i = 0; $i -lt 12; $i++) {
+            if (-not (@(Get-UniFiEndpoint) | Where-Object { $_.ProductCode -eq $App.ProductCode })) {
+                return @{ Success = $true; Reboot = ($code -eq 3010 -or $code -eq 1641); Code = $code }
+            }
+            Start-Sleep -Seconds 5
+        }
+        return (& $fail "Bundle registration $($App.ProductCode) is still present after its uninstaller ran. See $log")
+    }
+
     function Uninstall-UniFiEndpoint {
-        $installed = @(Get-UniFiEndpoint)
+        # MSIs first; a bundle is then removed by its own uninstaller.
+        $installed = @(Get-UniFiEndpoint | Sort-Object IsBundle)
         if ($installed.Count -eq 0) {
             Write-Diag 'Nothing to uninstall - product not present.'
             return @{ Success = $true; Reboot = $false; Code = 0 }
@@ -430,17 +485,56 @@ try {
         $overall = @{ Success = $true; Reboot = $false; Code = 0 }
         foreach ($app in $installed) {
             Write-Diag "Removing '$($app.DisplayName)' v$($app.DisplayVersion) ($($app.ProductCode))"
-            if ($app.ProductCode -match '^\{[0-9A-Fa-f\-]{36}\}$') {
+            if ($app.IsMsi -and $app.ProductCode -match '^\{[0-9A-Fa-f\-]{36}\}$') {
                 $r = Invoke-Msi -Arguments @('/x', $app.ProductCode, '/qn', '/norestart', '/l*v', "`"$MsiLog`"") `
                                 -Action 'Uninstall' -NotInstalledIsOk
+            } elseif ($app.IsBundle) {
+                $r = Remove-BurnBundle -App $app
             } else {
-                Write-Diag "'$($app.DisplayName)' is not an MSI registration; not removing it automatically."
+                Write-Diag "'$($app.DisplayName)' is neither an MSI nor a Ubiquiti installer bundle; not removing it automatically."
                 $r = @{ Success = $false; Reboot = $false; Code = -1 }
             }
             if (-not $r.Success) { $overall.Success = $false; $overall.Code = $r.Code }
             if ($r.Reboot)       { $overall.Reboot  = $true }
         }
         return $overall
+    }
+
+    # After Install mode has a current MSI in place: remove any installer-bundle
+    # registration older than it (left behind when the device was first set up
+    # from Ubiquiti's .exe). If removing the bundle takes the MSI with it,
+    # install the MSI again. Returns whether that reinstall was needed.
+    function Remove-StaleBundles {
+        param([string]$MsiPath)
+        $all       = @(Get-UniFiEndpoint)
+        $msiNewest = $null
+        foreach ($a in @($all | Where-Object { $_.IsMsi })) {
+            $v = ConvertTo-Version $a.DisplayVersion
+            if ($v -and ((-not $msiNewest) -or ($v -gt $msiNewest))) { $msiNewest = $v }
+        }
+        if (-not $msiNewest) { return @{ Reinstalled = $false; Reboot = $false } }
+        $stale = @($all | Where-Object { $_.IsBundle -and ((ConvertTo-Version $_.DisplayVersion) -lt $msiNewest) })
+        if ($stale.Count -eq 0) { return @{ Reinstalled = $false; Reboot = $false } }
+
+        # Capture settings first, in case the reinstall below is needed.
+        if (($KeepExisting -eq '1') -and -not $script:Existing) { $script:Existing = Get-ExistingSettings }
+        foreach ($b in $stale) {
+            Write-Diag "Removing stale '$($b.DisplayName)' v$($b.DisplayVersion) registration left by Ubiquiti's .exe installer ($($b.ProductCode), $($b.View))"
+            [void](Remove-BurnBundle -App $b)
+        }
+        Start-Sleep -Seconds 5
+        if (@(Get-UniFiEndpoint | Where-Object { $_.IsMsi -and ((ConvertTo-Version $_.DisplayVersion) -ge $msiNewest) }).Count -gt 0) {
+            return @{ Reinstalled = $false; Reboot = $false }
+        }
+        Write-Diag 'WARNING: Removing the old installer registration also removed UniFi Endpoint. Installing it again.'
+        $r = Install-FromMsi -MsiPath $MsiPath
+        if (-not $r.Success) { throw "Install after removing the old installer registration failed (exit $($r.Code)). See $MsiLog" }
+        Start-Sleep -Seconds 5
+        $mv = ConvertTo-Version (Get-MsiProductVersion -Path $MsiPath)
+        if (-not @(Get-UniFiEndpoint | Where-Object { $_.IsMsi -and ((ConvertTo-Version $_.DisplayVersion) -ge $mv) }).Count) {
+            throw "msiexec returned $($r.Code) after the old installer registration was removed, but UniFi Endpoint is not registered. See $MsiLog"
+        }
+        return @{ Reinstalled = $true; Reboot = $r.Reboot }
     }
 
 #endregion
@@ -481,8 +575,14 @@ try {
         }
 
         if (($Mode -match '^(?i)install$') -and $newest -and ($newest -ge $targetVer)) {
-            Write-Diag "Installed version $newest is current (available: $targetVer). No action."
-            Write-DattoResult -Status 'UP_TO_DATE' -Message "UniFi Endpoint $newest already current; no action taken." -Version "$newest"
+            Write-Diag "Installed version $newest is current (available: $targetVer)."
+            $c = Remove-StaleBundles -MsiPath $msi.Path
+            $status = if ($c.Reinstalled) { 'REINSTALLED' } else { 'UP_TO_DATE' }
+            if ($c.Reboot) {
+                Write-Diag 'WARNING: Windows reports a reboot is required to finish. No reboot was forced.'
+                $status = "${status}_REBOOT_REQUIRED"
+            }
+            Write-DattoResult -Status $status -Message "UniFi Endpoint $newest already current." -Version "$newest"
         }
         else {
             $action = 'INSTALLED'
@@ -535,10 +635,16 @@ try {
             }
             Write-Diag "Verified: $($current.DisplayName) v$($current.DisplayVersion)"
 
+            if ($Mode -match '^(?i)install$') {
+                $c = Remove-StaleBundles -MsiPath $msi.Path
+                if ($c.Reboot) { $result.Reboot = $true }
+                $after = @(Get-UniFiEndpoint)
+            }
+
             if ($after.Count -gt 1) {
                 Write-Diag ("WARNING: more than one UniFi Endpoint registration remains: " +
-                            (($after | ForEach-Object { "$($_.DisplayName) v$($_.DisplayVersion)" }) -join '; ') +
-                            ". Run with usrMode=Reinstall to clean up.")
+                            (($after | ForEach-Object { "$($_.DisplayName) v$($_.DisplayVersion) [$(if ($_.IsMsi) { 'MSI' } elseif ($_.IsBundle) { 'installer bundle' } else { 'other' }), $($_.View), $($_.ProductCode)]" }) -join '; ') +
+                            ". Check them before using usrMode=Reinstall: it removes all of them and reinstalls with this component's variables, not the device's existing settings.")
             }
             if ($result.Reboot) {
                 Write-Diag 'WARNING: Windows reports a reboot is required to finish. No reboot was forced.'

@@ -2,7 +2,7 @@
 
 Deploys and updates Ubiquiti's UniFi Endpoint desktop agent on 64-bit Windows.
 
-> **Status: Not Validated.** 2026-09-24. This revision changes the component from installing an attached MSI to installing *or updating* from Ubiquiti's signed download, and it keeps each device's settings on update. Tested only against simulated inputs. It has not run on a device yet.
+> **Status: Not Validated.** 2026-09-24. This revision changes the component from installing an attached MSI to installing *or updating* from Ubiquiti's signed download, and it keeps each device's settings on update. The first revision ran once on one internal device: the update succeeded but left a stale registration from Ubiquiti's `.exe` installer behind, which this revision now removes. The clean-up itself has been tested only against simulated inputs.
 
 ## What it does
 
@@ -14,14 +14,15 @@ This component deploys Ubiquiti's **UniFi Endpoint** desktop agent, which used t
   3. Reads the MSI's `ProductVersion` and compares it with the version in the registry. If the product isn't installed, it installs it. If the installed version is older, it upgrades in place. If the installed version is the same or newer, it does nothing. It **never downgrades.**
   4. If the MSI refuses to upgrade in place (msiexec 1638), it removes the old version and then installs.
   5. After msiexec returns, it checks the registry for the installed version.
+  6. **Removes the stale registration Ubiquiti's `.exe` installer leaves behind.** A device first set up from the `.exe` has a WiX Burn *bundle* registration (32-bit view, uninstaller in `C:\ProgramData\Package Cache\{GUID}\`) wrapping a hidden MSI. Our MSI upgrades that MSI but the bundle entry stays, so the device shows two versions. Once a newer MSI is verified, the component runs the bundle's own uninstaller quietly (`/uninstall /quiet /norestart`), only if it is inside the Package Cache and validly signed by Ubiquiti, and treats it as removed only when its registration is gone. If removing the bundle also removed the MSI, it installs the MSI again, keeping the device's settings. This also runs on devices that are already up to date.
 - **Updates keep each device's existing settings.** When an update runs, the component reads the device's current settings from the registry and applies them again, instead of the component defaults. The settings kept are organization domain, launch at startup, Wi-Fi, VPN, auto-reconnect and the enforcement locks. Without this, an unattended update started by the version monitor would reset every device to the defaults. To force the component's own variables instead, set `usrKeepExistingSettings=0` or use Reinstall.
 - **The app's own update check is switched off by default** (`CHECK_UPDATE=0`). This applies to existing installs as well, because the component always sets it and never keeps the old value. End users don't have admin rights, so the app can't install its own updates. Updates come from this component, started by `UniFi Endpoint - Version Behind Latest [Win]`.
-- **Uninstall** removes every matching MSI registration and confirms nothing is left.
-- **Reinstall** removes the product, then installs it. It won't install if the removal failed.
+- **Uninstall** removes every matching MSI registration, then any Ubiquiti installer-bundle registration, and confirms nothing is left.
+- **Reinstall** removes the product, then installs it with this component's variables. It does **not** keep the device's existing settings. It won't install if the removal failed.
 
 It **never reboots.** Detection only matches registry entries whose publisher is Ubiquiti. It deliberately skips **UniFi Identity Enterprise**, which is a different product.
 
-The only network call is the MSI download from Ubiquiti. The script sends nothing anywhere else. Logs go to `C:\ProgramData\_automation\UniFiEndpoint\`: one transcript that rotates at 5 MB, plus the ten newest msiexec logs.
+The only network call is the MSI download from Ubiquiti. The script sends nothing anywhere else. Logs go to `C:\ProgramData\_automation\UniFiEndpoint\`: one transcript that rotates at 5 MB, plus the ten newest msiexec logs and the ten newest installer-bundle uninstall logs (`bundle-*.log`).
 
 **This supersedes the existing `UniFi Endpoint [Win]` in the Component Library.** That version installs whichever MSI is attached to it, and it skips devices that already have the app, so it never updates anything. When this goes live, re-point any jobs and policies that use the old component, then delete the old one. Do not run both.
 
@@ -72,7 +73,8 @@ The boolean-style variables also accept `true`/`false`/`yes`/`no`. Any other val
 | Fresh install succeeded | `INSTALLED` | 0 |
 | Older version upgraded | `UPDATED` | 0 |
 | Already on the same or a newer version | `UP_TO_DATE` | 0 |
-| Removed, then installed | `REINSTALLED` | 0 |
+| Removed, then installed. This also covers Install mode when removing a stale installer-bundle registration took the MSI with it | `REINSTALLED` | 0 |
+| A stale installer-bundle registration could not be removed | The status above, plus a `WARNING:` line | 0 (Warning via post-condition) |
 | Any of the above, but Windows wants a reboot | `…_REBOOT_REQUIRED` plus a `WARNING:` line | 0 (Warning via post-condition) |
 | Uninstalled and verified absent | `REMOVED` | 0 |
 | Bad input, no usable or signed MSI, msiexec error, or version not updated after install | `FAILED` | 1 |
@@ -94,9 +96,11 @@ STATUS=UPDATED
 
 A second run on the same device should report `STATUS=UP_TO_DATE`. If it doesn't, there's something wrong with how the version is detected.
 
+On a device first set up from Ubiquiti's `.exe`, the same run also prints `Removing stale 'UniFi Endpoint' v… registration left by Ubiquiti's .exe installer`, a `Running bundle uninstaller` line, and then no `more than one UniFi Endpoint registration remains` warning.
+
 ## Test order
 
-1. One internal device with an **older** version installed. This checks the upgrade path, and the second run should report `UP_TO_DATE`.
+1. One internal device with an **older** version installed, ideally one first set up from Ubiquiti's `.exe`. This checks the upgrade path and the bundle clean-up, and the second run should report `UP_TO_DATE`.
 2. One internal device with nothing installed. This checks a fresh install with `uiEndpointDomain` set.
 3. One client site, with the job scoped to one device.
 4. Wider rollout.
@@ -107,7 +111,8 @@ A second run on the same device should report `STATUS=UP_TO_DATE`. If it doesn't
 - The download runs as SYSTEM and uses SYSTEM's proxy settings. If a site requires an authenticated proxy, use `usrSource=Attached`.
 - An app that is open during an upgrade may need a reboot before the upgrade finishes (3010). The script reports this and never forces a reboot.
 - Needs PowerShell 5.1 (Windows 10/11). 32-bit Windows is refused.
-- Not yet run on any device.
+- Run on one internal device so far. The installer-bundle clean-up has not run on a device yet; the equivalent manual steps worked (the bundle entry went, the MSI stayed).
+- Only Ubiquiti installer bundles in the Package Cache are removed automatically. Any other non-MSI registration is reported with a `WARNING:` line and left alone.
 
 ## Open questions
 
