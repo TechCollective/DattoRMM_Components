@@ -16,7 +16,7 @@ This component deploys Ubiquiti's **UniFi Endpoint** desktop agent, which used t
   5. After msiexec returns, it checks the registry for the installed version.
   6. **Removes the stale registration Ubiquiti's `.exe` installer leaves behind.** A device first set up from the `.exe` has a WiX Burn *bundle* registration (32-bit view, uninstaller in `C:\ProgramData\Package Cache\{GUID}\`) wrapping a hidden MSI. Our MSI upgrades that MSI but the bundle entry stays, so the device shows two versions. Once a newer MSI is verified, the component runs the bundle's own uninstaller quietly (`/uninstall /quiet /norestart`), only if it is inside the Package Cache and validly signed by Ubiquiti, and treats it as removed only when its registration is gone. If removing the bundle also removed the MSI, it installs the MSI again, keeping the device's settings. This also runs on devices that are already up to date.
 - **Updates keep each device's existing settings.** When an update runs, the component reads the device's current settings from the registry and applies them again, instead of the component defaults. The settings kept are organization domain, launch at startup, Wi-Fi, VPN, auto-reconnect and the enforcement locks. Without this, an unattended update started by the version monitor would reset every device to the defaults. To force the component's own variables instead, set `usrKeepExistingSettings=0` or use Reinstall.
-- **The app's own update check is switched off by default** (`CHECK_UPDATE=0`). This applies to existing installs as well, because the component always sets it and never keeps the old value. End users don't have admin rights, so the app can't install its own updates. Updates come from this component, started by `UniFi Endpoint - Version Behind Latest [Win]`.
+- **The app's own update check is switched off by default** (`CHECK_UPDATE=0`). This applies to existing installs as well, because the component always sets it and never keeps the old value. Where end users don't have admin rights, the app can't install its own updates, so updates come from this component, started by `UniFi Endpoint - Version Behind Latest [Win]`.
 - **Uninstall** removes every matching MSI registration, then any Ubiquiti installer-bundle registration, and confirms nothing is left.
 - **Reinstall** removes the product, then installs it with this component's variables. It does **not** keep the device's existing settings. It won't install if the removal failed.
 
@@ -35,7 +35,7 @@ Alternatively, create the component by hand with Automation → Components → N
 | Field | Value |
 |---|---|
 | Name | `UniFi Endpoint [Win]` |
-| Description | Installs or updates UniFi Endpoint silently from Ubiquiti's signed MSI; never downgrades or reboots. Also uninstalls. |
+| Description | Installs, updates, reinstalls or uninstalls UniFi Endpoint silently from Ubiquiti's signed MSI or attached MSI. |
 | Category | Applications |
 | Script type | PowerShell |
 | Target OS | Windows (64-bit only) |
@@ -54,11 +54,11 @@ Every variable is defined in `component.json`. The variable names from the previ
 | `usrSource` | Selection | `Auto` | `Auto` tries the vendor download, then the attachment. `Download` uses the vendor download only. `Attached` uses the attachment only and makes no network call. |
 | `uiEndpointDomain` | String | *(blank)* | Your UniFi organization domain, passed as `ORG_DOMAIN`. Letters, digits, `.` and `-` only. Set it per site, never in the component. |
 | `usrLaunchAtStartup` | Selection | Yes | Yes / No |
-| `usrCheckUpdate` | Selection | No | Yes / No. The app's own update check. **Leave it at `0`.** End users aren't admins, so a self-update can't finish. The component applies this value on every install and update. |
+| `usrCheckUpdate` | Selection | No | Yes / No. The app's own update check. Leave it at No unless users are local admins: without admin rights a self-update can't finish, so updates come from this component. If users will be local admins, change it to Yes. The component applies this value on every install and update. |
 | `usrConnectWiFi` | Selection | No | Yes / No |
 | `usrConnectVpn` | Selection | No | Yes / No |
 | `usrAutoReconnectWiFi` | Selection | No | Yes / No |
-| `usrDesktopShortcut` | Selection | Yes | Yes / No |
+| `usrDesktopShortcut` | Selection | No | Yes / No |
 | `usrEnforceConfig` | Boolean | `false` | When `true`, adds the `ENFORCE_CONFIG_*` locks so users can't change these settings locally. |
 | `usrInstallerName` | String | `UniFi Endpoint.msi` | The file name of the attached MSI. Must be a bare `.msi` name with no path. |
 | `usrKeepExistingSettings` | Selection | Yes | Yes keeps the device's existing domain, startup, VPN, Wi-Fi and enforcement settings when updating. No applies this component's variables. Fresh installs and Reinstall always use the variables. |

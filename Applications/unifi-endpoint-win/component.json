@@ -2,7 +2,7 @@
   "general": {
     "name": "UniFi Endpoint [Win]",
     "category": "applications",
-    "description": "Installs or updates UniFi Endpoint silently from Ubiquiti's signed MSI; never downgrades or reboots. Also uninstalls.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Applications/unifi-endpoint-win",
+    "description": "Installs, updates, reinstalls or uninstalls UniFi Endpoint silently from Ubiquiti's signed MSI or attached MSI.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Applications/unifi-endpoint-win",
     "uid": "",
     "hash": "",
     "version": "1",
@@ -17,7 +17,7 @@
       "name": "usrMode",
       "type": "map",
       "direction": "false",
-      "description": "Install = install or update (never downgrades). Uninstall removes it. Reinstall removes then installs.",
+      "description": "Install = install or update.",
       "defaultVal": "Install",
       "options": [
         {
@@ -38,7 +38,7 @@
       "name": "usrSource",
       "type": "map",
       "direction": "false",
-      "description": "Auto = latest MSI from Ubiquiti, falling back to an attached MSI. Download = vendor only. Attached = attachment only, no network.",
+      "description": "Auto = latest MSI from Ubiquiti, falling back to an attached MSI. Download = latest MSI. Attached = attachment only, no network.",
       "defaultVal": "Auto",
       "options": [
         {
@@ -83,7 +83,7 @@
       "name": "usrCheckUpdate",
       "type": "map",
       "direction": "false",
-      "description": "The app's own update check. Leave at No: users are not admins, so self-updates cannot finish.",
+      "description": "The app's own update check. If users will be local admins change to 'Yes'.",
       "defaultVal": "No",
       "options": [
         {
@@ -152,7 +152,7 @@
       "type": "map",
       "direction": "false",
       "description": "Create a desktop shortcut.",
-      "defaultVal": "Yes",
+      "defaultVal": "No",
       "options": [
         {
           "name": "Yes",

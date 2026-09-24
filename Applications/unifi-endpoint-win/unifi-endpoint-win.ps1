@@ -128,7 +128,7 @@ try {
     $ConnectWiFi     = Get-BoolVar 'usrConnectWiFi'       '0'
     $ConnectVpn      = Get-BoolVar 'usrConnectVpn'        '0'
     $AutoReconnect   = Get-BoolVar 'usrAutoReconnectWiFi' '0'
-    $DesktopShortcut = Get-BoolVar 'usrDesktopShortcut'   '1'
+    $DesktopShortcut = Get-BoolVar 'usrDesktopShortcut'   '0'
     $EnforceConfig   = Get-BoolVar 'usrEnforceConfig'     '0'
     $InstallerName   = Get-Var     'usrInstallerName'     'UniFi Endpoint.msi'
     $ExtraArgs       = Get-Var     'usrExtraMsiArgs'      ''
