@@ -1,0 +1,206 @@
+{
+  "general": {
+    "name": "UniFi Endpoint [Win]",
+    "category": "applications",
+    "description": "Installs, updates, reinstalls or uninstalls UniFi Endpoint silently from Ubiquiti's signed MSI or attached MSI.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Applications/unifi-endpoint-win",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "1800",
+    "securityLevel": "1",
+    "installType": "powershell",
+    "uninstallType": ""
+  },
+  "body": "unifi-endpoint-win.ps1",
+  "variables": [
+    {
+      "name": "usrMode",
+      "type": "map",
+      "direction": "false",
+      "description": "Install = install or update.",
+      "defaultVal": "Install",
+      "options": [
+        {
+          "name": "Install",
+          "value": "Install"
+        },
+        {
+          "name": "Uninstall",
+          "value": "Uninstall"
+        },
+        {
+          "name": "Reinstall",
+          "value": "Reinstall"
+        }
+      ]
+    },
+    {
+      "name": "usrSource",
+      "type": "map",
+      "direction": "false",
+      "description": "Auto = latest MSI from Ubiquiti, falling back to an attached MSI. Download = latest MSI. Attached = attachment only, no network.",
+      "defaultVal": "Auto",
+      "options": [
+        {
+          "name": "Auto",
+          "value": "Auto"
+        },
+        {
+          "name": "Download",
+          "value": "Download"
+        },
+        {
+          "name": "Attached",
+          "value": "Attached"
+        }
+      ]
+    },
+    {
+      "name": "uiEndpointDomain",
+      "type": "string",
+      "direction": "false",
+      "description": "UniFi organization domain (ORG_DOMAIN). Set per site; leave blank here.",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrLaunchAtStartup",
+      "type": "map",
+      "direction": "false",
+      "description": "Launch the app when a user signs in.",
+      "defaultVal": "Yes",
+      "options": [
+        {
+          "name": "Yes",
+          "value": "1"
+        },
+        {
+          "name": "No",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "name": "usrCheckUpdate",
+      "type": "map",
+      "direction": "false",
+      "description": "The app's own update check. If users will be local admins change to 'Yes'.",
+      "defaultVal": "No",
+      "options": [
+        {
+          "name": "Yes",
+          "value": "1"
+        },
+        {
+          "name": "No",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "name": "usrConnectWiFi",
+      "type": "map",
+      "direction": "false",
+      "description": "Connect to the assigned Wi-Fi at startup.",
+      "defaultVal": "No",
+      "options": [
+        {
+          "name": "Yes",
+          "value": "1"
+        },
+        {
+          "name": "No",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "name": "usrConnectVpn",
+      "type": "map",
+      "direction": "false",
+      "description": "Connect to the assigned VPN at startup.",
+      "defaultVal": "No",
+      "options": [
+        {
+          "name": "Yes",
+          "value": "1"
+        },
+        {
+          "name": "No",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "name": "usrAutoReconnectWiFi",
+      "type": "map",
+      "direction": "false",
+      "description": "Reconnect Wi-Fi if it drops.",
+      "defaultVal": "No",
+      "options": [
+        {
+          "name": "Yes",
+          "value": "1"
+        },
+        {
+          "name": "No",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "name": "usrDesktopShortcut",
+      "type": "map",
+      "direction": "false",
+      "description": "Create a desktop shortcut.",
+      "defaultVal": "No",
+      "options": [
+        {
+          "name": "Yes",
+          "value": "1"
+        },
+        {
+          "name": "No",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "name": "usrEnforceConfig",
+      "type": "boolean",
+      "direction": "false",
+      "description": "true = lock the settings above so users cannot change them.",
+      "defaultVal": "false"
+    },
+    {
+      "name": "usrKeepExistingSettings",
+      "type": "map",
+      "direction": "false",
+      "description": "On an update, keep the device's existing domain/startup/VPN/Wi-Fi/lock settings instead of the values above.",
+      "defaultVal": "Yes",
+      "options": [
+        {
+          "name": "Yes",
+          "value": "1"
+        },
+        {
+          "name": "No",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "name": "usrInstallerName",
+      "type": "string",
+      "direction": "false",
+      "description": "File name of an attached MSI (used only as the fallback). Bare .msi name, no path.",
+      "defaultVal": "UniFi Endpoint.msi"
+    },
+    {
+      "name": "usrExtraMsiArgs",
+      "type": "string",
+      "direction": "false",
+      "description": "Extra UPPERCASE_PROPERTY=value pairs, space separated. Anything else fails the job.",
+      "defaultVal": ""
+    }
+  ]
+}
