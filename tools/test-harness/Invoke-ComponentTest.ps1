@@ -1,0 +1,413 @@
+<#
+.SYNOPSIS
+    Tier 1 test for a Windows Datto RMM component: run it the way Datto would,
+    then check that it did what its test.json says it should.
+
+.DESCRIPTION
+    Reads <component>/component.json (the body, the timeout and the input
+    variables' defaults) and <component>/test.json (the steps to run), and
+    works through the steps in order. Exits 1 if any step fails.
+
+    The component runs as SYSTEM through a scheduled task, with its input
+    variables as environment variables and its attachments (files/) in the
+    working directory - the same shape Datto gives it.
+
+    Steps that need a user run as a local standard user the harness creates,
+    also through a scheduled task. That is how a per-user install (Active
+    Setup, a logon script) is exercised without an interactive logon, which a
+    CI runner cannot do.
+
+    This is built for DISPOSABLE machines - GitHub-hosted runners. It creates a
+    local account, registers scheduled tasks and leaves behind whatever the
+    component installed. It refuses to run outside GitHub Actions unless given
+    -AllowLocal, and even then only use it on a VM you are about to throw away.
+
+    The test.json format is documented in tools/test-harness/README.md.
+
+.EXAMPLE
+    ./tools/test-harness/Invoke-ComponentTest.ps1 -ComponentPath Applications/google-iap-desktop-win
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$ComponentPath,
+    [string]$WorkRoot,
+    [switch]$AllowLocal
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2
+
+# ---------------------------------------------------------------- guard rails
+
+if ($env:GITHUB_ACTIONS -ne 'true' -and -not $AllowLocal) {
+    throw 'This harness creates a local user and changes the machine. It only runs in GitHub Actions unless -AllowLocal is given - and then only on a throwaway VM.'
+}
+$me = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Run elevated: the harness registers scheduled tasks and creates a local user.'
+}
+
+$InCI         = $env:GITHUB_ACTIONS -eq 'true'
+$HarnessDir   = $PSScriptRoot
+$JobRunner    = Join-Path $HarnessDir 'Invoke-Job.ps1'
+$ComponentPath = (Resolve-Path -LiteralPath $ComponentPath).Path
+
+if (-not $WorkRoot) {
+    $base = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+    $WorkRoot = Join-Path $base 'component-test'
+}
+New-Item -ItemType Directory -Force -Path $WorkRoot | Out-Null
+# SYSTEM and the test user both write their output here. *S-1-1-0 is Everyone.
+& icacls.exe $WorkRoot /grant '*S-1-1-0:(OI)(CI)M' | Out-Null
+
+# ---------------------------------------------------------------- helpers
+
+function Get-Prop {
+    param($Object, [string]$Name, $Default = $null)
+    if ($null -ne $Object -and $Object.PSObject.Properties[$Name]) { return $Object.$Name }
+    return $Default
+}
+
+$script:Results  = New-Object System.Collections.ArrayList
+$script:StepNo   = 0
+$script:TestUser = $null
+
+function Add-Result {
+    param([string]$Step, [bool]$Pass, [string]$Detail)
+    [void]$script:Results.Add([pscustomobject]@{ Step = $Step; Pass = $Pass; Detail = $Detail })
+    $mark = if ($Pass) { 'PASS' } else { 'FAIL' }
+    Write-Host "[$mark] $Step - $Detail"
+    if (-not $Pass -and $InCI) {
+        $clean = ($Detail -replace '[\r\n]+', ' ')
+        Write-Host "::error title=${Step}::${clean}"
+    }
+}
+
+function Write-Block {
+    param([string]$Title, [string]$Text)
+    if ($InCI) { Write-Host "::group::$Title" } else { Write-Host "----- $Title" }
+    if ($Text) { Write-Host $Text.TrimEnd() } else { Write-Host '(empty)' }
+    if ($InCI) { Write-Host '::endgroup::' }
+}
+
+function Read-Text {
+    param([string]$Path)
+    if (Test-Path -LiteralPath $Path) { return [IO.File]::ReadAllText($Path) }
+    return ''
+}
+
+# Run a command as SYSTEM or as the test user through a scheduled task.
+# Returns @{ Code; Out; Err; TimedOut }. With -NoWait, returns the task name
+# and the path of its done-file instead, and leaves the command running.
+function Invoke-As {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Exe,
+        [string]$Arguments = '',
+        [string]$WorkDir = $WorkRoot,
+        [hashtable]$Environment = @{},
+        [ValidateSet('system', 'testuser')][string]$As = 'system',
+        [int]$TimeoutSeconds = 600,
+        [switch]$NoWait
+    )
+    $script:StepNo++
+    $id   = '{0:D2}-{1}' -f $script:StepNo, ($Label -replace '[^A-Za-z0-9]+', '-')
+    $jobF = Join-Path $WorkRoot "$id.job.json"
+    $out  = Join-Path $WorkRoot "$id.out.txt"
+    $err  = Join-Path $WorkRoot "$id.err.txt"
+    $done = Join-Path $WorkRoot "$id.done.txt"
+
+    @{ exe = $Exe; args = $Arguments; workDir = $WorkDir; env = $Environment; out = $out; err = $err; done = $done } |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $jobF -Encoding UTF8
+
+    $taskName = "ComponentTest-$id"
+    $action   = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                  -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -JobFile "{1}"' -f $JobRunner, $jobF)
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                  -ExecutionTimeLimit (New-TimeSpan -Seconds ($TimeoutSeconds + 120))
+    if ($As -eq 'system') {
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+    } else {
+        Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -Force `
+            -User $script:TestUser.Name -Password $script:TestUser.Password -RunLevel Limited | Out-Null
+    }
+    Start-ScheduledTask -TaskName $taskName
+
+    if ($NoWait) { return @{ Task = $taskName; Done = $done; Out = $out; Err = $err } }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while (-not (Test-Path -LiteralPath $done) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+    $timedOut = -not (Test-Path -LiteralPath $done)
+    if ($timedOut) { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue }
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+
+    $code = if ($timedOut) { $null } else { [int]((Get-Content -LiteralPath $done -Raw).Trim()) }
+    return @{ Code = $code; Out = (Read-Text $out); Err = (Read-Text $err); TimedOut = $timedOut }
+}
+
+function New-TestUser {
+    if ($script:TestUser) { return }
+    $name = 'tctest'
+    $pw   = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+    $pw   = $pw + 'a1B'
+    New-LocalUser -Name $name -Password (ConvertTo-SecureString $pw -AsPlainText -Force) `
+        -PasswordNeverExpires -AccountNeverExpires -Description 'Component test user' | Out-Null
+    Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $name -ErrorAction SilentlyContinue   # Users
+    # Performance Log Users holds "Log on as a batch job" by default, which a
+    # scheduled task running under a stored password needs. It grants no admin.
+    Add-LocalGroupMember -SID 'S-1-5-32-559' -Member $name -ErrorAction SilentlyContinue
+    $script:TestUser = @{ Name = $name; Password = $pw; Profile = $null }
+
+    # First run as the user creates their profile, and proves the logon works
+    # before any real step depends on it.
+    $r = Invoke-As -Label 'create-profile' -Exe 'cmd.exe' -Arguments '/c echo %USERPROFILE%' -As testuser -TimeoutSeconds 180
+    if ($r.TimedOut -or $r.Code -ne 0) {
+        throw "Could not run anything as the test user (exit $($r.Code)). $($r.Err)"
+    }
+    $sid  = (Get-LocalUser -Name $name).SID.Value
+    $prof = Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid } | Select-Object -First 1
+    if (-not $prof) { throw 'The test user ran a command but has no profile.' }
+    $script:TestUser.Profile = $prof.LocalPath
+    Write-Host "Test user '$name' ready, profile $($prof.LocalPath)"
+}
+
+# Expand %VARS% in a path from test.json. For as=testuser the per-user
+# variables resolve against the test user's profile, not the runner's.
+function Expand-SpecPath {
+    param([string]$Path, [string]$As = 'system')
+    if ($As -eq 'testuser') {
+        New-TestUser
+        $p = $script:TestUser.Profile
+        $Path = $Path -ireplace '%LOCALAPPDATA%', (Join-Path $p 'AppData\Local')
+        $Path = $Path -ireplace '%APPDATA%',      (Join-Path $p 'AppData\Roaming')
+        $Path = $Path -ireplace '%USERPROFILE%',  $p
+        $Path = $Path -ireplace '%TEMP%',         (Join-Path $p 'AppData\Local\Temp')
+    }
+    return [Environment]::ExpandEnvironmentVariables($Path)
+}
+
+# ---------------------------------------------------------------- load
+
+$manifestFile = Join-Path $ComponentPath 'component.json'
+$specFile     = Join-Path $ComponentPath 'test.json'
+foreach ($f in @($manifestFile, $specFile)) {
+    if (-not (Test-Path -LiteralPath $f)) { throw "Missing $f" }
+}
+$manifest = Get-Content -Raw -LiteralPath $manifestFile | ConvertFrom-Json
+$spec     = Get-Content -Raw -LiteralPath $specFile     | ConvertFrom-Json
+
+$general     = Get-Prop $manifest 'general'
+$name        = Get-Prop $general 'name' (Split-Path $ComponentPath -Leaf)
+$installType = Get-Prop $general 'installType' 'powershell'
+$timeout     = [int](Get-Prop $general 'timeout' 600)
+$body        = Join-Path $ComponentPath (Get-Prop $manifest 'body')
+
+# Input variables: defaults from component.json, then test.json's overrides.
+$baseVars = @{}
+foreach ($v in @(Get-Prop $manifest 'variables' @())) {
+    if ($v) { $baseVars[[string]$v.name] = [string](Get-Prop $v 'defaultVal' '') }
+}
+$specVars = Get-Prop $spec 'variables'
+if ($specVars) { foreach ($p in $specVars.PSObject.Properties) { $baseVars[$p.Name] = [string]$p.Value } }
+
+$steps = @(Get-Prop $spec 'steps' @())
+if ($steps.Count -eq 0) { throw "$specFile has no steps." }
+
+Write-Host "Component: $name"
+Write-Host "Body:      $body ($installType, timeout ${timeout}s)"
+Write-Host "Steps:     $($steps.Count)"
+Write-Host ''
+
+# ---------------------------------------------------------------- steps
+
+$stop = $false
+$i = 0
+foreach ($s in $steps) {
+    $i++
+    $type  = [string](Get-Prop $s 'type')
+    $as    = [string](Get-Prop $s 'as' 'system')
+    $label = [string](Get-Prop $s 'label' '')
+    if (-not $label) { $label = "$i. $type" } else { $label = "$i. $label" }
+
+    if ($stop) { Add-Result $label $false 'Skipped: an earlier component run failed.'; continue }
+
+    try {
+        switch ($type) {
+
+            'runComponent' {
+                # A fresh working directory per run: the body plus its attachments
+                # at the root, which is where Datto puts them.
+                $runDir = Join-Path $WorkRoot ('run-{0:D2}' -f $i)
+                New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+                Copy-Item -LiteralPath $body -Destination $runDir
+                $files = Join-Path $ComponentPath 'files'
+                if (Test-Path -LiteralPath $files) { Copy-Item -Path (Join-Path $files '*') -Destination $runDir -Recurse }
+                $runBody = Join-Path $runDir (Split-Path $body -Leaf)
+
+                $vars = @{} + $baseVars
+                $stepVars = Get-Prop $s 'variables'
+                if ($stepVars) { foreach ($p in $stepVars.PSObject.Properties) { $vars[$p.Name] = [string]$p.Value } }
+
+                switch ($installType) {
+                    'powershell' { $exe = 'powershell.exe'; $arg = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f $runBody }
+                    'batch'      { $exe = 'cmd.exe';        $arg = '/c "{0}"' -f $runBody }
+                    default      { throw "installType '$installType' is not supported by the Windows harness." }
+                }
+
+                $r = Invoke-As -Label 'component' -Exe $exe -Arguments $arg -WorkDir $runDir -Environment $vars -As system -TimeoutSeconds $timeout
+                Write-Block "$label - stdout" $r.Out
+                if ($r.Err.Trim()) { Write-Block "$label - stderr" $r.Err }
+
+                $want = [int](Get-Prop $s 'expectExitCode' 0)
+                if ($r.TimedOut) {
+                    Add-Result $label $false "Timed out after ${timeout}s (component.json timeout)."
+                    $stop = $true
+                } elseif ($r.Code -ne $want) {
+                    Add-Result $label $false "Exit code $($r.Code), expected $want."
+                    $stop = $true
+                } else {
+                    $missing = @()
+                    foreach ($t in @(Get-Prop $s 'outputContains' @())) {
+                        if ($t -and $r.Out.IndexOf([string]$t, [StringComparison]::OrdinalIgnoreCase) -lt 0) { $missing += $t }
+                    }
+                    if ($missing.Count) {
+                        Add-Result $label $false ("Exit code $($r.Code) as expected, but output is missing: " + ($missing -join ' | '))
+                    } else {
+                        Add-Result $label $true "Exit code $($r.Code) as expected."
+                    }
+                }
+            }
+
+            'file' {
+                $path   = Expand-SpecPath ([string](Get-Prop $s 'path')) $as
+                $exists = [bool](Get-Prop $s 'exists' $true)
+                $found  = Test-Path -LiteralPath $path
+                if (-not $exists) {
+                    Add-Result $label (-not $found) ($(if ($found) { 'Present but should not be: ' } else { 'Absent as expected: ' }) + $path)
+                } elseif (-not $found) {
+                    Add-Result $label $false "Not found: $path"
+                } else {
+                    $min = Get-Prop $s 'minVersion'
+                    if ($min) {
+                        $raw = (Get-Item -LiteralPath $path).VersionInfo.FileVersion
+                        $ver = $null
+                        if ($raw -match '\d+(\.\d+){1,3}') { $ver = [version]$Matches[0] }
+                        if ($ver -and $ver -ge [version]$min) {
+                            Add-Result $label $true "Found, version $ver (>= $min): $path"
+                        } else {
+                            Add-Result $label $false "Found, but version '$raw' is not >= $min`: $path"
+                        }
+                    } else {
+                        Add-Result $label $true "Found: $path"
+                    }
+                }
+            }
+
+            'registry' {
+                # Machine-wide keys only (HKLM:). A per-user registry check would
+                # need the test user's hive loaded; add it when a component needs it.
+                $path = [string](Get-Prop $s 'path')
+                $valueName = [string](Get-Prop $s 'name' '')
+                if (-not (Test-Path -LiteralPath $path)) {
+                    Add-Result $label $false "Key not found: $path"
+                } elseif (-not $valueName) {
+                    Add-Result $label $true "Key exists: $path"
+                } else {
+                    $key = Get-Item -LiteralPath $path
+                    $n   = if ($valueName -eq '(Default)') { '' } else { $valueName }
+                    if ($key.GetValueNames() -notcontains $n) {
+                        Add-Result $label $false "Value '$valueName' not found under $path"
+                    } else {
+                        $val = [string]$key.GetValue($n)
+                        $eq  = Get-Prop $s 'equals'
+                        $rx  = Get-Prop $s 'matches'
+                        if ($null -ne $eq) {
+                            Add-Result $label ($val -eq [string]$eq) "$valueName = '$val' (expected '$eq')"
+                        } elseif ($null -ne $rx) {
+                            Add-Result $label ($val -match [string]$rx) "$valueName = '$val' (expected to match /$rx/)"
+                        } else {
+                            Add-Result $label $true "$valueName = '$val'"
+                        }
+                    }
+                }
+            }
+
+            'activeSetup' {
+                # Stands in for the user's next logon: run the StubPath the
+                # component registered, as a standard user, the way Windows would.
+                # What this cannot prove is that Windows fires it at a real
+                # logon - that needs an interactive session (Tier 2).
+                $guid = [string](Get-Prop $s 'key')
+                $akey = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\$guid"
+                if (-not (Test-Path -LiteralPath $akey)) { throw "Active Setup key not found: $akey" }
+                $stubPath = [string](Get-Item -LiteralPath $akey).GetValue('StubPath')
+                if (-not $stubPath) { throw "No StubPath under $akey" }
+                New-TestUser
+                $r = Invoke-As -Label 'active-setup' -Exe 'cmd.exe' -Arguments ('/c ' + $stubPath) -As testuser `
+                        -WorkDir $script:TestUser.Profile -TimeoutSeconds ([int](Get-Prop $s 'timeoutSeconds' 600))
+                Write-Block "$label - stdout" $r.Out
+                if ($r.Err.Trim()) { Write-Block "$label - stderr" $r.Err }
+                $ok = (-not $r.TimedOut) -and $r.Code -eq 0
+                if (-not $ok) {
+                    $log = Get-Prop $s 'log'
+                    if ($log) {
+                        $logPath = Expand-SpecPath ([string]$log) 'testuser'
+                        Write-Block "$label - $logPath" (Read-Text $logPath)
+                    }
+                }
+                $detail = if ($r.TimedOut) { 'Timed out.' } else { "StubPath ran as $($script:TestUser.Name), exit code $($r.Code)." }
+                Add-Result $label $ok $detail
+            }
+
+            'launch' {
+                # Start the app as the user, and pass if it is still running after
+                # aliveSeconds. There is no desktop in a CI session, so this proves
+                # "starts and does not crash", not "shows a window".
+                $path  = Expand-SpecPath ([string](Get-Prop $s 'path')) $as
+                $alive = [int](Get-Prop $s 'aliveSeconds' 15)
+                if (-not (Test-Path -LiteralPath $path)) { throw "Not found: $path" }
+                $h = Invoke-As -Label 'launch' -Exe $path -As $as -NoWait -TimeoutSeconds ($alive + 60)
+                Start-Sleep -Seconds $alive
+                if (Test-Path -LiteralPath $h.Done) {
+                    $code = (Get-Content -LiteralPath $h.Done -Raw).Trim()
+                    if ((Read-Text $h.Err).Trim()) { Write-Block "$label - stderr" (Read-Text $h.Err) }
+                    Add-Result $label $false "Exited within ${alive}s (exit code $code): $path"
+                } else {
+                    Add-Result $label $true "Still running after ${alive}s: $path"
+                }
+                Stop-ScheduledTask -TaskName $h.Task -ErrorAction SilentlyContinue
+                Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $path } | Stop-Process -Force -ErrorAction SilentlyContinue
+                Unregister-ScheduledTask -TaskName $h.Task -Confirm:$false -ErrorAction SilentlyContinue
+            }
+
+            default { throw "Unknown step type '$type'. See tools/test-harness/README.md." }
+        }
+    } catch {
+        Add-Result $label $false ("Harness error: " + $_.Exception.Message)
+    }
+}
+
+# ---------------------------------------------------------------- report
+
+$failed = @($script:Results | Where-Object { -not $_.Pass })
+$total  = $script:Results.Count
+Write-Host ''
+Write-Host ("{0}: {1} of {2} steps passed" -f $name, ($total - $failed.Count), $total)
+
+if ($env:GITHUB_STEP_SUMMARY) {
+    $md = New-Object System.Collections.Generic.List[string]
+    $md.Add("### $name")
+    $md.Add('')
+    $md.Add('| | Step | Detail |')
+    $md.Add('|---|---|---|')
+    foreach ($r in $script:Results) {
+        $icon = if ($r.Pass) { 'PASS' } else { '**FAIL**' }
+        $md.Add(('| {0} | {1} | {2} |' -f $icon, $r.Step, ($r.Detail -replace '\|', '\|' -replace '[\r\n]+', ' ')))
+    }
+    $md.Add('')
+    Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $md -Encoding UTF8
+}
+
+if ($failed.Count) { exit 1 }
+exit 0
