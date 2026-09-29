@@ -58,13 +58,13 @@
       "type": "file",
       "label": "Installed where the component reports it",
       "as": "runner",
-      "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe"
+      "path": "%APPDATA%\\Google\\IAP Desktop\\IapDesktop.exe"
     },
     {
       "type": "launch",
       "label": "Launches as the runner's user",
       "as": "runner",
-      "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe",
+      "path": "%APPDATA%\\Google\\IAP Desktop\\IapDesktop.exe",
       "aliveSeconds": 15
     },
     {
@@ -79,14 +79,14 @@
       "label": "Installed for the user (standard user, real logon)",
       "tier": 2,
       "as": "testuser",
-      "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe"
+      "path": "%APPDATA%\\Google\\IAP Desktop\\IapDesktop.exe"
     },
     {
       "type": "launch",
       "label": "Launches as the user (standard user, real logon)",
       "tier": 2,
       "as": "testuser",
-      "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe",
+      "path": "%APPDATA%\\Google\\IAP Desktop\\IapDesktop.exe",
       "aliveSeconds": 15
     },
     {

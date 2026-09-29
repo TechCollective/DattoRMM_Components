@@ -96,7 +96,8 @@ Write-Output "IAP Desktop staged: $label (Active Setup version $asVersion). Each
 Write-Output "Existing profiles on this device:"
 $skip = @('Public', 'Default', 'Default User', 'All Users')
 Get-ChildItem 'C:\Users' -Directory | Where-Object { $skip -notcontains $_.Name } | ForEach-Object {
-    $exe = Join-Path $_.FullName 'AppData\Local\Google\IAP Desktop\IapDesktop.exe'
+    # The per-user MSI installs under Roaming AppData, not Local (found by the Tier 1 test).
+    $exe = Join-Path $_.FullName 'AppData\Roaming\Google\IAP Desktop\IapDesktop.exe'
     if (Test-Path $exe) { $have = (Get-Item $exe).VersionInfo.ProductVersion } else { $have = 'not yet - installs at next logon' }
     Write-Output ("  {0,-24} {1}" -f $_.Name, $have)
 }

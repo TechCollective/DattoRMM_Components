@@ -79,13 +79,16 @@ install_gcloud() {
     ln -sf "$SDK_DIR/bin/gcloud" /usr/local/bin/gcloud 2>/dev/null || true
 }
 
+# `gcloud version` has no "version" field to format, so read the first line
+# instead: "Google Cloud SDK 540.0.0" (found by the Tier 1 test).
+gcloud_version() { "$SDK_DIR/bin/gcloud" version 2>/dev/null | awk '/^Google Cloud SDK /{print $4; exit}'; }
 have_ver=""
-[ -x "$SDK_DIR/bin/gcloud" ] && have_ver=$("$SDK_DIR/bin/gcloud" version --format='value(version)' 2>/dev/null || true)
+[ -x "$SDK_DIR/bin/gcloud" ] && have_ver=$(gcloud_version || true)
 if [ -n "$have_ver" ] && { [ -z "$GCV" ] || [ "$have_ver" = "$GCV" ]; }; then
     echo "Google Cloud CLI $have_ver already installed at $SDK_DIR"
 else
     install_gcloud || exit 1
-    echo "Google Cloud CLI $("$SDK_DIR/bin/gcloud" version --format='value(version)' 2>/dev/null) installed at $SDK_DIR"
+    echo "Google Cloud CLI $(gcloud_version) installed at $SDK_DIR"
 fi
 
 # ---------------------------------------------------------- launcher -------
