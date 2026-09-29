@@ -27,6 +27,12 @@ on:
 permissions:
   contents: read
 
+# A new push to the same pull request cancels the run it replaces, rather
+# than leaving a slow macOS job running for a commit nobody will merge.
+concurrency:
+  group: test-components-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   discover:
     name: Find components to test
