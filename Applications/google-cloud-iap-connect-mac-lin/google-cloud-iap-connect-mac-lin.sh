@@ -1,0 +1,200 @@
+#!/bin/bash
+:<<'WINDOWS_STUB'
+@echo off
+echo Google Cloud IAP Connect [Mac] [Lin] is not for Windows. Use "Google IAP Desktop [Win]".
+exit /b 0
+WINDOWS_STUB
+# ============================================================================
+#  Google Cloud IAP Connect [Mac] [Lin]
+#  Datto RMM deployment component. Runs as root on macOS and Linux.
+#
+#  Installs the Google Cloud CLI system-wide and places a double-click launcher on
+#  every user's desktop that opens an IAP TCP tunnel to one Compute Engine VM,
+#  starts the Remote Desktop client against it, and closes the tunnel when the
+#  RDP session ends. Nothing on the VM is touched and no user is signed in here:
+#  each user signs in with their Google account the first time they run it.
+#
+#  Input variables (all arrive as strings):
+#    gcpProject       required   GCP project id that owns the VM
+#    vmInstance       required   Compute Engine instance name
+#    vmZone           required   zone, e.g. us-central1-c
+#    connectionLabel  optional   name shown to users (default: Cloud Server)
+#    localPort        optional   local listener port (default: 13389)
+#    gcloudVersion    optional   pin a gcloud release, e.g. 540.0.0 (default: latest)
+#
+#  Exit codes: 0 ok · 1 gcloud install failed · 2 launcher write failed
+#              3 invalid input · 4 unsupported OS/arch or missing prerequisite
+#  Source of truth: https://github.com/TechCollective/DattoRMM_Components
+# ============================================================================
+set -u
+
+# ---------------------------------------------------------------- inputs ---
+PROJECT="${gcpProject:-}"; INSTANCE="${vmInstance:-}"; ZONE="${vmZone:-}"
+LABEL="${connectionLabel:-Cloud Server}"; PORT="${localPort:-13389}"; GCV="${gcloudVersion:-}"
+ok_id='^[a-z][-a-z0-9]{0,62}$'
+[[ "$PROJECT" =~ $ok_id ]]  || { echo "ERROR: gcpProject '$PROJECT' is not a valid project id"; exit 3; }
+[[ "$INSTANCE" =~ $ok_id ]] || { echo "ERROR: vmInstance '$INSTANCE' is not a valid instance name"; exit 3; }
+ok_zone='^[a-z]+-[a-z]+[0-9]-[a-z]$'
+[[ "$ZONE" =~ $ok_zone ]] || { echo "ERROR: vmZone '$ZONE' is not a zone like us-central1-c"; exit 3; }
+[[ "$PORT" =~ ^[0-9]{4,5}$ ]] && [ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ] || { echo "ERROR: localPort must be 1024-65535"; exit 3; }
+ok_label='^[A-Za-z0-9 ._-]{1,40}$'
+[[ "$LABEL" =~ $ok_label ]] || { echo "ERROR: connectionLabel may only contain letters, digits, space . _ -"; exit 3; }
+ok_ver='^[0-9]+\.[0-9]+\.[0-9]+$'
+[ -z "$GCV" ] || [[ "$GCV" =~ $ok_ver ]] || { echo "ERROR: gcloudVersion must look like 540.0.0"; exit 3; }
+
+# ------------------------------------------------------------ platform -----
+OS=$(uname -s); ARCH=$(uname -m)
+case "$OS/$ARCH" in
+    Darwin/arm64)          TARBALL_ARCH="darwin-arm" ;;
+    Darwin/x86_64)         TARBALL_ARCH="darwin-x86_64" ;;
+    Linux/x86_64)          TARBALL_ARCH="linux-x86_64" ;;
+    Linux/aarch64|Linux/arm64) TARBALL_ARCH="linux-arm" ;;
+    *) echo "ERROR: unsupported platform $OS/$ARCH"; exit 4 ;;
+esac
+if [ "$OS" = "Linux" ] && ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 is required for the Google Cloud CLI on Linux and is not installed"; exit 4
+fi
+
+SDK_DIR="/opt/google-cloud-sdk"
+SHARE_DIR="/usr/local/share/iap-connect"
+LAUNCHER="$SHARE_DIR/iap-connect.sh"
+
+# -------------------------------------------------------- gcloud install ---
+install_gcloud() {
+    if [ -z "$GCV" ]; then
+        url="https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${TARBALL_ARCH}.tar.gz"
+    else
+        url="https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCV}-${TARBALL_ARCH}.tar.gz"
+    fi
+    tmp=$(mktemp -d) || return 1
+    echo "Downloading Google Cloud CLI: $url"
+    curl -fsSL --retry 3 -o "$tmp/gcloud.tgz" "$url" || { echo "ERROR: download failed"; rm -rf "$tmp"; return 1; }
+    rm -rf "$SDK_DIR.new" && mkdir -p "$SDK_DIR.new" || return 1
+    tar -xzf "$tmp/gcloud.tgz" -C "$SDK_DIR.new" --strip-components=1 || { echo "ERROR: extract failed"; rm -rf "$tmp" "$SDK_DIR.new"; return 1; }
+    rm -rf "$tmp"
+    "$SDK_DIR.new/install.sh" --quiet --usage-reporting=false --path-update=false --command-completion=false >/dev/null 2>&1 \
+        || { echo "ERROR: gcloud install.sh failed"; rm -rf "$SDK_DIR.new"; return 1; }
+    rm -rf "$SDK_DIR" && mv "$SDK_DIR.new" "$SDK_DIR" || return 1
+    chmod -R a+rX "$SDK_DIR"
+    ln -sf "$SDK_DIR/bin/gcloud" /usr/local/bin/gcloud 2>/dev/null || true
+}
+
+have_ver=""
+[ -x "$SDK_DIR/bin/gcloud" ] && have_ver=$("$SDK_DIR/bin/gcloud" version --format='value(version)' 2>/dev/null || true)
+if [ -n "$have_ver" ] && { [ -z "$GCV" ] || [ "$have_ver" = "$GCV" ]; }; then
+    echo "Google Cloud CLI $have_ver already installed at $SDK_DIR"
+else
+    install_gcloud || exit 1
+    echo "Google Cloud CLI $("$SDK_DIR/bin/gcloud" version --format='value(version)' 2>/dev/null) installed at $SDK_DIR"
+fi
+
+# ---------------------------------------------------------- launcher -------
+mkdir -p "$SHARE_DIR" || { echo "ERROR: cannot create $SHARE_DIR"; exit 2; }
+cat > "$LAUNCHER" <<'LAUNCHER_EOF' || { echo "ERROR: cannot write launcher"; exit 2; }
+#!/bin/bash
+# iap-connect.sh - opens a Google Cloud IAP tunnel to one VM, launches Remote Desktop, and
+# closes the tunnel when the session ends. Installed by TechCollective via Datto RMM.
+# Runs as the signed-in user. No admin rights needed.
+PROJECT="__PROJECT__"; INSTANCE="__INSTANCE__"; ZONE="__ZONE__"; LOCAL_PORT=__PORT__; LABEL="__LABEL__"
+set -u
+OS=$(uname -s)
+CFG="$HOME/.config/iap-connect"; LOG="$CFG/iap-connect.log"; mkdir -p "$CFG"
+say_() { printf '%s\n' "$*"; printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
+pause_exit() { read -r -p "Press Return to close." _; exit "${1:-1}"; }
+
+GCLOUD=""
+for c in /opt/google-cloud-sdk/bin/gcloud "$(command -v gcloud 2>/dev/null || true)"; do
+    [ -n "$c" ] && [ -x "$c" ] && GCLOUD="$c" && break
+done
+[ -n "$GCLOUD" ] || { say_ "Google Cloud CLI is not installed. Please contact support."; pause_exit 1; }
+
+if [ "$OS" = "Darwin" ]; then
+    listening() { lsof -nP -iTCP:"$LOCAL_PORT" -sTCP:LISTEN >/dev/null 2>&1; }
+    established() { lsof -nP -iTCP:"$LOCAL_PORT" -sTCP:ESTABLISHED 2>/dev/null | grep -qv '^COMMAND'; }
+    [ -d "/Applications/Windows App.app" ] || { say_ "Microsoft Windows App is not installed. Install it from the App Store, then run this again."; pause_exit 1; }
+else
+    listening() { ss -Hltn "sport = :$LOCAL_PORT" 2>/dev/null | grep -q .; }
+    established() { ss -Htn state established "( sport = :$LOCAL_PORT or dport = :$LOCAL_PORT )" 2>/dev/null | grep -q .; }
+    if command -v xfreerdp3 >/dev/null 2>&1; then RDP=xfreerdp3
+    elif command -v xfreerdp >/dev/null 2>&1; then RDP=xfreerdp
+    elif command -v remmina >/dev/null 2>&1; then RDP=remmina
+    else say_ "No Remote Desktop client found. Install freerdp (xfreerdp) or remmina, then run this again."; pause_exit 1; fi
+fi
+
+if ! "$GCLOUD" auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | grep -q .; then
+    say_ "First-time setup: a browser window will open. Sign in with your work Google account."
+    "$GCLOUD" auth login --brief || { say_ "Sign-in did not complete."; pause_exit 1; }
+fi
+
+TUNNEL_PID=""
+if listening; then
+    say_ "Tunnel already running; reusing it."
+else
+    say_ "Opening secure tunnel to $LABEL ..."
+    "$GCLOUD" compute start-iap-tunnel "$INSTANCE" 3389 --project="$PROJECT" --zone="$ZONE" \
+        --local-host-port="localhost:$LOCAL_PORT" >> "$LOG" 2>&1 &
+    TUNNEL_PID=$!
+    for _ in $(seq 1 40); do
+        listening && break
+        if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+            say_ "The tunnel could not be opened. Last lines of the log:"; tail -n 5 "$LOG"; pause_exit 1
+        fi
+        sleep 0.5
+    done
+    listening || { say_ "The tunnel did not start in time."; kill "$TUNNEL_PID" 2>/dev/null; pause_exit 1; }
+fi
+cleanup() { if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then kill "$TUNNEL_PID" 2>/dev/null; say_ "Tunnel closed."; fi; }
+trap cleanup EXIT INT TERM
+
+say_ "Opening Remote Desktop. Close the remote desktop window when you are done; this window closes by itself."
+if [ "$OS" = "Darwin" ]; then
+    RDP_FILE="$CFG/$LABEL.rdp"
+    printf 'full address:s:localhost:%s\nprompt for credentials:i:1\nscreen mode id:i:2\nuse multimon:i:0\naudiomode:i:0\nredirectclipboard:i:1\nauthentication level:i:0\n' "$LOCAL_PORT" > "$RDP_FILE"
+    open "$RDP_FILE"
+else
+    case "$RDP" in
+        remmina)
+            RDP_FILE="$CFG/$LABEL.remmina"
+            printf '[remmina]\nname=%s\nprotocol=RDP\nserver=localhost:%s\nscale=1\nresolution_mode=2\n' "$LABEL" "$LOCAL_PORT" > "$RDP_FILE"
+            remmina -c "$RDP_FILE" >/dev/null 2>&1 & ;;
+        *)  "$RDP" /v:localhost:"$LOCAL_PORT" /dynamic-resolution /cert:tofu +clipboard >/dev/null 2>&1 & ;;
+    esac
+fi
+
+for _ in $(seq 1 180); do established && break; sleep 0.5; done
+established || { say_ "No remote desktop session was started. Closing."; exit 0; }
+say_ "Connected."
+idle=0
+while [ "$idle" -lt 5 ]; do sleep 1; if established; then idle=0; else idle=$((idle+1)); fi; done
+say_ "Remote desktop session ended."
+exit 0
+LAUNCHER_EOF
+# Fill in the client values (sed delimiter | is excluded from every validated input above).
+sed -i.bak -e "s|__PROJECT__|$PROJECT|" -e "s|__INSTANCE__|$INSTANCE|" -e "s|__ZONE__|$ZONE|" \
+    -e "s|__PORT__|$PORT|" -e "s|__LABEL__|$LABEL|" "$LAUNCHER" && rm -f "$LAUNCHER.bak"
+chmod 755 "$LAUNCHER"
+
+# ------------------------------------------- per-user desktop shortcut -----
+placed=0
+if [ "$OS" = "Darwin" ]; then
+    for home in /Users/*; do
+        user=$(basename "$home"); [ -d "$home/Desktop" ] || continue
+        uid=$(id -u "$user" 2>/dev/null || echo 0); [ "$uid" -ge 500 ] || continue
+        f="$home/Desktop/Connect to $LABEL.command"
+        printf '#!/bin/bash\nexec "%s"\n' "$LAUNCHER" > "$f" && chmod 755 "$f" && chown "$user" "$f" \
+            && xattr -d com.apple.quarantine "$f" 2>/dev/null; placed=$((placed+1))
+    done
+else
+    for home in /home/*; do
+        user=$(basename "$home"); id "$user" >/dev/null 2>&1 || continue
+        desk="$home/Desktop"; [ -d "$desk" ] || continue
+        f="$desk/connect-to-$(printf '%s' "$LABEL" | tr ' ' '-' | tr '[:upper:]' '[:lower:]').desktop"
+        printf '[Desktop Entry]\nType=Application\nName=Connect to %s\nComment=Remote desktop via Google Cloud IAP\nExec=%s\nTerminal=true\nIcon=network-server\nCategories=Network;RemoteAccess;\n' "$LABEL" "$LAUNCHER" > "$f" \
+            && chmod 755 "$f" && chown "$user" "$f" && placed=$((placed+1))
+        # GNOME marks new .desktop files untrusted until the user allows launching; mark it trusted where gio exists.
+        command -v gio >/dev/null 2>&1 && sudo -u "$user" gio set "$f" metadata::trusted true 2>/dev/null || true
+    done
+fi
+
+echo "Google Cloud IAP Connect deployed: launcher at $LAUNCHER, shortcut placed for $placed user(s), target $INSTANCE ($ZONE) as '$LABEL' on localhost:$PORT."
+exit 0

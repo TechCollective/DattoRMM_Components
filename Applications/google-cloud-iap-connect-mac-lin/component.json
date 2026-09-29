@@ -1,0 +1,28 @@
+{
+  "general": {
+    "name": "Google Cloud IAP Connect [Mac] [Lin]",
+    "category": "applications",
+    "description": "Installs the Google Cloud CLI and a desktop launcher that tunnels Remote Desktop to one VM through IAP; users sign in with Google on first use. https://github.com/TechCollective/DattoRMM_Components",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "900",
+    "securityLevel": "1",
+    "installType": "unix"
+  },
+  "body": "google-cloud-iap-connect-mac-lin.sh",
+  "variables": [
+    { "name": "gcpProject", "type": "string", "direction": "false",
+      "description": "Required. GCP project id that owns the VM (lowercase, digits, hyphens).", "defaultVal": "" },
+    { "name": "vmInstance", "type": "string", "direction": "false",
+      "description": "Required. Compute Engine instance name.", "defaultVal": "" },
+    { "name": "vmZone", "type": "string", "direction": "false",
+      "description": "Required. Zone of the VM, e.g. us-central1-c.", "defaultVal": "" },
+    { "name": "connectionLabel", "type": "string", "direction": "false",
+      "description": "Name users see on the desktop shortcut. Letters, digits, space . _ - only.", "defaultVal": "Cloud Server" },
+    { "name": "localPort", "type": "string", "direction": "false",
+      "description": "Local listener port for the tunnel, 1024-65535.", "defaultVal": "13389" },
+    { "name": "gcloudVersion", "type": "string", "direction": "false",
+      "description": "Pin a Google Cloud CLI release, e.g. 540.0.0. Blank installs the latest.", "defaultVal": "" }
+  ]
+}
