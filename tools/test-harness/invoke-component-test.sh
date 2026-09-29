@@ -163,6 +163,8 @@ for ((i = 0; i < STEP_COUNT; i++)); do
         continue
     fi
     if $stop; then add_result FAIL "$label" "Skipped: an earlier component run failed."; continue; fi
+    # A timestamp per step, so a slow or stuck step shows where it is.
+    echo "--- $label (started $(date '+%H:%M:%S'))"
     as=$(j '.as // "root"')
     if [ "$as" = testuser ] && [ -z "$TESTUSER_HOME" ]; then create_test_user || { add_result FAIL "$label" "Could not create the test user."; continue; }; fi
 
