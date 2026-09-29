@@ -1,16 +1,26 @@
 {
   "platform": "windows",
-  "description": "Stages the MSI and registers Active Setup as SYSTEM; a second run must also succeed, and a non-https msiUrl must be refused. The per-user install at logon, and the app launching, need a real interactive logon, so those steps are Tier 2.",
+  "description": "Stages the MSI and registers Active Setup as SYSTEM, then simulates the user's logon by running the Active Setup stub as the runner's own account and checks the install is registered, lands where the component reports it, and launches. A second run must also succeed, and a non-https msiUrl must be refused. The same install as a standard user at a real logon is Tier 2: the runner's account is an administrator.",
   "variables": {},
   "steps": [
     {
       "type": "runComponent",
       "label": "Stage as SYSTEM",
       "expectExitCode": 0,
-      "outputContains": ["IAP Desktop staged:"]
+      "outputContains": [
+        "IAP Desktop staged:"
+      ]
     },
-    { "type": "file", "label": "MSI staged", "path": "%ProgramData%\\TechCollective\\IapDesktop\\IapDesktop.msi" },
-    { "type": "file", "label": "Per-user stub written", "path": "%ProgramData%\\TechCollective\\IapDesktop\\Install-IapDesktop-User.cmd" },
+    {
+      "type": "file",
+      "label": "MSI staged",
+      "path": "%ProgramData%\\TechCollective\\IapDesktop\\IapDesktop.msi"
+    },
+    {
+      "type": "file",
+      "label": "Per-user stub written",
+      "path": "%ProgramData%\\TechCollective\\IapDesktop\\Install-IapDesktop-User.cmd"
+    },
     {
       "type": "registry",
       "label": "Active Setup StubPath",
@@ -34,21 +44,46 @@
     },
     {
       "type": "activeSetup",
-      "label": "Simulated user logon",
+      "label": "Simulated logon as the runner's own user",
+      "as": "runner",
+      "key": "{6f1c2b8e-4a4d-4b0e-9c2a-5d1e7f3a9b01}",
+      "log": "%LOCALAPPDATA%\\IapDesktop-install.log"
+    },
+    {
+      "type": "uninstallEntry",
+      "label": "Registered in Programs and Features",
+      "displayName": "IAP Desktop"
+    },
+    {
+      "type": "file",
+      "label": "Installed where the component reports it",
+      "as": "runner",
+      "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe"
+    },
+    {
+      "type": "launch",
+      "label": "Launches as the runner's user",
+      "as": "runner",
+      "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe",
+      "aliveSeconds": 15
+    },
+    {
+      "type": "activeSetup",
+      "label": "Simulated user logon (standard user, real logon)",
       "tier": 2,
       "key": "{6f1c2b8e-4a4d-4b0e-9c2a-5d1e7f3a9b01}",
       "log": "%LOCALAPPDATA%\\IapDesktop-install.log"
     },
     {
       "type": "file",
-      "label": "Installed for the user",
+      "label": "Installed for the user (standard user, real logon)",
       "tier": 2,
       "as": "testuser",
       "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe"
     },
     {
       "type": "launch",
-      "label": "Launches as the user",
+      "label": "Launches as the user (standard user, real logon)",
       "tier": 2,
       "as": "testuser",
       "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe",
@@ -62,7 +97,9 @@
     {
       "type": "runComponent",
       "label": "Refuses a non-https msiUrl",
-      "variables": { "msiUrl": "http://example.com/IapDesktop.msi" },
+      "variables": {
+        "msiUrl": "http://example.com/IapDesktop.msi"
+      },
       "expectExitCode": 3
     }
   ]

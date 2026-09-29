@@ -197,8 +197,45 @@ function Get-MsiServiceState {
     return ('msiserver: {0}, start mode {1}' -f $svc.State, $svc.StartMode)
 }
 
+# Run a command directly in the harness's own process - as the runner's own
+# account, in its own logon session, rather than through a scheduled task.
+# Returns @{ Code; Out; Err; TimedOut }.
+function Invoke-Direct {
+    param([string]$Exe, [string]$Arguments, [string]$WorkDir, [int]$TimeoutSeconds = 600)
+    $script:StepNo++
+    $id  = '{0:D2}-direct' -f $script:StepNo
+    $out = Join-Path $WorkRoot "$id.out.txt"
+    $err = Join-Path $WorkRoot "$id.err.txt"
+    $p = Start-Process -FilePath $Exe -ArgumentList $Arguments -WorkingDirectory $WorkDir -NoNewWindow -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+    $null = $p.Handle   # without this, Windows PowerShell may not report ExitCode
+    $done = $p.WaitForExit($TimeoutSeconds * 1000)
+    if (-not $done) { $p.Kill() }
+    $code = if ($done) { $p.ExitCode } else { $null }
+    return @{ Code = $code; Out = (Read-Text $out); Err = (Read-Text $err); TimedOut = (-not $done) }
+}
+
+# When a file check misses, look for the same file name where installers
+# usually put things, so a wrong expected path shows the right one.
+function Find-Candidates {
+    param([string]$Path, [string]$As)
+    $leaf  = Split-Path $Path -Leaf
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
+    if ($As -eq 'testuser' -and $script:TestUser) { $roots += (Join-Path $script:TestUser.Profile 'AppData') }
+    else { $roots += (Join-Path $env:USERPROFILE 'AppData') }
+    $hits = @()
+    foreach ($r in $roots) {
+        if ($r -and (Test-Path -LiteralPath $r)) {
+            $hits += @(Get-ChildItem -LiteralPath $r -Filter $leaf -File -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+                       Select-Object -First 5 -ExpandProperty FullName)
+        }
+    }
+    return $hits
+}
+
 # Expand %VARS% in a path from test.json. For as=testuser the per-user
-# variables resolve against the test user's profile, not the runner's.
+# variables resolve against the test user's profile. For system and runner
+# they resolve in the harness's own environment - the runner's account.
 function Expand-SpecPath {
     param([string]$Path, [string]$As = 'system')
     if ($As -eq 'testuser') {
@@ -317,7 +354,9 @@ foreach ($s in $steps) {
                 if (-not $exists) {
                     Add-Result $label (-not $found) ($(if ($found) { 'Present but should not be: ' } else { 'Absent as expected: ' }) + $path)
                 } elseif (-not $found) {
-                    Add-Result $label $false "Not found: $path"
+                    $cand = @(Find-Candidates $path $as)
+                    $more = if ($cand.Count) { ' The same file name exists at: ' + ($cand -join '; ') } else { '' }
+                    Add-Result $label $false ("Not found: $path." + $more)
                 } else {
                     $min = Get-Prop $s 'minVersion'
                     if ($min) {
@@ -364,6 +403,39 @@ foreach ($s in $steps) {
                 }
             }
 
+            'uninstallEntry' {
+                # Is the product registered in Programs and Features, and for
+                # whom? "user" entries are read from the harness's own HKCU - the
+                # runner's account - so this pairs with as: runner steps.
+                $rx = [string](Get-Prop $s 'displayName')
+                $roots = @(
+                    @{ Scope = 'machine'; Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' },
+                    @{ Scope = 'machine'; Path = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' },
+                    @{ Scope = 'user';    Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' }
+                )
+                $hits = @()
+                foreach ($root in $roots) {
+                    if (-not (Test-Path -LiteralPath $root.Path)) { continue }
+                    foreach ($k in @(Get-ChildItem -LiteralPath $root.Path -ErrorAction SilentlyContinue)) {
+                        $dn = $k.GetValue('DisplayName')
+                        if ($dn -and $dn -match $rx) {
+                            $hits += [pscustomobject]@{ Scope = $root.Scope; Name = $dn; Version = $k.GetValue('DisplayVersion'); Location = $k.GetValue('InstallLocation') }
+                        }
+                    }
+                }
+                $want = Get-Prop $s 'scope'
+                if ($hits.Count -eq 0) {
+                    Add-Result $label $false "No uninstall entry matching /$rx/ (machine-wide, or for $env:USERNAME)."
+                } else {
+                    $desc = ($hits | ForEach-Object { "$($_.Scope): '$($_.Name)' $($_.Version) at '$($_.Location)'" }) -join '; '
+                    if ($want -and -not ($hits | Where-Object { $_.Scope -eq $want })) {
+                        Add-Result $label $false "Registered, but not $want-scoped: $desc"
+                    } else {
+                        Add-Result $label $true "Registered - $desc"
+                    }
+                }
+            }
+
             'activeSetup' {
                 # Stands in for the user's next logon: run the StubPath the
                 # component registered, as a standard user, the way Windows would.
@@ -374,8 +446,28 @@ foreach ($s in $steps) {
                 if (-not (Test-Path -LiteralPath $akey)) { throw "Active Setup key not found: $akey" }
                 $stubPath = [string](Get-Item -LiteralPath $akey).GetValue('StubPath')
                 if (-not $stubPath) { throw "No StubPath under $akey" }
-                New-TestUser
                 $stubTimeout = [int](Get-Prop $s 'timeoutSeconds' 600)
+
+                if ((Get-Prop $s 'as' 'testuser') -eq 'runner') {
+                    # The runner's own account, in its own session: the closest a
+                    # CI runner gets to "the user logs on and Active Setup runs
+                    # the stub". That account is an administrator, so this proves
+                    # the stub, the MSI and a silent install work - not that a
+                    # standard user could do it (Tier 2).
+                    $r = Invoke-Direct -Exe 'cmd.exe' -Arguments ('/c ' + $stubPath) -WorkDir $env:USERPROFILE -TimeoutSeconds $stubTimeout
+                    Write-Block "$label - stdout" $r.Out
+                    if ($r.Err.Trim()) { Write-Block "$label - stderr" $r.Err }
+                    $ok = (-not $r.TimedOut) -and $r.Code -eq 0
+                    if (-not $ok) {
+                        $log = Get-Prop $s 'log'
+                        if ($log) { Show-MsiLog (Expand-SpecPath ([string]$log) 'runner') }
+                    }
+                    $detail = if ($r.TimedOut) { 'Timed out.' } else { "StubPath ran as $env:USERNAME (the runner's own account, an administrator), exit code $($r.Code)." }
+                    Add-Result $label $ok $detail
+                    break
+                }
+
+                New-TestUser
                 # Started as admin so the user only has to reach it, not launch it.
                 Start-Service -Name msiserver -ErrorAction SilentlyContinue
                 $r = Invoke-As -Label 'active-setup' -Exe 'cmd.exe' -Arguments ('/c ' + $stubPath) -As testuser `
@@ -409,6 +501,19 @@ foreach ($s in $steps) {
                 $path  = Expand-SpecPath ([string](Get-Prop $s 'path')) $as
                 $alive = [int](Get-Prop $s 'aliveSeconds' 15)
                 if (-not (Test-Path -LiteralPath $path)) { throw "Not found: $path" }
+                if ($as -eq 'runner') {
+                    $p = Start-Process -FilePath $path -PassThru
+                    $null = $p.Handle
+                    Start-Sleep -Seconds $alive
+                    if ($p.HasExited) {
+                        Add-Result $label $false "Exited within ${alive}s (exit code $($p.ExitCode)): $path"
+                    } else {
+                        Add-Result $label $true "Still running after ${alive}s as ${env:USERNAME}: $path"
+                        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                    }
+                    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $path } | Stop-Process -Force -ErrorAction SilentlyContinue
+                    break
+                }
                 $h = Invoke-As -Label 'launch' -Exe $path -As $as -NoWait -TimeoutSeconds ($alive + 60)
                 Start-Sleep -Seconds $alive
                 if (Test-Path -LiteralPath $h.Done) {

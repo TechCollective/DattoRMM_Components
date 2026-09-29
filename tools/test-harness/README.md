@@ -87,9 +87,21 @@ re-run, and "already installed" must not be an error.
 | Field | Default | Meaning |
 |---|---|---|
 | `path` | — | `%VARIABLES%` are expanded. |
-| `as` | `system` | `testuser` resolves `%LOCALAPPDATA%`, `%APPDATA%`, `%USERPROFILE%` and `%TEMP%` against the test user's profile. |
+| `as` | `system` | `testuser` resolves `%LOCALAPPDATA%`, `%APPDATA%`, `%USERPROFILE%` and `%TEMP%` against the test user's profile. `runner` (or `system`) resolves them for the runner's own account. |
 | `exists` | `true` | `false` to check something was removed. |
 | `minVersion` | none | The file's version must be at least this. |
+
+When a file is not where the spec expects, the result lists anywhere under
+Program Files or the user's AppData that has a file of the same name — so a
+wrong expected path in the spec, or in the component's own reporting, shows
+the right one.
+
+**`uninstallEntry`** — the product is registered in Programs and Features.
+
+| Field | Meaning |
+|---|---|
+| `displayName` | A regex matched against each entry's DisplayName. |
+| `scope` | Optional. `machine` (HKLM) or `user` (the runner account's HKCU). Omit to accept either; the result says which it found. |
 
 **`registry`** — a machine-wide key or value (`HKLM:` paths).
 
@@ -99,7 +111,12 @@ re-run, and "already installed" must not be an error.
 | `name` | The value to read. `(Default)` for the default value. Omit to check only that the key exists. |
 | `equals` / `matches` | Compare as a string, or against a regex. Omit both to check only that the value exists. |
 
-**`activeSetup`** — stand in for a user's next logon. Runs the `StubPath`
+**`activeSetup`** — stand in for a user's next logon. With `"as": "runner"`
+it runs the `StubPath` directly as the runner's own account, in its own
+session — the closest a CI runner gets to "a user logs on and the stub runs".
+That account is an administrator, so it proves the stub, the installer and a
+silent install work, but not that a standard user could do it. Without `as`,
+it runs the `StubPath`
 the component registered under `HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\<key>`
 as a local standard user the harness creates. It proves the stub works as a
 standard user; it cannot prove Windows fires it at a real logon, which needs an
@@ -108,6 +125,7 @@ interactive session.
 | Field | Meaning |
 |---|---|
 | `key` | The Active Setup GUID, braces included. |
+| `as` | `runner` for the runner's own account (Tier 1). Default: the standard test user. |
 | `log` | Optional. A file to print if the stub fails, e.g. an `msiexec /l*v` log. Expanded as the test user. |
 | `timeoutSeconds` | Default `600`. |
 
@@ -123,7 +141,7 @@ step still works for stubs that do not call `msiexec`.
 **`launch`** — start the app and pass if it is still running after
 `aliveSeconds` (default `15`). There is no desktop in a CI session, so this
 proves "starts and does not crash", not "shows a window". Takes `path` and `as`
-the same way `file` does.
+the same way `file` does, including `as: runner`.
 
 ### Which checks to write
 
