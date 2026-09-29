@@ -22,10 +22,9 @@ from pathlib import Path
 CATEGORIES = ("Applications", "Scripts", "Monitors")
 RETEST_ALL = ("tools/test-harness/", ".github/workflows/test-components.yml")
 
-# platform in test.json -> GitHub-hosted runner. Only Windows has a harness so
-# far; the others are listed so a spec for them is reported, not ignored.
-RUNNERS = {"windows": "windows-latest"}
-PLANNED = {"macos", "linux"}
+# platform in test.json -> GitHub-hosted runner. Windows runs
+# Invoke-ComponentTest.ps1; macOS and Linux run invoke-component-test.sh.
+RUNNERS = {"windows": "windows-latest", "macos": "macos-latest", "linux": "ubuntu-latest"}
 
 
 def warn(msg):
@@ -84,23 +83,28 @@ def main():
         except json.JSONDecodeError as e:
             print(f"::error file={rel}/test.json::Not valid JSON: {e}", file=sys.stderr)
             sys.exit(1)
-        platform = str(spec.get("platform", "")).lower()
-        if platform in RUNNERS:
-            name = rel
-            manifest = d / "component.json"
-            if manifest.is_file():
-                name = json.loads(manifest.read_text()).get("general", {}).get("name", rel)
-            else:
-                print(f"::error file={rel}/test.json::A tested component needs a component.json beside it.", file=sys.stderr)
-                sys.exit(1)
-            matrix.append({"component": rel, "name": name,
-                           "runner": spec.get("runsOn", RUNNERS[platform])})
-        elif platform in PLANNED:
-            warn(f"{rel}: there is no {platform} harness yet, so it was not tested.")
-        else:
-            print(f"::error file={rel}/test.json::platform must be one of "
-                  f"{sorted(set(RUNNERS) | PLANNED)}, got '{platform}'.", file=sys.stderr)
+        # "platforms": ["macos", "linux"] for a component that runs on
+        # several; "platform": "windows" is the same thing for one.
+        plats = spec.get("platforms")
+        if plats is None:
+            plats = [spec["platform"]] if "platform" in spec else []
+        plats = [str(p).lower() for p in (plats if isinstance(plats, list) else [plats])]
+        bad = [p for p in plats if p not in RUNNERS]
+        if not plats or bad:
+            print(f"::error file={rel}/test.json::platforms must be a list drawn from "
+                  f"{sorted(RUNNERS)}, got {plats}.", file=sys.stderr)
             sys.exit(1)
+        manifest = d / "component.json"
+        if not manifest.is_file():
+            print(f"::error file={rel}/test.json::A tested component needs a component.json beside it.", file=sys.stderr)
+            sys.exit(1)
+        name = json.loads(manifest.read_text()).get("general", {}).get("name", rel)
+        runs_on = spec.get("runsOn", {})
+        for p in plats:
+            # runsOn: a runner label for every platform, or {"macos": "macos-15"}.
+            runner = runs_on.get(p, RUNNERS[p]) if isinstance(runs_on, dict) else runs_on
+            matrix.append({"component": rel, "platform": p, "runner": runner,
+                           "name": name if len(plats) == 1 else f"{name} ({p})"})
 
     text = json.dumps(matrix)
     print(text)

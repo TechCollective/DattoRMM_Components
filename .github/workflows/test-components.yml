@@ -1,8 +1,9 @@
 name: Test components
 
 # Tier 1 tests. Every pull request that touches a component with a test.json
-# runs that component on a disposable GitHub-hosted runner, the way Datto
-# would, and checks it did what its test.json says. See tools/test-harness/.
+# runs that component on a disposable GitHub-hosted runner for each platform
+# its test.json lists - Windows, macOS, Linux - the way Datto would, and
+# checks it did what its test.json says. See tools/test-harness/.
 #
 # A component without a test.json gets a warning, not a failure, so older
 # components and monitors do not block a pull request.
@@ -25,6 +26,12 @@ on:
 
 permissions:
   contents: read
+
+# A new push to the same pull request cancels the run it replaces, rather
+# than leaving a slow macOS job running for a commit nobody will merge.
+concurrency:
+  group: test-components-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   discover:
@@ -67,11 +74,19 @@ jobs:
 
       # Passed through the environment rather than pasted into the script, so
       # a folder name can never be read as code.
-      - name: Run the component and its checks
+      - name: Run the component and its checks (Windows)
+        if: matrix.platform == 'windows'
         shell: powershell
         env:
           COMPONENT: ${{ matrix.component }}
         run: ./tools/test-harness/Invoke-ComponentTest.ps1 -ComponentPath $env:COMPONENT
+
+      - name: Run the component and its checks (macOS / Linux)
+        if: matrix.platform != 'windows'
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: ./tools/test-harness/invoke-component-test.sh "$COMPONENT"
 
   # The one check to require in the branch ruleset. Per-component job names
   # change with every component, so they cannot be required directly. This
