@@ -1,6 +1,6 @@
 {
   "platform": "windows",
-  "description": "Stages the MSI as SYSTEM, stands in for a user logon by running the Active Setup stub as a standard user, then checks the per-user install exists and launches. A second run must also succeed, and a non-https msiUrl must be refused.",
+  "description": "Stages the MSI and registers Active Setup as SYSTEM; a second run must also succeed, and a non-https msiUrl must be refused. The per-user install at logon, and the app launching, need a real interactive logon, so those steps are Tier 2.",
   "variables": {},
   "steps": [
     {
@@ -35,18 +35,21 @@
     {
       "type": "activeSetup",
       "label": "Simulated user logon",
+      "tier": 2,
       "key": "{6f1c2b8e-4a4d-4b0e-9c2a-5d1e7f3a9b01}",
       "log": "%LOCALAPPDATA%\\IapDesktop-install.log"
     },
     {
       "type": "file",
       "label": "Installed for the user",
+      "tier": 2,
       "as": "testuser",
       "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe"
     },
     {
       "type": "launch",
       "label": "Launches as the user",
+      "tier": 2,
       "as": "testuser",
       "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe",
       "aliveSeconds": 15

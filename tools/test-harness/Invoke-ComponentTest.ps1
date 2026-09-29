@@ -73,9 +73,9 @@ $script:StepNo   = 0
 $script:TestUser = $null
 
 function Add-Result {
-    param([string]$Step, [bool]$Pass, [string]$Detail)
-    [void]$script:Results.Add([pscustomobject]@{ Step = $Step; Pass = $Pass; Detail = $Detail })
-    $mark = if ($Pass) { 'PASS' } else { 'FAIL' }
+    param([string]$Step, [bool]$Pass, [string]$Detail, [switch]$Skip)
+    [void]$script:Results.Add([pscustomobject]@{ Step = $Step; Pass = $Pass; Skip = [bool]$Skip; Detail = $Detail })
+    $mark = if ($Skip) { 'SKIP' } elseif ($Pass) { 'PASS' } else { 'FAIL' }
     Write-Host "[$mark] $Step - $Detail"
     if (-not $Pass -and $InCI) {
         $clean = ($Detail -replace '[\r\n]+', ' ')
@@ -83,11 +83,25 @@ function Add-Result {
     }
 }
 
+# Output blocks fold away in the Actions log. Diagnostics use -Open so they
+# show without clicking, and survive a copy-paste of the log.
 function Write-Block {
-    param([string]$Title, [string]$Text)
-    if ($InCI) { Write-Host "::group::$Title" } else { Write-Host "----- $Title" }
+    param([string]$Title, [string]$Text, [switch]$Open)
+    $fold = $InCI -and -not $Open
+    if ($fold) { Write-Host "::group::$Title" } else { Write-Host "----- $Title" }
     if ($Text) { Write-Host $Text.TrimEnd() } else { Write-Host '(empty)' }
-    if ($InCI) { Write-Host '::endgroup::' }
+    if ($fold) { Write-Host '::endgroup::' } else { Write-Host "----- end $Title" }
+}
+
+# The useful part of a verbose msiexec log: its error lines and its tail.
+function Show-MsiLog {
+    param([string]$Path)
+    $text = Read-Text $Path
+    if (-not $text) { Write-Host "No install log at $Path"; return }
+    $lines = $text -split "`r?`n"
+    $hits  = $lines | Select-String -Pattern 'Return value 3', 'error', '1601', 'Note: 1: ' | Select-Object -First 40 | ForEach-Object { $_.Line }
+    Write-Block "Install log, error lines: $Path" (($hits | Out-String)) -Open
+    Write-Block "Install log, last 25 lines: $Path" (($lines | Select-Object -Last 25) -join "`n") -Open
 }
 
 function Read-Text {
@@ -166,6 +180,7 @@ function New-TestUser {
     # than at a real logon.
     $r = Invoke-As -Label 'create-profile' -Exe 'cmd.exe' -Arguments '/c whoami /groups' -As testuser -TimeoutSeconds 180
     Write-Block "Test user token (whoami /groups)" $r.Out
+    $script:TestUser.Groups = $r.Out
     if ($r.TimedOut -or $r.Code -ne 0) {
         throw "Could not run anything as the test user (exit $($r.Code)). $($r.Err)"
     }
@@ -174,51 +189,6 @@ function New-TestUser {
     if (-not $prof) { throw 'The test user ran a command but has no profile.' }
     $script:TestUser.Profile = $prof.LocalPath
     Write-Host "Test user '$name' ready, profile $($prof.LocalPath)"
-}
-
-# The Windows Installer service is a COM server. By default only INTERACTIVE,
-# SYSTEM and Administrators may launch and activate COM servers locally. A
-# scheduled task logs its user on as BATCH, not INTERACTIVE, so msiexec run as
-# a standard user from one gets 1601 ("the Windows Installer service could not
-# be accessed") - where the same user at a real logon would be fine.
-#
-# Granting BATCH the same local launch/activation right INTERACTIVE already
-# has gives the test user what a real logged-on user has, and nothing more.
-# It changes COM security on the machine, which is why this harness only runs
-# on throwaway runners.
-$script:BatchComGranted = $false
-function Grant-BatchComLaunch {
-    if ($script:BatchComGranted) { return }
-    $batch = New-Object Security.Principal.SecurityIdentifier('S-1-5-3')
-    # 0x1 execute, 0x2 execute local, 0x8 activate local
-    $rights = 0x1 -bor 0x2 -bor 0x8
-    $targets = @(@{ Path = 'HKLM:\SOFTWARE\Microsoft\Ole'; Name = 'DefaultLaunchPermission' })
-    $msiAppId = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\AppID\{000C101C-0000-0000-C000-000000000046}'
-    if ((Test-Path -LiteralPath $msiAppId) -and ((Get-Item -LiteralPath $msiAppId).GetValueNames() -contains 'LaunchPermission')) {
-        $targets += @{ Path = $msiAppId; Name = 'LaunchPermission' }
-    }
-    foreach ($t in $targets) {
-        try {
-            $bytes = (Get-Item -LiteralPath $t.Path).GetValue($t.Name)
-            if ($bytes) {
-                $sd = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList @([byte[]]$bytes, 0)
-            } else {
-                # Unset means Windows' built-in default: SYSTEM, Administrators, INTERACTIVE.
-                $sd = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList 'O:BAG:BAD:(A;;CCDCSW;;;SY)(A;;CCDCSW;;;BA)(A;;CCDCSW;;;IU)'
-            }
-            $ace = New-Object Security.AccessControl.CommonAce -ArgumentList @(
-                [Security.AccessControl.AceFlags]::None, [Security.AccessControl.AceQualifier]::AccessAllowed,
-                $rights, $batch, $false, $null)
-            $sd.DiscretionaryAcl.InsertAce($sd.DiscretionaryAcl.Count, $ace)
-            $out = New-Object byte[] $sd.BinaryLength
-            $sd.GetBinaryForm($out, 0)
-            Set-ItemProperty -LiteralPath $t.Path -Name $t.Name -Value $out -Type Binary
-            Write-Host "Granted BATCH local launch/activation: $($t.Path)\$($t.Name)"
-        } catch {
-            Write-Host "Could not update $($t.Path)\$($t.Name): $($_.Exception.Message)"
-        }
-    }
-    $script:BatchComGranted = $true
 }
 
 function Get-MsiServiceState {
@@ -284,6 +254,12 @@ foreach ($s in $steps) {
     $as    = [string](Get-Prop $s 'as' 'system')
     $label = [string](Get-Prop $s 'label' '')
     if (-not $label) { $label = "$i. $type" } else { $label = "$i. $label" }
+
+    # "tier": 2 marks a step a CI runner cannot do honestly - one that needs a
+    # real interactive logon. It is listed so the spec stays the whole story,
+    # and reported as skipped rather than failed.
+    $tier = [int](Get-Prop $s 'tier' 1)
+    if ($tier -gt 1) { Add-Result $label $true "Tier $tier only - needs a real logon, which a CI runner cannot provide." -Skip; continue }
 
     if ($stop) { Add-Result $label $false 'Skipped: an earlier component run failed.'; continue }
 
@@ -406,29 +382,23 @@ foreach ($s in $steps) {
                         -WorkDir $script:TestUser.Profile -TimeoutSeconds $stubTimeout
                 Write-Block "$label - stdout" $r.Out
                 if ($r.Err.Trim()) { Write-Block "$label - stderr" $r.Err }
-                $retried = $false
-                if (-not $r.TimedOut -and $r.Code -eq 1601) {
-                    # A harness limitation, not the component: see Grant-BatchComLaunch.
-                    Write-Host "Exit 1601 as the test user. $(Get-MsiServiceState). Granting BATCH COM launch rights and retrying once."
-                    Grant-BatchComLaunch
-                    Start-Service -Name msiserver -ErrorAction SilentlyContinue
-                    $r = Invoke-As -Label 'active-setup-retry' -Exe 'cmd.exe' -Arguments ('/c ' + $stubPath) -As testuser `
-                            -WorkDir $script:TestUser.Profile -TimeoutSeconds $stubTimeout
-                    Write-Block "$label (retry) - stdout" $r.Out
-                    if ($r.Err.Trim()) { Write-Block "$label (retry) - stderr" $r.Err }
-                    $retried = $true
-                }
                 $ok = (-not $r.TimedOut) -and $r.Code -eq 0
                 if (-not $ok) {
                     Write-Host (Get-MsiServiceState)
+                    Write-Block 'Test user token (whoami /groups)' $script:TestUser.Groups -Open
                     $log = Get-Prop $s 'log'
-                    if ($log) {
-                        $logPath = Expand-SpecPath ([string]$log) 'testuser'
-                        Write-Block "$label - $logPath" (Read-Text $logPath)
-                    }
+                    if ($log) { Show-MsiLog (Expand-SpecPath ([string]$log) 'testuser') }
                 }
                 $detail = if ($r.TimedOut) { 'Timed out.' } else { "StubPath ran as $($script:TestUser.Name), exit code $($r.Code)." }
-                if ($retried) { $detail += ' (Retried after granting BATCH COM launch rights; the first attempt got 1601.)' }
+                if (-not $r.TimedOut -and $r.Code -eq 1601) {
+                    # Seen on GitHub's runners: a standard user's msiexec from a
+                    # scheduled task (a BATCH logon) is refused by the Installer
+                    # service with 0x80070005. Running it elevated instead
+                    # changes what is tested - an elevated per-user MSI can
+                    # install per-machine - so a spec that hits this should mark
+                    # the step "tier": 2 rather than work around it.
+                    $detail += ' msiexec as a standard user cannot reach the Installer service from a batch logon on this runner. Mark this step "tier": 2 - see tools/test-harness/README.md.'
+                }
                 Add-Result $label $ok $detail
             }
 
@@ -462,10 +432,11 @@ foreach ($s in $steps) {
 
 # ---------------------------------------------------------------- report
 
-$failed = @($script:Results | Where-Object { -not $_.Pass })
-$total  = $script:Results.Count
+$failed  = @($script:Results | Where-Object { -not $_.Pass })
+$skipped = @($script:Results | Where-Object { $_.Skip })
+$total   = $script:Results.Count
 Write-Host ''
-Write-Host ("{0}: {1} of {2} steps passed" -f $name, ($total - $failed.Count), $total)
+Write-Host ("{0}: {1} passed, {2} failed, {3} skipped (Tier 2)" -f $name, ($total - $failed.Count - $skipped.Count), $failed.Count, $skipped.Count)
 
 if ($env:GITHUB_STEP_SUMMARY) {
     $md = New-Object System.Collections.Generic.List[string]
@@ -474,7 +445,7 @@ if ($env:GITHUB_STEP_SUMMARY) {
     $md.Add('| | Step | Detail |')
     $md.Add('|---|---|---|')
     foreach ($r in $script:Results) {
-        $icon = if ($r.Pass) { 'PASS' } else { '**FAIL**' }
+        $icon = if ($r.Skip) { 'SKIP' } elseif ($r.Pass) { 'PASS' } else { '**FAIL**' }
         $md.Add(('| {0} | {1} | {2} |' -f $icon, $r.Step, ($r.Detail -replace '\|', '\|' -replace '[\r\n]+', ' ')))
     }
     $md.Add('')

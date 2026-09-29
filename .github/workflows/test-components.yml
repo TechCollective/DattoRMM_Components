@@ -11,13 +11,11 @@ name: Test components
 # repo is public, so the logs are public: test output must never carry
 # anything the README's "This repository is public" rules keep out.
 
+# Runs on every pull request, not only ones touching components, so the
+# "Component tests" check below always reports and can be made required. A
+# pull request with nothing to test finishes in seconds.
 on:
   pull_request:
-    paths:
-      - 'Applications/**'
-      - 'Scripts/**'
-      - 'tools/test-harness/**'
-      - '.github/workflows/test-components.yml'
   workflow_dispatch:
     inputs:
       component:
@@ -74,3 +72,24 @@ jobs:
         env:
           COMPONENT: ${{ matrix.component }}
         run: ./tools/test-harness/Invoke-ComponentTest.ps1 -ComponentPath $env:COMPONENT
+
+  # The one check to require in the branch ruleset. Per-component job names
+  # change with every component, so they cannot be required directly. This
+  # passes when every test passed or there was nothing to test, and fails
+  # otherwise.
+  result:
+    name: Component tests
+    needs: [discover, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DISCOVER: ${{ needs.discover.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "discover: $DISCOVER, test: $TEST"
+          [ "$DISCOVER" = "success" ] || exit 1
+          case "$TEST" in
+            success|skipped) exit 0 ;;
+            *) exit 1 ;;
+          esac

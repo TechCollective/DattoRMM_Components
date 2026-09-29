@@ -54,6 +54,11 @@ Steps run in order. If a `runComponent` step fails, the rest are skipped —
 checking the files of an install that did not happen tells you nothing new.
 Any step may carry a `label`, which is what the results table shows.
 
+Any step may also carry `"tier": 2`: something a CI runner cannot do honestly,
+usually because it needs a real interactive logon. The harness reports it as
+**SKIP** instead of running it. It stays in the spec so the spec is the whole
+description of what "working" means, and so Tier 2 has a list to pick up.
+
 ### Top level
 
 | Field | Required | Meaning |
@@ -106,12 +111,14 @@ interactive session.
 | `log` | Optional. A file to print if the stub fails, e.g. an `msiexec /l*v` log. Expanded as the test user. |
 | `timeoutSeconds` | Default `600`. |
 
-The stub runs from a scheduled task, which logs the user on as a batch job,
-not interactively. Windows only lets interactive users start the Windows
-Installer service by default, so a per-user `msiexec` there fails with 1601
-where it would work at a real logon. When the stub returns 1601 the harness
-grants batch logons the same COM launch right interactive ones have, retries
-once, and says so in the result.
+**On GitHub's runners this step cannot run a per-user MSI.** The stub runs
+from a scheduled task, which logs the user on as a batch job, and the Windows
+Installer service refuses a standard user's `msiexec` from a batch logon
+(`Failed to connect to server. Error: 0x80070005`, exit 1601). Running it
+elevated instead is no substitute: an elevated per-user MSI can install
+per-machine, which is not what a user at a real logon gets. So for an
+installer, mark this step and the checks that depend on it `"tier": 2`. The
+step still works for stubs that do not call `msiexec`.
 
 **`launch`** — start the app and pass if it is still running after
 `aliveSeconds` (default `15`). There is no desktop in a CI session, so this
