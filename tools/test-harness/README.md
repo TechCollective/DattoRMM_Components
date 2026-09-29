@@ -107,11 +107,13 @@ interactive session.
 | `timeoutSeconds` | Default `600`. |
 
 The stub runs from a scheduled task, which logs the user on as a batch job,
-not interactively. Windows only lets interactive users start the Windows
-Installer service by default, so a per-user `msiexec` there fails with 1601
-where it would work at a real logon. When the stub returns 1601 the harness
-grants batch logons the same COM launch right interactive ones have, retries
-once, and says so in the result.
+not interactively. On GitHub's runners a standard user's `msiexec` fails
+there with 1601 ("the Windows Installer service could not be accessed"),
+where the same user at a real logon would be fine. When that happens the
+harness retries once with the test user as an elevated admin. A pass that
+way shows as a pass with a warning: it still proves the stub works and
+installs into the user's profile, but not that it needs no admin rights —
+that check belongs to Tier 2, on a real logon.
 
 **`launch`** — start the app and pass if it is still running after
 `aliveSeconds` (default `15`). There is no desktop in a CI session, so this
