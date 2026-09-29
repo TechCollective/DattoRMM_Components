@@ -1,4 +1,4 @@
-# IAP Desktop [Win]
+# Google IAP Desktop [Win]
 # Stages Google IAP Desktop for a PER-USER install via Active Setup.
 #
 # IAP Desktop's MSI is per-user by design (Google deploys it through user-scoped GPO or Intune).
