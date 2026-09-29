@@ -94,13 +94,31 @@ expand() {
 
 create_test_user() {
     [ -n "$TESTUSER_HOME" ] && return 0
-    local pw; pw="Tc$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)1"
+    # Not `tr </dev/urandom | head`: if SIGPIPE is ignored, BSD tr can keep
+    # writing forever once head has exited. openssl reads a fixed amount.
+    local pw; pw="Tc$(openssl rand -hex 12)1"
     if [ "$PLATFORM" = macos ]; then
-        sudo sysadminctl -addUser "$TESTUSER" -fullName "Component Test" -password "$pw" -home "/Users/$TESTUSER" >/dev/null 2>&1
-        sudo createhomedir -c -u "$TESTUSER" >/dev/null 2>&1
+        # dscl rather than sysadminctl/createhomedir, which can prompt or stall
+        # on a headless Mac. Every command is time-limited, so a stall fails
+        # the step instead of hanging the job.
+        local uid
+        uid=$(dscl . -list /Users UniqueID | awk '$2 > max { max = $2 } END { print (max < 600 ? 600 : max + 1) }')
         TESTUSER_HOME="/Users/$TESTUSER"
+        local c
+        for c in "-create /Users/$TESTUSER" \
+                 "-create /Users/$TESTUSER UserShell /bin/bash" \
+                 "-create /Users/$TESTUSER RealName Component-Test" \
+                 "-create /Users/$TESTUSER UniqueID $uid" \
+                 "-create /Users/$TESTUSER PrimaryGroupID 20" \
+                 "-create /Users/$TESTUSER NFSHomeDirectory $TESTUSER_HOME"; do
+            # shellcheck disable=SC2086  # c is deliberately split into arguments
+            run_limited 60 sudo dscl . $c </dev/null >/dev/null 2>&1
+            [ "$RC" -eq 0 ] || { echo "dscl . $c failed (exit $RC)" >&2; TESTUSER_HOME=""; return 1; }
+        done
+        run_limited 60 sudo dscl . -passwd "/Users/$TESTUSER" "$pw" </dev/null >/dev/null 2>&1
+        sudo mkdir -p "$TESTUSER_HOME" && sudo chown "$TESTUSER:staff" "$TESTUSER_HOME" && sudo chmod 755 "$TESTUSER_HOME"
     else
-        sudo useradd -m -s /bin/bash "$TESTUSER" >/dev/null 2>&1
+        run_limited 60 sudo useradd -m -s /bin/bash "$TESTUSER" </dev/null >/dev/null 2>&1
         TESTUSER_HOME="/home/$TESTUSER"
     fi
     id "$TESTUSER" >/dev/null 2>&1 && sudo test -d "$TESTUSER_HOME" || { TESTUSER_HOME=""; return 1; }
