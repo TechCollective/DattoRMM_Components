@@ -1,0 +1,76 @@
+name: Test components
+
+# Tier 1 tests. Every pull request that touches a component with a test.json
+# runs that component on a disposable GitHub-hosted runner, the way Datto
+# would, and checks it did what its test.json says. See tools/test-harness/.
+#
+# A component without a test.json gets a warning, not a failure, so older
+# components and monitors do not block a pull request.
+#
+# Nothing here uses a secret, and nothing here writes to the repository. This
+# repo is public, so the logs are public: test output must never carry
+# anything the README's "This repository is public" rules keep out.
+
+on:
+  pull_request:
+    paths:
+      - 'Applications/**'
+      - 'Scripts/**'
+      - 'tools/test-harness/**'
+      - '.github/workflows/test-components.yml'
+  workflow_dispatch:
+    inputs:
+      component:
+        description: 'Component folder to test, e.g. Applications/google-iap-desktop-win. Blank tests every component with a test.json.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    name: Find components to test
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.find.outputs.matrix }}
+      count: ${{ steps.find.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: find
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ONLY: ${{ inputs.component }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            python3 tools/test-harness/discover.py --base "$BASE_SHA"
+          elif [ -n "$ONLY" ]; then
+            python3 tools/test-harness/discover.py --only "$ONLY"
+          else
+            python3 tools/test-harness/discover.py --all
+          fi
+
+  test:
+    name: ${{ matrix.name }}
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Passed through the environment rather than pasted into the script, so
+      # a folder name can never be read as code.
+      - name: Run the component and its checks
+        shell: powershell
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: ./tools/test-harness/Invoke-ComponentTest.ps1 -ComponentPath $env:COMPONENT

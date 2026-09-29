@@ -1,0 +1,66 @@
+{
+  "platform": "windows",
+  "description": "Stages the MSI as SYSTEM, stands in for a user logon by running the Active Setup stub as a standard user, then checks the per-user install exists and launches. A second run must also succeed, and a non-https msiUrl must be refused.",
+  "variables": {},
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Stage as SYSTEM",
+      "expectExitCode": 0,
+      "outputContains": ["IAP Desktop staged:"]
+    },
+    { "type": "file", "label": "MSI staged", "path": "%ProgramData%\\TechCollective\\IapDesktop\\IapDesktop.msi" },
+    { "type": "file", "label": "Per-user stub written", "path": "%ProgramData%\\TechCollective\\IapDesktop\\Install-IapDesktop-User.cmd" },
+    {
+      "type": "registry",
+      "label": "Active Setup StubPath",
+      "path": "HKLM:\\SOFTWARE\\Microsoft\\Active Setup\\Installed Components\\{6f1c2b8e-4a4d-4b0e-9c2a-5d1e7f3a9b01}",
+      "name": "StubPath",
+      "matches": "Install-IapDesktop-User\\.cmd"
+    },
+    {
+      "type": "registry",
+      "label": "Active Setup IsInstalled",
+      "path": "HKLM:\\SOFTWARE\\Microsoft\\Active Setup\\Installed Components\\{6f1c2b8e-4a4d-4b0e-9c2a-5d1e7f3a9b01}",
+      "name": "IsInstalled",
+      "equals": "1"
+    },
+    {
+      "type": "registry",
+      "label": "Active Setup Version is comma-separated",
+      "path": "HKLM:\\SOFTWARE\\Microsoft\\Active Setup\\Installed Components\\{6f1c2b8e-4a4d-4b0e-9c2a-5d1e7f3a9b01}",
+      "name": "Version",
+      "matches": "^[0-9]+(,[0-9]+)+$"
+    },
+    {
+      "type": "activeSetup",
+      "label": "Simulated user logon",
+      "key": "{6f1c2b8e-4a4d-4b0e-9c2a-5d1e7f3a9b01}",
+      "log": "%LOCALAPPDATA%\\IapDesktop-install.log"
+    },
+    {
+      "type": "file",
+      "label": "Installed for the user",
+      "as": "testuser",
+      "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe"
+    },
+    {
+      "type": "launch",
+      "label": "Launches as the user",
+      "as": "testuser",
+      "path": "%LOCALAPPDATA%\\Google\\IAP Desktop\\IapDesktop.exe",
+      "aliveSeconds": 15
+    },
+    {
+      "type": "runComponent",
+      "label": "Second run succeeds",
+      "expectExitCode": 0
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a non-https msiUrl",
+      "variables": { "msiUrl": "http://example.com/IapDesktop.msi" },
+      "expectExitCode": 3
+    }
+  ]
+}
