@@ -1,0 +1,108 @@
+{
+  "platforms": ["macos", "linux"],
+  "description": "Installs the Google Cloud CLI and the launcher as root with a test client's values, then checks gcloud runs for a standard user, the launcher carries the right values and is valid bash, the user got a desktop shortcut they own, and the launcher gets as far as looking for a Remote Desktop client when the user runs it. A second run must say gcloud is already installed, and bad input must be refused. Signing in to Google and tunnelling to a real VM are Tier 2.",
+  "variables": {
+    "gcpProject": "tc-test-project",
+    "vmInstance": "test-vm",
+    "vmZone": "us-central1-c"
+  },
+  "steps": [
+    {
+      "type": "testUser",
+      "label": "Standard user with a Desktop, before the install"
+    },
+    {
+      "type": "runComponent",
+      "label": "Install as root",
+      "outputContains": ["Google Cloud IAP Connect deployed"]
+    },
+    {
+      "type": "file",
+      "label": "gcloud installed system-wide",
+      "path": "/opt/google-cloud-sdk/bin/gcloud",
+      "executable": true
+    },
+    {
+      "type": "command",
+      "label": "gcloud runs for a standard user",
+      "as": "testuser",
+      "run": "/opt/google-cloud-sdk/bin/gcloud version",
+      "outputContains": ["Google Cloud SDK"]
+    },
+    {
+      "type": "file",
+      "label": "Launcher carries this client's values",
+      "path": "/usr/local/share/iap-connect/iap-connect.sh",
+      "executable": true,
+      "contains": ["PROJECT=\"tc-test-project\"", "INSTANCE=\"test-vm\"", "ZONE=\"us-central1-c\"", "LOCAL_PORT=13389", "LABEL=\"Cloud Server\""],
+      "notContains": ["__PROJECT__", "__INSTANCE__", "__ZONE__", "__PORT__", "__LABEL__"]
+    },
+    {
+      "type": "command",
+      "label": "Launcher is valid bash",
+      "run": "bash -n /usr/local/share/iap-connect/iap-connect.sh"
+    },
+    {
+      "type": "file",
+      "platforms": ["linux"],
+      "label": "Desktop shortcut for the user",
+      "path": "{testuser_home}/Desktop/connect-to-cloud-server.desktop",
+      "executable": true,
+      "owner": "testuser",
+      "contains": ["Exec=/usr/local/share/iap-connect/iap-connect.sh", "Name=Connect to Cloud Server"]
+    },
+    {
+      "type": "file",
+      "platforms": ["macos"],
+      "label": "Desktop shortcut for the user",
+      "path": "{testuser_home}/Desktop/Connect to Cloud Server.command",
+      "executable": true,
+      "owner": "testuser",
+      "contains": ["/usr/local/share/iap-connect/iap-connect.sh"]
+    },
+    {
+      "type": "command",
+      "platforms": ["linux"],
+      "label": "Launcher, run by the user, finds gcloud and stops at the missing RDP client",
+      "as": "testuser",
+      "run": "/usr/local/share/iap-connect/iap-connect.sh",
+      "expectExitCode": 1,
+      "outputContains": ["No Remote Desktop client found"],
+      "outputNotContains": ["Google Cloud CLI is not installed"]
+    },
+    {
+      "type": "command",
+      "platforms": ["macos"],
+      "label": "Launcher, run by the user, finds gcloud and stops at the missing Windows App",
+      "as": "testuser",
+      "run": "/usr/local/share/iap-connect/iap-connect.sh",
+      "expectExitCode": 1,
+      "outputContains": ["Microsoft Windows App is not installed"],
+      "outputNotContains": ["Google Cloud CLI is not installed"]
+    },
+    {
+      "type": "runComponent",
+      "label": "Second run keeps the installed gcloud",
+      "outputContains": ["already installed"]
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a bad zone",
+      "variables": { "vmZone": "not-a-zone" },
+      "expectExitCode": 3
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a missing project",
+      "variables": { "gcpProject": "" },
+      "expectExitCode": 3
+    },
+    {
+      "type": "command",
+      "tier": 2,
+      "label": "Sign in with Google, tunnel to a real VM, open Remote Desktop",
+      "as": "testuser",
+      "run": "/usr/local/share/iap-connect/iap-connect.sh"
+    }
+  ]
+}

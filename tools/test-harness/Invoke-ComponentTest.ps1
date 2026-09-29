@@ -292,6 +292,10 @@ foreach ($s in $steps) {
     $label = [string](Get-Prop $s 'label' '')
     if (-not $label) { $label = "$i. $type" } else { $label = "$i. $label" }
 
+    # A step limited to other platforms is not this run's business at all.
+    $plats = @(Get-Prop $s 'platforms' @())
+    if ($plats.Count -and ($plats -notcontains 'windows')) { continue }
+
     # "tier": 2 marks a step a CI runner cannot do honestly - one that needs a
     # real interactive logon. It is listed so the spec stays the whole story,
     # and reported as skipped rather than failed.
