@@ -73,9 +73,9 @@ $script:StepNo   = 0
 $script:TestUser = $null
 
 function Add-Result {
-    param([string]$Step, [bool]$Pass, [string]$Detail)
-    [void]$script:Results.Add([pscustomobject]@{ Step = $Step; Pass = $Pass; Detail = $Detail })
-    $mark = if ($Pass) { 'PASS' } else { 'FAIL' }
+    param([string]$Step, [bool]$Pass, [string]$Detail, [switch]$Skip)
+    [void]$script:Results.Add([pscustomobject]@{ Step = $Step; Pass = $Pass; Skip = [bool]$Skip; Detail = $Detail })
+    $mark = if ($Skip) { 'SKIP' } elseif ($Pass) { 'PASS' } else { 'FAIL' }
     Write-Host "[$mark] $Step - $Detail"
     if (-not $Pass -and $InCI) {
         $clean = ($Detail -replace '[\r\n]+', ' ')
@@ -122,8 +122,7 @@ function Invoke-As {
         [hashtable]$Environment = @{},
         [ValidateSet('system', 'testuser')][string]$As = 'system',
         [int]$TimeoutSeconds = 600,
-        [switch]$NoWait,
-        [switch]$Elevated
+        [switch]$NoWait
     )
     $script:StepNo++
     $id   = '{0:D2}-{1}' -f $script:StepNo, ($Label -replace '[^A-Za-z0-9]+', '-')
@@ -145,7 +144,7 @@ function Invoke-As {
         Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
     } else {
         Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -Force `
-            -User $script:TestUser.Name -Password $script:TestUser.Password -RunLevel $(if ($Elevated) { 'Highest' } else { 'Limited' }) | Out-Null
+            -User $script:TestUser.Name -Password $script:TestUser.Password -RunLevel Limited | Out-Null
     }
     Start-ScheduledTask -TaskName $taskName
 
@@ -255,6 +254,12 @@ foreach ($s in $steps) {
     $as    = [string](Get-Prop $s 'as' 'system')
     $label = [string](Get-Prop $s 'label' '')
     if (-not $label) { $label = "$i. $type" } else { $label = "$i. $label" }
+
+    # "tier": 2 marks a step a CI runner cannot do honestly - one that needs a
+    # real interactive logon. It is listed so the spec stays the whole story,
+    # and reported as skipped rather than failed.
+    $tier = [int](Get-Prop $s 'tier' 1)
+    if ($tier -gt 1) { Add-Result $label $true "Tier $tier only - needs a real logon, which a CI runner cannot provide." -Skip; continue }
 
     if ($stop) { Add-Result $label $false 'Skipped: an earlier component run failed.'; continue }
 
@@ -377,42 +382,22 @@ foreach ($s in $steps) {
                         -WorkDir $script:TestUser.Profile -TimeoutSeconds $stubTimeout
                 Write-Block "$label - stdout" $r.Out
                 if ($r.Err.Trim()) { Write-Block "$label - stderr" $r.Err }
-                $asAdmin = $false
-                if (-not $r.TimedOut -and $r.Code -eq 1601) {
-                    # 1601: the Windows Installer service could not be accessed.
-                    # Seen on GitHub's runners when a standard user runs msiexec
-                    # from a scheduled task (a batch logon). A real user at a real
-                    # logon is interactive, so this is the harness, not the
-                    # component - retry once as an elevated admin, and say so.
-                    Write-Host "Exit 1601 as standard user $($script:TestUser.Name). $(Get-MsiServiceState)."
-                    Write-Block 'Test user token (whoami /groups)' $script:TestUser.Groups -Open
-                    $log = Get-Prop $s 'log'
-                    if ($log) { Show-MsiLog (Expand-SpecPath ([string]$log) 'testuser') }
-                    Write-Host 'Retrying once with the test user in Administrators, elevated.'
-                    Add-LocalGroupMember -SID 'S-1-5-32-544' -Member $script:TestUser.Name
-                    try {
-                        $r = Invoke-As -Label 'active-setup-admin' -Exe 'cmd.exe' -Arguments ('/c ' + $stubPath) -As testuser `
-                                -WorkDir $script:TestUser.Profile -TimeoutSeconds $stubTimeout -Elevated
-                    } finally {
-                        # Later steps (launch) run as a standard user again.
-                        Remove-LocalGroupMember -SID 'S-1-5-32-544' -Member $script:TestUser.Name -ErrorAction SilentlyContinue
-                    }
-                    Write-Block "$label (as admin) - stdout" $r.Out
-                    if ($r.Err.Trim()) { Write-Block "$label (as admin) - stderr" $r.Err }
-                    $asAdmin = $true
-                }
                 $ok = (-not $r.TimedOut) -and $r.Code -eq 0
                 if (-not $ok) {
                     Write-Host (Get-MsiServiceState)
+                    Write-Block 'Test user token (whoami /groups)' $script:TestUser.Groups -Open
                     $log = Get-Prop $s 'log'
                     if ($log) { Show-MsiLog (Expand-SpecPath ([string]$log) 'testuser') }
                 }
                 $detail = if ($r.TimedOut) { 'Timed out.' } else { "StubPath ran as $($script:TestUser.Name), exit code $($r.Code)." }
-                if ($asAdmin -and $ok) {
-                    $detail += ' Passed only as an elevated admin; as a standard user from a scheduled task it got 1601. Installing without admin rights is left to Tier 2.'
-                    if ($InCI) { Write-Host "::warning title=${label}::Per-user install passed only as an elevated admin. Tier 1 cannot prove it installs without admin rights." }
-                } elseif ($asAdmin) {
-                    $detail += ' Also failed as an elevated admin (the standard-user attempt got 1601).'
+                if (-not $r.TimedOut -and $r.Code -eq 1601) {
+                    # Seen on GitHub's runners: a standard user's msiexec from a
+                    # scheduled task (a BATCH logon) is refused by the Installer
+                    # service with 0x80070005. Running it elevated instead
+                    # changes what is tested - an elevated per-user MSI can
+                    # install per-machine - so a spec that hits this should mark
+                    # the step "tier": 2 rather than work around it.
+                    $detail += ' msiexec as a standard user cannot reach the Installer service from a batch logon on this runner. Mark this step "tier": 2 - see tools/test-harness/README.md.'
                 }
                 Add-Result $label $ok $detail
             }
@@ -447,10 +432,11 @@ foreach ($s in $steps) {
 
 # ---------------------------------------------------------------- report
 
-$failed = @($script:Results | Where-Object { -not $_.Pass })
-$total  = $script:Results.Count
+$failed  = @($script:Results | Where-Object { -not $_.Pass })
+$skipped = @($script:Results | Where-Object { $_.Skip })
+$total   = $script:Results.Count
 Write-Host ''
-Write-Host ("{0}: {1} of {2} steps passed" -f $name, ($total - $failed.Count), $total)
+Write-Host ("{0}: {1} passed, {2} failed, {3} skipped (Tier 2)" -f $name, ($total - $failed.Count - $skipped.Count), $failed.Count, $skipped.Count)
 
 if ($env:GITHUB_STEP_SUMMARY) {
     $md = New-Object System.Collections.Generic.List[string]
@@ -459,7 +445,7 @@ if ($env:GITHUB_STEP_SUMMARY) {
     $md.Add('| | Step | Detail |')
     $md.Add('|---|---|---|')
     foreach ($r in $script:Results) {
-        $icon = if ($r.Pass) { 'PASS' } else { '**FAIL**' }
+        $icon = if ($r.Skip) { 'SKIP' } elseif ($r.Pass) { 'PASS' } else { '**FAIL**' }
         $md.Add(('| {0} | {1} | {2} |' -f $icon, $r.Step, ($r.Detail -replace '\|', '\|' -replace '[\r\n]+', ' ')))
     }
     $md.Add('')
