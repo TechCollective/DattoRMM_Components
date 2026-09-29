@@ -161,7 +161,11 @@ function New-TestUser {
 
     # First run as the user creates their profile, and proves the logon works
     # before any real step depends on it.
-    $r = Invoke-As -Label 'create-profile' -Exe 'cmd.exe' -Arguments '/c echo %USERPROFILE%' -As testuser -TimeoutSeconds 180
+    # whoami /groups shows which logon type the task got (BATCH vs INTERACTIVE),
+    # which is the first thing to know when a user step behaves differently here
+    # than at a real logon.
+    $r = Invoke-As -Label 'create-profile' -Exe 'cmd.exe' -Arguments '/c whoami /groups' -As testuser -TimeoutSeconds 180
+    Write-Block "Test user token (whoami /groups)" $r.Out
     if ($r.TimedOut -or $r.Code -ne 0) {
         throw "Could not run anything as the test user (exit $($r.Code)). $($r.Err)"
     }
@@ -170,6 +174,57 @@ function New-TestUser {
     if (-not $prof) { throw 'The test user ran a command but has no profile.' }
     $script:TestUser.Profile = $prof.LocalPath
     Write-Host "Test user '$name' ready, profile $($prof.LocalPath)"
+}
+
+# The Windows Installer service is a COM server. By default only INTERACTIVE,
+# SYSTEM and Administrators may launch and activate COM servers locally. A
+# scheduled task logs its user on as BATCH, not INTERACTIVE, so msiexec run as
+# a standard user from one gets 1601 ("the Windows Installer service could not
+# be accessed") - where the same user at a real logon would be fine.
+#
+# Granting BATCH the same local launch/activation right INTERACTIVE already
+# has gives the test user what a real logged-on user has, and nothing more.
+# It changes COM security on the machine, which is why this harness only runs
+# on throwaway runners.
+$script:BatchComGranted = $false
+function Grant-BatchComLaunch {
+    if ($script:BatchComGranted) { return }
+    $batch = New-Object Security.Principal.SecurityIdentifier('S-1-5-3')
+    # 0x1 execute, 0x2 execute local, 0x8 activate local
+    $rights = 0x1 -bor 0x2 -bor 0x8
+    $targets = @(@{ Path = 'HKLM:\SOFTWARE\Microsoft\Ole'; Name = 'DefaultLaunchPermission' })
+    $msiAppId = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\AppID\{000C101C-0000-0000-C000-000000000046}'
+    if ((Test-Path -LiteralPath $msiAppId) -and ((Get-Item -LiteralPath $msiAppId).GetValueNames() -contains 'LaunchPermission')) {
+        $targets += @{ Path = $msiAppId; Name = 'LaunchPermission' }
+    }
+    foreach ($t in $targets) {
+        try {
+            $bytes = (Get-Item -LiteralPath $t.Path).GetValue($t.Name)
+            if ($bytes) {
+                $sd = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList @([byte[]]$bytes, 0)
+            } else {
+                # Unset means Windows' built-in default: SYSTEM, Administrators, INTERACTIVE.
+                $sd = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList 'O:BAG:BAD:(A;;CCDCSW;;;SY)(A;;CCDCSW;;;BA)(A;;CCDCSW;;;IU)'
+            }
+            $ace = New-Object Security.AccessControl.CommonAce -ArgumentList @(
+                [Security.AccessControl.AceFlags]::None, [Security.AccessControl.AceQualifier]::AccessAllowed,
+                $rights, $batch, $false, $null)
+            $sd.DiscretionaryAcl.InsertAce($sd.DiscretionaryAcl.Count, $ace)
+            $out = New-Object byte[] $sd.BinaryLength
+            $sd.GetBinaryForm($out, 0)
+            Set-ItemProperty -LiteralPath $t.Path -Name $t.Name -Value $out -Type Binary
+            Write-Host "Granted BATCH local launch/activation: $($t.Path)\$($t.Name)"
+        } catch {
+            Write-Host "Could not update $($t.Path)\$($t.Name): $($_.Exception.Message)"
+        }
+    }
+    $script:BatchComGranted = $true
+}
+
+function Get-MsiServiceState {
+    $svc = Get-CimInstance Win32_Service -Filter "Name='msiserver'" -ErrorAction SilentlyContinue
+    if (-not $svc) { return 'msiserver: not found' }
+    return ('msiserver: {0}, start mode {1}' -f $svc.State, $svc.StartMode)
 }
 
 # Expand %VARS% in a path from test.json. For as=testuser the per-user
@@ -344,12 +399,28 @@ foreach ($s in $steps) {
                 $stubPath = [string](Get-Item -LiteralPath $akey).GetValue('StubPath')
                 if (-not $stubPath) { throw "No StubPath under $akey" }
                 New-TestUser
+                $stubTimeout = [int](Get-Prop $s 'timeoutSeconds' 600)
+                # Started as admin so the user only has to reach it, not launch it.
+                Start-Service -Name msiserver -ErrorAction SilentlyContinue
                 $r = Invoke-As -Label 'active-setup' -Exe 'cmd.exe' -Arguments ('/c ' + $stubPath) -As testuser `
-                        -WorkDir $script:TestUser.Profile -TimeoutSeconds ([int](Get-Prop $s 'timeoutSeconds' 600))
+                        -WorkDir $script:TestUser.Profile -TimeoutSeconds $stubTimeout
                 Write-Block "$label - stdout" $r.Out
                 if ($r.Err.Trim()) { Write-Block "$label - stderr" $r.Err }
+                $retried = $false
+                if (-not $r.TimedOut -and $r.Code -eq 1601) {
+                    # A harness limitation, not the component: see Grant-BatchComLaunch.
+                    Write-Host "Exit 1601 as the test user. $(Get-MsiServiceState). Granting BATCH COM launch rights and retrying once."
+                    Grant-BatchComLaunch
+                    Start-Service -Name msiserver -ErrorAction SilentlyContinue
+                    $r = Invoke-As -Label 'active-setup-retry' -Exe 'cmd.exe' -Arguments ('/c ' + $stubPath) -As testuser `
+                            -WorkDir $script:TestUser.Profile -TimeoutSeconds $stubTimeout
+                    Write-Block "$label (retry) - stdout" $r.Out
+                    if ($r.Err.Trim()) { Write-Block "$label (retry) - stderr" $r.Err }
+                    $retried = $true
+                }
                 $ok = (-not $r.TimedOut) -and $r.Code -eq 0
                 if (-not $ok) {
+                    Write-Host (Get-MsiServiceState)
                     $log = Get-Prop $s 'log'
                     if ($log) {
                         $logPath = Expand-SpecPath ([string]$log) 'testuser'
@@ -357,6 +428,7 @@ foreach ($s in $steps) {
                     }
                 }
                 $detail = if ($r.TimedOut) { 'Timed out.' } else { "StubPath ran as $($script:TestUser.Name), exit code $($r.Code)." }
+                if ($retried) { $detail += ' (Retried after granting BATCH COM launch rights; the first attempt got 1601.)' }
                 Add-Result $label $ok $detail
             }
 

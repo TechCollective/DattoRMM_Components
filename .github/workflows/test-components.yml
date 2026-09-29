@@ -36,7 +36,7 @@ jobs:
       matrix: ${{ steps.find.outputs.matrix }}
       count: ${{ steps.find.outputs.count }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -65,7 +65,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.discover.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Passed through the environment rather than pasted into the script, so
       # a folder name can never be read as code.

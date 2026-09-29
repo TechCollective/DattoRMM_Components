@@ -106,6 +106,13 @@ interactive session.
 | `log` | Optional. A file to print if the stub fails, e.g. an `msiexec /l*v` log. Expanded as the test user. |
 | `timeoutSeconds` | Default `600`. |
 
+The stub runs from a scheduled task, which logs the user on as a batch job,
+not interactively. Windows only lets interactive users start the Windows
+Installer service by default, so a per-user `msiexec` there fails with 1601
+where it would work at a real logon. When the stub returns 1601 the harness
+grants batch logons the same COM launch right interactive ones have, retries
+once, and says so in the result.
+
 **`launch`** — start the app and pass if it is still running after
 `aliveSeconds` (default `15`). There is no desktop in a CI session, so this
 proves "starts and does not crash", not "shows a window". Takes `path` and `as`
