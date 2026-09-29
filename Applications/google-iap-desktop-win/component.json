@@ -1,6 +1,6 @@
 {
   "general": {
-    "name": "IAP Desktop [Win]",
+    "name": "Google IAP Desktop [Win]",
     "category": "applications",
     "description": "Stages Google IAP Desktop so each user installs it at next logon via Active Setup (per-user MSI). https://github.com/TechCollective/DattoRMM_Components",
     "uid": "",
@@ -10,7 +10,7 @@
     "securityLevel": "1",
     "installType": "powershell"
   },
-  "body": "iap-desktop-win.ps1",
+  "body": "google-iap-desktop-win.ps1",
   "variables": [
     {
       "name": "msiUrl",

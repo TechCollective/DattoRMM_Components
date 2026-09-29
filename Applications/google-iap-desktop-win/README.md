@@ -1,4 +1,4 @@
-# IAP Desktop [Win]
+# Google IAP Desktop [Win]
 
 Deploys [Google IAP Desktop](https://googlecloudplatform.github.io/iap-desktop/),
 Google's Remote Desktop / SSH client that connects to Google Cloud VMs through
@@ -47,7 +47,7 @@ Automation → Components → New Component.
 
 | Field | Value |
 |---|---|
-| Name | `IAP Desktop [Win]` |
+| Name | `Google IAP Desktop [Win]` |
 | Description | Stages Google IAP Desktop so each user installs it at their next logon via Active Setup; nothing is installed when the job runs. |
 | Category | **Applications** |
 | Script type | PowerShell |
@@ -57,7 +57,7 @@ Automation → Components → New Component.
 | Attachments | none — the installer is downloaded, not bundled |
 | Post-condition (recommended) | Warning if output does **not** contain `IAP Desktop staged` |
 
-Paste the whole of `iap-desktop-win.ps1` as the script body, then add the input
+Paste the whole of `google-iap-desktop-win.ps1` as the script body, then add the input
 variables below. `component.json` carries the same metadata; CI builds an
 importable `.cpt` from it on every pull request.
 
