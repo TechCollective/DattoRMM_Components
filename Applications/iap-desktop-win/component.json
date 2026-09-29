@@ -1,0 +1,30 @@
+{
+  "general": {
+    "name": "IAP Desktop [Win]",
+    "category": "applications",
+    "description": "Stages Google IAP Desktop so each user installs it at next logon via Active Setup (per-user MSI). https://github.com/TechCollective/DattoRMM_Components",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "600",
+    "securityLevel": "1",
+    "installType": "powershell"
+  },
+  "body": "iap-desktop-win.ps1",
+  "variables": [
+    {
+      "name": "msiUrl",
+      "type": "string",
+      "direction": "false",
+      "description": "https:// URL of IapDesktop.msi. Leave blank for Google's latest GitHub release. Set to a specific release URL to pin a version.",
+      "defaultVal": ""
+    },
+    {
+      "name": "reinstallExisting",
+      "type": "boolean",
+      "direction": "false",
+      "description": "true = force every user on the device to re-run the install at their next logon, even if the staged version has not changed.",
+      "defaultVal": "false"
+    }
+  ]
+}
