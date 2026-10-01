@@ -1,0 +1,44 @@
+{
+  "general": {
+    "name": "UniFi Endpoint - Version Behind Latest [Win]",
+    "category": "monitors",
+    "description": "Alerts when UniFi Endpoint is older than Ubiquiti's latest release; stays quiet when unsure, alerts after staleDays blind.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Monitors/unifi-endpoint-version-behind-latest-win",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "120",
+    "securityLevel": "1",
+    "installType": "powershell"
+  },
+  "body": "unifi-endpoint-version-behind-latest-win.ps1",
+  "variables": [
+    {
+      "name": "cacheHours",
+      "type": "string",
+      "direction": "false",
+      "description": "1-168. Hours a vendor lookup is reused before asking Ubiquiti again.",
+      "defaultVal": "12"
+    },
+    {
+      "name": "graceDays",
+      "type": "string",
+      "direction": "false",
+      "description": "0-60. Days after a new release is first seen before alerting on it.",
+      "defaultVal": "2"
+    },
+    {
+      "name": "staleDays",
+      "type": "string",
+      "direction": "false",
+      "description": "1-60. Days without a successful lookup before the monitor alerts about itself.",
+      "defaultVal": "7"
+    },
+    {
+      "name": "alertIfMissing",
+      "type": "boolean",
+      "direction": "false",
+      "description": "true = alert when UniFi Endpoint is not installed.",
+      "defaultVal": "false"
+    }
+  ]
+}
