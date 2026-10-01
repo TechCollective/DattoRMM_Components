@@ -4,14 +4,17 @@
 
 .DESCRIPTION
     Alerts when the installed UniFi Endpoint is older than Ubiquiti's latest
-    Windows release. Pair it with the "UniFi Endpoint [Win]" component as the
-    monitor's auto-response to keep the app current without the app's own
-    updater (which needs admin rights end users do not have).
+    Windows release. Alert only: it changes nothing and is not meant to have an
+    auto-response. Updates are delivered separately, by a scheduled
+    "UniFi Endpoint [Win]" job; this monitor is how you see which devices that
+    job has not yet brought current.
 
     How "latest" is found - WITHOUT downloading the installer:
       * Sends HEAD requests to Ubiquiti's latest-MSI link and follows the
         redirect chain by hand (no body is read), reading the version from the
-        .msi file name in a Location or Content-Disposition header.
+        .msi file name in a Location or Content-Disposition header. Where a
+        server refuses HEAD (Ubiquiti's API gateway answers 404), that hop is
+        retried with a GET whose body is never read.
       * Caches the answer in C:\ProgramData\_automation\UniFiEndpoint\latest.json
         for cacheHours, so the vendor is asked at most once per cacheHours per
         device however often the monitor runs.
@@ -26,7 +29,7 @@
     Exit 0 = healthy (current, within grace, not installed, or temporarily unknown)
     Exit 1 = alert  (behind latest, blind for > staleDays, or the check crashed)
 
-    Read-only on the product. Writes only its own cache file. Makes HEAD
+    Read-only on the product. Writes only its own cache file. Makes header-only
     requests to download.uid.ui.com and any HTTPS host it redirects to.
 
 .NOTES
@@ -152,8 +155,10 @@ try {
                     if (-not $resp) { throw }
                 }
                 $code = [int]$resp.StatusCode
-                # Some servers refuse HEAD; retry the same hop with GET, reading no body.
-                if ($method -eq 'HEAD' -and ($code -eq 405 -or $code -eq 403 -or $code -eq 501)) { $resp.Close(); $resp = $null; continue }
+                # Some servers refuse HEAD - Ubiquiti's API gateway answers HEAD
+                # with 404 but GET with a 302 and an empty body. Retry the same
+                # hop with GET on any 4xx/5xx, still reading no body.
+                if ($method -eq 'HEAD' -and $code -ge 400) { $resp.Close(); $resp = $null; continue }
                 break
             }
             try {
@@ -272,7 +277,7 @@ try {
         Write-MonitorResult ("UniFi Endpoint $currentText; $latestText released {0:yyyy-MM-dd}, within the $GraceDays-day grace period." -f $firstSeen) 0
     }
 
-    Add-Diag 'Auto-response: run UniFi Endpoint [Win] (usrMode=Install). Logs on the device: C:\ProgramData\_automation\UniFiEndpoint\'
+    Add-Diag 'To update: run UniFi Endpoint [Win] with usrMode=Install, or wait for its scheduled job. Its logs on the device: C:\ProgramData\_automation\UniFiEndpoint\'
     $since = if ($firstSeen) { " (available since {0:yyyy-MM-dd})" -f $firstSeen } else { '' }
     Write-MonitorResult "UniFi Endpoint $currentText is behind the latest version $latestText$since." 1
 }
