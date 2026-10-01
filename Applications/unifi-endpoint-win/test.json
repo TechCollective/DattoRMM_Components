@@ -1,0 +1,62 @@
+{
+  "platform": "windows",
+  "description": "Installs UniFi Endpoint from Ubiquiti's live signed MSI as SYSTEM and checks it is registered. A second run must exit UP_TO_DATE through the pre-check without downloading the installer, which also proves Ubiquiti's link still yields a version from its file name. Bad usrMode and usrExtraMsiArgs values must be refused before msiexec runs, and Uninstall must leave nothing registered.",
+  "variables": {
+    "usrMode": "Install",
+    "usrSource": "Download"
+  },
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Fresh install from the vendor download",
+      "expectExitCode": 0,
+      "outputContains": [
+        "Signature valid:",
+        "STATUS=INSTALLED"
+      ]
+    },
+    {
+      "type": "uninstallEntry",
+      "label": "Registered in Programs and Features",
+      "displayName": "^UniFi Endpoint",
+      "scope": "machine"
+    },
+    {
+      "type": "runComponent",
+      "label": "Second run: current, no download",
+      "expectExitCode": 0,
+      "outputContains": [
+        "No download needed.",
+        "STATUS=UP_TO_DATE"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unknown usrMode is refused",
+      "expectExitCode": 1,
+      "variables": { "usrMode": "Bogus" },
+      "outputContains": [
+        "STATUS=FAILED"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "msiexec switch in usrExtraMsiArgs is refused",
+      "expectExitCode": 1,
+      "variables": { "usrExtraMsiArgs": "/qb" },
+      "outputContains": [
+        "STATUS=FAILED",
+        "UPPERCASE_PROPERTY=value"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Uninstall",
+      "expectExitCode": 0,
+      "variables": { "usrMode": "Uninstall" },
+      "outputContains": [
+        "STATUS=REMOVED"
+      ]
+    }
+  ]
+}
