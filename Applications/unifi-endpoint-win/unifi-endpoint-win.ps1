@@ -5,6 +5,10 @@
 
 .DESCRIPTION
     Install mode (default) is install-OR-update:
+      * If the product is already installed, first asks Ubiquiti's link for the
+        latest version with HEAD requests only. When the installed version is
+        current, exits UP_TO_DATE without downloading the installer. Any doubt
+        (lookup fails, installer-bundle clean-up pending) runs the full path.
       * Gets the MSI from Ubiquiti's own download endpoint (latest release), or from
         the MSI attached to the component, depending on usrSource.
       * Refuses any MSI that is not Authenticode-signed by Ubiquiti.
@@ -302,6 +306,114 @@ try {
         throw ("No usable MSI. " + ($errors -join ' | '))
     }
 
+    # ---- Pre-check: is a download needed at all? ------------------------------
+    # The same lookup the version monitor uses (keep the two in step): HEAD
+    # requests to the vendor link, following redirects by hand and reading the
+    # version from the .msi file name, without downloading the installer.
+    function Get-VersionFromFileName {
+        param([string]$Text)
+        if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+        $t = [uri]::UnescapeDataString($Text)
+        # Content-Disposition: filename="X.msi" / filename*=UTF-8''X.msi
+        if ($t -match "filename\*?=(?:UTF-8'')?`"?([^`";]+)") { $t = $Matches[1] }
+        else {
+            try { $t = ([uri]$t).AbsolutePath } catch { }
+            $t = ($t -split '/')[-1]
+        }
+        if ($t -match '(\d+\.\d+\.\d+(?:\.\d+)?)[^\\/]*\.msi$') { return $Matches[1] }
+        return $null
+    }
+
+    function Resolve-LatestVersion {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $url = $VendorMsiUrl
+        for ($hop = 0; $hop -lt 6; $hop++) {
+            $resp = $null
+            foreach ($method in @('HEAD', 'GET')) {
+                $req = [Net.HttpWebRequest]::Create($url)
+                $req.Method            = $method
+                $req.AllowAutoRedirect = $false
+                $req.Timeout           = 15000
+                $req.ReadWriteTimeout  = 15000
+                $req.UserAgent         = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) DattoRMM-UniFiEndpoint'
+                try { $resp = $req.GetResponse() }
+                catch [Net.WebException] {
+                    $resp = $_.Exception.Response
+                    if (-not $resp) { throw }
+                }
+                $code = [int]$resp.StatusCode
+                # Some servers refuse HEAD - Ubiquiti's API gateway answers HEAD
+                # with 404 but GET with a 302 and an empty body. Retry the same
+                # hop with GET on any 4xx/5xx, still reading no body.
+                if ($method -eq 'HEAD' -and $code -ge 400) { $resp.Close(); $resp = $null; continue }
+                break
+            }
+            try {
+                $code = [int]$resp.StatusCode
+                $loc  = $resp.Headers['Location']
+                $cd   = $resp.Headers['Content-Disposition']
+            } finally { $resp.Close() }   # never read the body: no installer download
+
+            Write-Diag "Pre-check hop ${hop}: $code $(([uri]$url).Host)$(if ($loc) { ' -> ' + ([uri]::new([uri]$url, $loc)).Host })"
+
+            foreach ($candidate in @($cd, $loc, $url)) {
+                $v = Get-VersionFromFileName $candidate
+                if ($v) { return $v }
+            }
+            if ($code -ge 300 -and $code -lt 400 -and $loc) {
+                $next = [uri]::new([uri]$url, $loc)
+                if ($next.Scheme -ne 'https') { throw "Vendor link redirected to non-HTTPS ($($next.Host))." }
+                $url = $next.AbsoluteUri
+                continue
+            }
+            throw "No version in the vendor link's file name (last HTTP status $code)."
+        }
+        throw 'Vendor link redirected more than 6 times.'
+    }
+
+    # Compare only as many fields as both versions have, as the monitor does:
+    # a file name may carry '3.7.5' where the registry has '3.7.5.318'.
+    function Compare-VersionLoose {
+        param([string]$Left, [string]$Right)
+        # Distinct names on purpose: PowerShell variables are case-insensitive,
+        # so $l = ... over a [string]$L parameter would turn the array back into a string.
+        $lp = @($Left.Split('.')  | ForEach-Object { [int]$_ })
+        $rp = @($Right.Split('.') | ForEach-Object { [int]$_ })
+        for ($i = 0; $i -lt [Math]::Min($lp.Count, $rp.Count); $i++) {
+            if ($lp[$i] -lt $rp[$i]) { return -1 }
+            if ($lp[$i] -gt $rp[$i]) { return 1 }
+        }
+        return 0
+    }
+
+    # Returns the installed version when it is already current, so Install mode
+    # can exit without downloading; $null whenever the full path should run:
+    # not Install mode, attachment only, nothing installed via MSI, an installer
+    # bundle still to clean up, or the latest version could not be determined.
+    function Get-CurrentWithoutDownload {
+        param($Installed)
+        if ($Mode -notmatch '^(?i)install$' -or $Source -match '^(?i)attached$') { return $null }
+        if (@($Installed | Where-Object { $_.IsBundle }).Count -gt 0) { return $null }
+        $top = $null
+        foreach ($a in @($Installed | Where-Object { $_.IsMsi })) {
+            $v = ConvertTo-Version $a.DisplayVersion
+            if ($v -and ((-not $top) -or ($v -gt (ConvertTo-Version $top)))) { $top = $a.DisplayVersion }
+        }
+        if (-not $top) { return $null }
+        try { $latest = Resolve-LatestVersion }
+        catch {
+            Write-Diag "Pre-check could not determine the latest version, downloading to compare. Reason: $($_.Exception.Message)"
+            return $null
+        }
+        $installedText = (ConvertTo-Version $top).ToString()
+        if ((Compare-VersionLoose $installedText $latest) -ge 0) {
+            Write-Diag "Pre-check: installed $top is current (latest $latest from the vendor link). No download needed."
+            return $top
+        }
+        Write-Diag "Pre-check: installed $top is older than the latest $latest. Downloading."
+        return $null
+    }
+
 #endregion
 
 #region ------------------------- Install / Remove -----------------------------
@@ -563,6 +675,10 @@ try {
         if (@(Get-UniFiEndpoint).Count -gt 0) { throw 'Uninstall reported success but the product is still registered.' }
         if ($r.Reboot) { Write-Diag 'WARNING: Windows reports a reboot is required to finish removal. No reboot was forced.' }
         Write-DattoResult -Status 'REMOVED' -Message 'UniFi Endpoint uninstalled and verified absent.'
+    }
+    # ------------- Install, already current: exit without downloading -------------
+    elseif ($alreadyCurrent = Get-CurrentWithoutDownload -Installed $before) {
+        Write-DattoResult -Status 'UP_TO_DATE' -Message "UniFi Endpoint $alreadyCurrent already current; no download needed." -Version "$alreadyCurrent"
     }
     else {
         # ------------- Install / Reinstall -------------
