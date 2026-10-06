@@ -21,11 +21,17 @@ Runs as root. It **changes the endpoint**:
 2. Downloads the Google Cloud CLI tarball for the platform from
    `dl.google.com` (Google's own host, HTTPS) and installs it to
    `/opt/google-cloud-sdk` with usage reporting off, symlinking
-   `/usr/local/bin/gcloud`. On Intel Macs it fetches the
-   `darwin-x86_64-bundled-python` variant: the plain one has no Python, and
-   `install.sh` then calls the system `python3`, which on a Mac without Xcode
-   command line tools is a stub that pops Apple's installer dialog and fails
-   (seen 2026-10-06). The installer is always run with the tarball's own
+   `/usr/local/bin/gcloud`. **macOS first bootstraps a Python**: Google's
+   `install.sh` is a wrapper that needs an existing Python 3.10+ to run
+   `install.py`, neither Mac tarball bundles one, and macOS ships only an Xcode
+   stub at `/usr/bin/python3` that pops Apple's installer dialog when called
+   (seen 2026-10-06 on an Intel Mac; the `--install-python` flag lives inside
+   `install.py` and cannot help). The component never calls that stub. It looks
+   for a real Python 3.10+ in `/Library/Frameworks/Python.framework`, Homebrew
+   or `/usr/local/bin`; if none, it downloads the official python.org
+   universal2 package for `macPythonVersion`, **verifies it is signed by the
+   Python Software Foundation** (`pkgutil --check-signature`) and installs it
+   silently with `installer -pkg`. Google's installer then runs under that
    Python (`CLOUDSDK_PYTHON`), and its output is kept: on failure the last 15
    lines are printed and the full log is copied to
    `/var/log/techcollective/gcloud-install.log`. Skips this if the same (or, unpinned, any) version
@@ -55,8 +61,9 @@ session has been established and has been gone for five seconds, it kills the
 tunnel and exits. If no session starts within 90 seconds it closes the tunnel
 and exits 0. Logs to `~/.config/iap-connect/iap-connect.log`.
 
-Network calls: the CLI download from `dl.google.com` at deploy time; at run
-time, the user's `gcloud` talks to Google APIs and IAP. Nothing else.
+Network calls: the CLI download from `dl.google.com` and, on a Mac with no
+Python, the installer package from `www.python.org`, both at deploy time; at
+run time, the user's `gcloud` talks to Google APIs and IAP. Nothing else.
 
 ## Why a tunnel per session, not a persistent one
 
@@ -96,6 +103,7 @@ metadata; CI builds an importable `.cpt` from it.
 | `connectionLabel` | String | `Cloud Server` | What the user sees: "Connect to Cloud Server". Letters, digits, space, `.` `_` `-`, ≤40 chars. |
 | `localPort` | String | `13389` | 1024–65535. Change only if something on the client machines already uses 13389. |
 | `gcloudVersion` | String | *(blank = latest)* | Pin a release such as `540.0.0`. Blank pulls Google's current tarball, so two deployments a month apart can install different versions. |
+| `macPythonVersion` | String | `3.13.16` | macOS only. python.org release installed when the Mac has no Python 3.10+. Must exist at `python.org/ftp/python/<v>/python-<v>-macos11.pkg` (3.10–3.15 supported by gcloud). Ignored on Linux. |
 
 No customer-specific value is hardcoded; every deployment is defined by the
 first three variables. Every input is regex-validated before it reaches a
@@ -159,8 +167,12 @@ Never a customer first.
   is re-run; the launcher itself is shared and world-readable.
 - Not tested behind an authenticating proxy, on Linux arm64, or on a Mac
   with a non-default `/Users` layout.
-- `install.sh` needs the tarball's bundled Python on macOS and system
-  `python3` on Linux; neither is verified beyond presence.
+- A Mac with no Python gets a system-wide python.org install under
+  `/Library/Frameworks/Python.framework` (plus `/usr/local/bin/python3`). It is
+  left in place; removing the component does not remove it.
+- The python.org package is verified by signature, not by hash, so a pinned
+  `macPythonVersion` that python.org has retired fails at download rather than
+  installing something else.
 
 ## Open questions
 

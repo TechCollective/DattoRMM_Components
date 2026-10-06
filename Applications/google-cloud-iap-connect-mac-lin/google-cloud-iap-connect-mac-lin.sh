@@ -21,6 +21,8 @@ WINDOWS_STUB
 #    connectionLabel  optional   name shown to users (default: Cloud Server)
 #    localPort        optional   local listener port (default: 13389)
 #    gcloudVersion    optional   pin a gcloud release, e.g. 540.0.0 (default: latest)
+#    macPythonVersion optional   python.org release installed on Macs with no Python 3.10+
+#                                (default: 3.13.16; ignored on Linux)
 #
 #  Exit codes: 0 ok · 1 gcloud install failed · 2 launcher write failed
 #              3 invalid input · 4 unsupported OS/arch or missing prerequisite
@@ -31,6 +33,7 @@ set -u
 # ---------------------------------------------------------------- inputs ---
 PROJECT="${gcpProject:-}"; INSTANCE="${vmInstance:-}"; ZONE="${vmZone:-}"
 LABEL="${connectionLabel:-Cloud Server}"; PORT="${localPort:-13389}"; GCV="${gcloudVersion:-}"
+MACPY="${macPythonVersion:-3.13.16}"
 ok_id='^[a-z][-a-z0-9]{0,62}$'
 [[ "$PROJECT" =~ $ok_id ]]  || { echo "ERROR: gcpProject '$PROJECT' is not a valid project id"; exit 3; }
 [[ "$INSTANCE" =~ $ok_id ]] || { echo "ERROR: vmInstance '$INSTANCE' is not a valid instance name"; exit 3; }
@@ -41,14 +44,13 @@ ok_label='^[A-Za-z0-9 ._-]{1,40}$'
 [[ "$LABEL" =~ $ok_label ]] || { echo "ERROR: connectionLabel may only contain letters, digits, space . _ -"; exit 3; }
 ok_ver='^[0-9]+\.[0-9]+\.[0-9]+$'
 [ -z "$GCV" ] || [[ "$GCV" =~ $ok_ver ]] || { echo "ERROR: gcloudVersion must look like 540.0.0"; exit 3; }
+[[ "$MACPY" =~ $ok_ver ]] || { echo "ERROR: macPythonVersion must look like 3.13.16"; exit 3; }
 
 # ------------------------------------------------------------ platform -----
 OS=$(uname -s); ARCH=$(uname -m)
 case "$OS/$ARCH" in
     Darwin/arm64)          TARBALL_ARCH="darwin-arm" ;;
-    # Intel Macs: the plain tarball has no Python and install.sh then calls the system python3,
-    # which on a Mac without Xcode CLT is a stub that pops Apple's installer dialog and fails.
-    Darwin/x86_64)         TARBALL_ARCH="darwin-x86_64-bundled-python" ;;
+    Darwin/x86_64)         TARBALL_ARCH="darwin-x86_64" ;;
     Linux/x86_64)          TARBALL_ARCH="linux-x86_64" ;;
     Linux/aarch64|Linux/arm64) TARBALL_ARCH="linux-arm" ;;
     *) echo "ERROR: unsupported platform $OS/$ARCH"; exit 4 ;;
@@ -60,6 +62,44 @@ fi
 SDK_DIR="/opt/google-cloud-sdk"
 SHARE_DIR="/usr/local/share/iap-connect"
 LAUNCHER="$SHARE_DIR/iap-connect.sh"
+
+# ------------------------------------------------- macOS Python bootstrap --
+# Google's install.sh is a wrapper that needs an existing Python 3.10+ to run install.py; the
+# --install-python option lives inside install.py and cannot bootstrap. macOS ships no Python,
+# only an Xcode stub at /usr/bin/python3 that pops Apple's installer dialog when called, so that
+# path is never tried. If no real Python is present, install the official python.org package
+# (signed by the Python Software Foundation) silently and use it. Verified 2026-10-06.
+mac_find_python() {
+    local p v
+    for p in /opt/google-cloud-sdk/platform/bundledpythonunix/bin/python3 \
+             /Library/Frameworks/Python.framework/Versions/3.*/bin/python3 \
+             /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+        [ -x "$p" ] || continue
+        case "$p" in /usr/bin/*) continue ;; esac
+        v=$("$p" -c 'import sys; print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null) || continue
+        [ "${v:-0}" -ge 310 ] && { printf '%s\n' "$p"; return 0; }
+    done
+    return 1
+}
+mac_install_python() {
+    local url tmp pkg
+    url="https://www.python.org/ftp/python/${MACPY}/python-${MACPY}-macos11.pkg"
+    tmp=$(mktemp -d) || return 1
+    pkg="$tmp/python.pkg"
+    echo "No Python 3.10+ found; installing Python ${MACPY} from python.org"
+    curl -fsSL --retry 3 -o "$pkg" "$url" || { echo "ERROR: Python download failed ($url)"; rm -rf "$tmp"; return 1; }
+    if ! pkgutil --check-signature "$pkg" 2>/dev/null | grep -q "Python Software Foundation"; then
+        echo "ERROR: Python package is not signed by the Python Software Foundation; refusing to install"
+        rm -rf "$tmp"; return 1
+    fi
+    installer -pkg "$pkg" -target / >"$tmp/installer.log" 2>&1 || { echo "ERROR: Python installer failed:"; tail -n 10 "$tmp/installer.log"; rm -rf "$tmp"; return 1; }
+    rm -rf "$tmp"
+}
+BOOT_PY=""
+if [ "$OS" = "Darwin" ]; then
+    BOOT_PY=$(mac_find_python) || { mac_install_python || exit 1; BOOT_PY=$(mac_find_python) || { echo "ERROR: Python installed but not found"; exit 1; }; }
+    echo "Using Python at $BOOT_PY for the Google Cloud CLI installer"
+fi
 
 # -------------------------------------------------------- gcloud install ---
 install_gcloud() {
@@ -77,12 +117,13 @@ install_gcloud() {
     # Datto's agent may not set HOME, and install.sh writes under it.
     export HOME="${HOME:-/var/root}"
     export CLOUDSDK_CORE_DISABLE_PROMPTS=1
-    # Always run the installer with the tarball's own Python, never the system one.
+    # Run the installer with a Python we chose, never the system stub. On macOS that is the
+    # bootstrap Python found or installed above; the tarball's own bundled copy wins if present.
     bp="$SDK_DIR.new/platform/bundledpythonunix/bin/python3"
-    if [ -x "$bp" ]; then export CLOUDSDK_PYTHON="$bp"; py_flag="--install-python=false"
-    else py_flag="--install-python=true"; fi
+    if [ -x "$bp" ]; then export CLOUDSDK_PYTHON="$bp"
+    elif [ -n "$BOOT_PY" ]; then export CLOUDSDK_PYTHON="$BOOT_PY"; fi
     log="$SDK_DIR.new/install.log"
-    if ! "$SDK_DIR.new/install.sh" --quiet --usage-reporting=false --path-update=false --bash-completion=false "$py_flag" > "$log" 2>&1; then
+    if ! "$SDK_DIR.new/install.sh" --quiet --usage-reporting=false --path-update=false --bash-completion=false > "$log" 2>&1; then
         echo "ERROR: gcloud install.sh failed. Last 15 lines of its output:"; tail -n 15 "$log"
         mkdir -p /var/log/techcollective && cp "$log" /var/log/techcollective/gcloud-install.log 2>/dev/null
         rm -rf "$SDK_DIR.new"; return 1
@@ -123,6 +164,12 @@ for c in /opt/google-cloud-sdk/bin/gcloud "$(command -v gcloud 2>/dev/null || tr
     [ -n "$c" ] && [ -x "$c" ] && GCLOUD="$c" && break
 done
 [ -n "$GCLOUD" ] || { say_ "Google Cloud CLI is not installed. Please contact support."; pause_exit 1; }
+if [ "$OS" = "Darwin" ]; then
+    # Point gcloud at a real Python so it never falls through to the Xcode stub at /usr/bin/python3.
+    for p in /opt/google-cloud-sdk/platform/bundledpythonunix/bin/python3 /Library/Frameworks/Python.framework/Versions/3.*/bin/python3; do
+        [ -x "$p" ] && { export CLOUDSDK_PYTHON="$p"; break; }
+    done
+fi
 
 if [ "$OS" = "Darwin" ]; then
     listening() { lsof -nP -iTCP:"$LOCAL_PORT" -sTCP:LISTEN >/dev/null 2>&1; }
