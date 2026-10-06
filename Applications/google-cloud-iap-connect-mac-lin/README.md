@@ -21,7 +21,14 @@ Runs as root. It **changes the endpoint**:
 2. Downloads the Google Cloud CLI tarball for the platform from
    `dl.google.com` (Google's own host, HTTPS) and installs it to
    `/opt/google-cloud-sdk` with usage reporting off, symlinking
-   `/usr/local/bin/gcloud`. Skips this if the same (or, unpinned, any) version
+   `/usr/local/bin/gcloud`. On Intel Macs it fetches the
+   `darwin-x86_64-bundled-python` variant: the plain one has no Python, and
+   `install.sh` then calls the system `python3`, which on a Mac without Xcode
+   command line tools is a stub that pops Apple's installer dialog and fails
+   (seen 2026-10-06). The installer is always run with the tarball's own
+   Python (`CLOUDSDK_PYTHON`), and its output is kept: on failure the last 15
+   lines are printed and the full log is copied to
+   `/var/log/techcollective/gcloud-install.log`. Skips this if the same (or, unpinned, any) version
    is already there. Supports macOS arm64/x86_64 and Linux x86_64/arm64. Linux
    needs `python3` present; the script refuses (exit 4) if it is not.
 3. Writes the launcher `/usr/local/share/iap-connect/iap-connect.sh` with the

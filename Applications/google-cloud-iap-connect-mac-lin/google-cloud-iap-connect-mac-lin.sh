@@ -46,7 +46,9 @@ ok_ver='^[0-9]+\.[0-9]+\.[0-9]+$'
 OS=$(uname -s); ARCH=$(uname -m)
 case "$OS/$ARCH" in
     Darwin/arm64)          TARBALL_ARCH="darwin-arm" ;;
-    Darwin/x86_64)         TARBALL_ARCH="darwin-x86_64" ;;
+    # Intel Macs: the plain tarball has no Python and install.sh then calls the system python3,
+    # which on a Mac without Xcode CLT is a stub that pops Apple's installer dialog and fails.
+    Darwin/x86_64)         TARBALL_ARCH="darwin-x86_64-bundled-python" ;;
     Linux/x86_64)          TARBALL_ARCH="linux-x86_64" ;;
     Linux/aarch64|Linux/arm64) TARBALL_ARCH="linux-arm" ;;
     *) echo "ERROR: unsupported platform $OS/$ARCH"; exit 4 ;;
@@ -72,8 +74,19 @@ install_gcloud() {
     rm -rf "$SDK_DIR.new" && mkdir -p "$SDK_DIR.new" || return 1
     tar -xzf "$tmp/gcloud.tgz" -C "$SDK_DIR.new" --strip-components=1 || { echo "ERROR: extract failed"; rm -rf "$tmp" "$SDK_DIR.new"; return 1; }
     rm -rf "$tmp"
-    "$SDK_DIR.new/install.sh" --quiet --usage-reporting=false --path-update=false --command-completion=false >/dev/null 2>&1 \
-        || { echo "ERROR: gcloud install.sh failed"; rm -rf "$SDK_DIR.new"; return 1; }
+    # Datto's agent may not set HOME, and install.sh writes under it.
+    export HOME="${HOME:-/var/root}"
+    export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+    # Always run the installer with the tarball's own Python, never the system one.
+    bp="$SDK_DIR.new/platform/bundledpythonunix/bin/python3"
+    if [ -x "$bp" ]; then export CLOUDSDK_PYTHON="$bp"; py_flag="--install-python=false"
+    else py_flag="--install-python=true"; fi
+    log="$SDK_DIR.new/install.log"
+    if ! "$SDK_DIR.new/install.sh" --quiet --usage-reporting=false --path-update=false --bash-completion=false "$py_flag" > "$log" 2>&1; then
+        echo "ERROR: gcloud install.sh failed. Last 15 lines of its output:"; tail -n 15 "$log"
+        mkdir -p /var/log/techcollective && cp "$log" /var/log/techcollective/gcloud-install.log 2>/dev/null
+        rm -rf "$SDK_DIR.new"; return 1
+    fi
     rm -rf "$SDK_DIR" && mv "$SDK_DIR.new" "$SDK_DIR" || return 1
     chmod -R a+rX "$SDK_DIR"
     ln -sf "$SDK_DIR/bin/gcloud" /usr/local/bin/gcloud 2>/dev/null || true
