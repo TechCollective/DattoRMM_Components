@@ -1,0 +1,35 @@
+{
+  "platform": "windows",
+  "description": "Runs the monitor as SYSTEM on a runner without UniFi Endpoint. It must stay healthy by default, alert when alertIfMissing is on, and turn an out-of-range variable into a 'Check could not run' alert - each with exactly the documented exit code and a result block. The installed/behind paths need the product present and are exercised by the component's own test and the first internal run.",
+  "variables": {},
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Not installed: healthy",
+      "expectExitCode": 0,
+      "outputContains": [
+        "<-Start Result->",
+        "STATUS=UniFi Endpoint is not installed; nothing to check."
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Not installed with alertIfMissing: alert",
+      "expectExitCode": 1,
+      "variables": { "alertIfMissing": "true" },
+      "outputContains": [
+        "STATUS=UniFi Endpoint is not installed on this device (alertIfMissing is on)."
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Out-of-range cacheHours: check could not run",
+      "expectExitCode": 1,
+      "variables": { "cacheHours": "0" },
+      "outputContains": [
+        "STATUS=Check could not run:",
+        "<-Start Diagnostic->"
+      ]
+    }
+  ]
+}
