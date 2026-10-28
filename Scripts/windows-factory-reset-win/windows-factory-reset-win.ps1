@@ -34,9 +34,9 @@
 
     After the method is accepted the device reboots on its own within minutes.
     The Datto agent is erased with everything else, so the device goes offline
-    and does not come back. The Datto job itself may report a timeout or lost
-    connection because the reboot interrupts the result upload; the device
-    dropping offline is the confirmation.
+    and does not come back. The job's output never reaches Datto (measured
+    2026-10-28): the job stays at Running until Datto expires it. The device
+    dropping offline a few minutes after the job is the confirmation.
 
     Exit codes:
       0 = STATUS=RESET_STARTED (wipe accepted) or STATUS=PREFLIGHT_ONLY (usrConfirm=No, all checks passed)
@@ -226,18 +226,31 @@ try {
 }
 
 # --- 6. Power: a laptop on battery can fail or stall the reset -------------------
+# Reads whether mains power is present (root\wmi BatteryStatus.PowerOnline), not the
+# discharge flag on Win32_Battery, which some laptops report as "discharging" while
+# plugged in. The charge percentage is informational only.
 try {
     $batt = @(Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue)
     if ($batt.Count -eq 0) {
         Pass-Check 'No battery (desktop, or mains only).'
     } else {
-        $discharging = @($batt | Where-Object { [int]$_.BatteryStatus -eq 1 })
         $charge = ($batt | ForEach-Object { $_.EstimatedChargeRemaining }) -join '/'
-        if ($discharging.Count -gt 0) {
-            if ($IgnoreBatt -eq 'true') { Write-Line ("  warn  On battery ({0}% left) but usrIgnoreBattery=true." -f $charge) }
-            else { Fail-Check ("Device is running on battery ({0}% left). Plug it in, or set usrIgnoreBattery=true." -f $charge) }
-        } else {
+        $onMains = $null
+        try {
+            $bs = @(Get-CimInstance -Namespace 'root\wmi' -ClassName 'BatteryStatus')
+            if ($bs.Count -gt 0) { $onMains = [bool](@($bs | Where-Object { $_.PowerOnline }).Count) }
+        } catch { $onMains = $null }
+        if ($null -eq $onMains) {
+            # Fall back to the less reliable discharge flag (1 = discharging).
+            $onMains = -not [bool](@($batt | Where-Object { [int]$_.BatteryStatus -eq 1 }).Count)
+            Write-Line '  info  Mains state read from Win32_Battery (root\wmi BatteryStatus unavailable); less reliable.'
+        }
+        if ($onMains) {
             Pass-Check ("On mains power (battery {0}%)." -f $charge)
+        } elseif ($IgnoreBatt -eq 'true') {
+            Write-Line ("  warn  On battery ({0}% left) but usrIgnoreBattery=true." -f $charge)
+        } else {
+            Fail-Check ("Device is running on battery ({0}% left). Plug it in, or set usrIgnoreBattery=true." -f $charge)
         }
     }
 } catch {
@@ -287,7 +300,7 @@ try {
 }
 
 Write-Line ("TICKET={0} HOST={1} SERIAL={2} MODE={3} METHOD={4}" -f $Ticket, $ThisHost, $ThisSerial, $Mode, $method)
-Write-Line 'The device will reboot into recovery within a few minutes and drop out of Datto RMM. That is expected.'
+Write-Line 'The device will reboot into recovery within a few minutes and drop out of Datto RMM. This job will stay at Running in Datto; that is expected.'
 Finish 'RESET_STARTED' ("Reset accepted on {0}, serial {1} ({2}). Record this in ticket {3}." -f $ThisHost, $ThisSerial, $Mode, $Ticket) 0
 
 #endregion

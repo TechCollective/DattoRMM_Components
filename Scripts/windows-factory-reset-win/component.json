@@ -3,11 +3,11 @@
     "name": "Windows - Factory Reset [Win]",
     "category": "scripts",
     "description": "Starts Reset this PC remotely after safety checks; the device reboots, is erased and drops out of Datto RMM. Needs the serial number and ticket typed in.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/windows-factory-reset-win",
-    "uid": "",
+    "uid": "6c12cfc7-17cc-4272-9ead-4405fef7fbc2",
     "hash": "",
     "version": "1",
     "timeout": "600",
-    "securityLevel": "5",
+    "securityLevel": "3",
     "installType": "powershell"
   },
   "body": "windows-factory-reset-win.ps1",
