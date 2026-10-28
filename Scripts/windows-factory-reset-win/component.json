@@ -1,0 +1,92 @@
+{
+  "general": {
+    "name": "Windows - Factory Reset [Win]",
+    "category": "scripts",
+    "description": "Starts Reset this PC remotely after safety checks; the device reboots, is erased and drops out of Datto RMM. Needs the serial number and ticket typed in.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/windows-factory-reset-win",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "600",
+    "securityLevel": "5",
+    "installType": "powershell"
+  },
+  "body": "windows-factory-reset-win.ps1",
+  "variables": [
+    {
+      "name": "usrConfirm",
+      "type": "map",
+      "direction": "false",
+      "description": "No = run the safety checks only and change nothing. ERASE = reset the device if every check passes.",
+      "defaultVal": "No",
+      "options": [
+        {
+          "name": "No",
+          "value": "No"
+        },
+        {
+          "name": "ERASE",
+          "value": "ERASE"
+        }
+      ]
+    },
+    {
+      "name": "usrConfirmSerial",
+      "type": "string",
+      "direction": "false",
+      "description": "The serial number of the device to erase, as shown on its Datto or Autotask record. The job refuses if it does not match the device it runs on.",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrTicketNumber",
+      "type": "string",
+      "direction": "false",
+      "description": "The Autotask ticket authorising the reset, like T20261028.0001. Required.",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrResetMode",
+      "type": "map",
+      "direction": "false",
+      "description": "RemoveEverything = Reset this PC > Remove everything. KeepMyFiles = Keep my files. Protected = cannot be interrupted, cleans partitions on failure, may leave the device unbootable (lost/stolen only).",
+      "defaultVal": "RemoveEverything",
+      "options": [
+        {
+          "name": "RemoveEverything",
+          "value": "RemoveEverything"
+        },
+        {
+          "name": "KeepMyFiles",
+          "value": "KeepMyFiles"
+        },
+        {
+          "name": "Protected",
+          "value": "Protected"
+        }
+      ]
+    },
+    {
+      "name": "usrBitLockerKeySaved",
+      "type": "map",
+      "direction": "false",
+      "description": "Yes = the BitLocker recovery key for this device is escrowed. Required when BitLocker is on; the job prints the key ID to match.",
+      "defaultVal": "No",
+      "options": [
+        {
+          "name": "No",
+          "value": "No"
+        },
+        {
+          "name": "Yes",
+          "value": "Yes"
+        }
+      ]
+    },
+    {
+      "name": "usrIgnoreBattery",
+      "type": "boolean",
+      "direction": "false",
+      "description": "true = proceed even if the device is running on battery.",
+      "defaultVal": "false"
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "platform": "windows",
+  "description": "Proves the component refuses bad input before any check runs, and that the preflight refuses a server OS (GitHub's Windows runner is Windows Server) with nothing changed. A refusal run after the preflight run proves the runner is still there. The real reset can only be proven on a throwaway Windows 11 VM (Tier 2).",
+  "variables": {
+    "usrConfirm": "No",
+    "usrConfirmSerial": "TESTSERIAL0001",
+    "usrTicketNumber": "T20260101.0001",
+    "usrResetMode": "RemoveEverything"
+  },
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Missing ticket number is refused",
+      "expectExitCode": 1,
+      "variables": { "usrTicketNumber": "" },
+      "outputContains": [ "STATUS=REFUSED", "usrTicketNumber" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Malformed ticket number is refused",
+      "expectExitCode": 1,
+      "variables": { "usrTicketNumber": "12345" },
+      "outputContains": [ "STATUS=REFUSED", "usrTicketNumber" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Missing serial number is refused",
+      "expectExitCode": 1,
+      "variables": { "usrConfirmSerial": "" },
+      "outputContains": [ "STATUS=REFUSED", "usrConfirmSerial" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unknown usrConfirm value is refused",
+      "expectExitCode": 1,
+      "variables": { "usrConfirm": "yes" },
+      "outputContains": [ "STATUS=REFUSED", "usrConfirm" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unknown usrResetMode is refused",
+      "expectExitCode": 1,
+      "variables": { "usrResetMode": "Bogus" },
+      "outputContains": [ "STATUS=REFUSED", "usrResetMode" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Preflight refuses a server OS, even with ERASE typed",
+      "expectExitCode": 2,
+      "variables": { "usrConfirm": "ERASE" },
+      "outputContains": [ "server", "STATUS=PREFLIGHT_FAILED", "nothing was changed" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Runner still alive after the preflight run",
+      "expectExitCode": 1,
+      "variables": { "usrTicketNumber": "" },
+      "outputContains": [ "STATUS=REFUSED" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: dry run on a Windows 11 VM passes preflight",
+      "tier": 2,
+      "expectExitCode": 0,
+      "outputContains": [ "Preflight passed.", "STATUS=PREFLIGHT_ONLY" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: serial mismatch with ERASE is refused after preflight",
+      "tier": 2,
+      "expectExitCode": 1,
+      "variables": { "usrConfirm": "ERASE", "usrConfirmSerial": "WRONGSERIAL" },
+      "outputContains": [ "does not match", "STATUS=REFUSED" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: ERASE with the matching serial (set usrConfirmSerial to the VM's serial) starts the reset on a throwaway Windows 11 VM",
+      "tier": 2,
+      "expectExitCode": 0,
+      "variables": { "usrConfirm": "ERASE" },
+      "outputContains": [ "STATUS=RESET_STARTED" ]
+    }
+  ]
+}
