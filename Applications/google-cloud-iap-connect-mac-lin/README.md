@@ -61,6 +61,16 @@ session has been established and has been gone for five seconds, it kills the
 tunnel and exits. If no session starts within 90 seconds it closes the tunnel
 and exits 0. Logs to `~/.config/iap-connect/iap-connect.log`.
 
+When the tunnel cannot be opened, the launcher reads gcloud's output and tells
+the user which of four things it is in plain words: the deployment has the
+wrong server details (nothing they can do; contact support), their Google
+account is not in the access group, their sign-in has expired (it clears the
+cached credential so the next run signs in again), or the server is not
+answering. The raw gcloud lines follow under "Details for support". Seen in
+the first real test, 2026-10-29: a job deployed with the project's display
+name instead of its ID produced `The resource 'projects/<name>' was not
+found`, which a user cannot act on.
+
 Network calls: the CLI download from `dl.google.com` and, on a Mac with no
 Python, the installer package from `www.python.org`, both at deploy time; at
 run time, the user's `gcloud` talks to Google APIs and IAP. Nothing else.
@@ -97,7 +107,7 @@ metadata; CI builds an importable `.cpt` from it.
 
 | Name | Type | Default | Safe range / notes |
 |---|---|---|---|
-| `gcpProject` | String | *(required)* | Project id: lowercase letter first, then lowercase/digits/hyphens, ≤63 chars. Anything else exits 3. |
+| `gcpProject` | String | *(required)* | Project **ID**, not the display name — `my-project-123456`, the value in the console's project picker and in every gcloud URL. The display name is often a well-formed ID too (`acme` vs `acme-123456`), so validation cannot catch the mix-up; the user sees "wrong server details" at first connect. Lowercase letter first, then lowercase/digits/hyphens, ≤63 chars. |
 | `vmInstance` | String | *(required)* | Instance name, same rule as above. |
 | `vmZone` | String | *(required)* | `region-zone` form like `us-central1-c`. |
 | `connectionLabel` | String | `Cloud Server` | What the user sees: "Connect to Cloud Server". Letters, digits, space, `.` `_` `-`, ≤40 chars. |

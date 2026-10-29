@@ -3,7 +3,7 @@
     "name": "Google Cloud IAP Connect [Mac] [Lin]",
     "category": "applications",
     "description": "Installs the Google Cloud CLI and a desktop launcher that tunnels Remote Desktop to one VM through IAP; users sign in with Google on first use. https://github.com/TechCollective/DattoRMM_Components",
-    "uid": "238eeb45-d63d-47b5-bcba-ec64a066d392",
+    "uid": "8369e4b7-b2e1-4fde-bb8e-4f579b3d98ed",
     "hash": "",
     "version": "1",
     "timeout": "900",
