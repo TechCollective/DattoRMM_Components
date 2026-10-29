@@ -189,6 +189,36 @@ if ! "$GCLOUD" auth list --filter=status:ACTIVE --format='value(account)' 2>/dev
     "$GCLOUD" auth login --brief || { say_ "Sign-in did not complete."; pause_exit 1; }
 fi
 
+# Translate gcloud's failure into something the person at the keyboard can act on, then show the
+# raw lines for whoever picks up the ticket. The log is read BEFORE we write to it so the tail is
+# gcloud's output, not our own message.
+tunnel_failed() {
+    local raw
+    raw=$(tail -n 8 "$LOG" 2>/dev/null)
+    echo
+    case "$raw" in
+        *"was not found"*|*"Could not fetch resource"*)
+            say_ "Could not connect: this computer is set up with the wrong server details."
+            say_ "There is nothing to fix on your side. Please contact support and mention 'IAP Connect server details'." ;;
+        *"PERMISSION_DENIED"*|*"does not have permission"*|*"403"*|*"Permission"*)
+            say_ "Could not connect: your Google account is not allowed to reach $LABEL."
+            say_ "Please contact support and ask to be added to the remote desktop access group." ;;
+        *"invalid_grant"*|*"Reauthentication"*|*"reauth"*|*"not logged in"*|*"no credentialed accounts"*)
+            say_ "Could not connect: your Google sign-in has expired. Run this again and sign in when the browser opens."
+            "$GCLOUD" auth revoke --all >/dev/null 2>&1 ;;
+        *"failed to connect to backend"*|*"4003"*|*"4047"*)
+            say_ "Could not connect: $LABEL is not answering. It may be off or restarting. Try again in a few minutes;"
+            say_ "if it keeps happening, contact support." ;;
+        *"Could not resolve"*|*"Network is unreachable"*|*"Connection refused"*|*"timed out"*)
+            say_ "Could not connect: this computer does not seem to have internet access right now." ;;
+        *)
+            say_ "Could not connect to $LABEL. Please contact support and send them the lines below." ;;
+    esac
+    echo; echo "Details for support:"; printf '%s\n' "$raw" | sed 's/^/  /'
+    printf '%s %s\n' "$(date '+%F %T')" "tunnel failed; gcloud output above" >> "$LOG"
+    pause_exit 1
+}
+
 TUNNEL_PID=""
 if listening; then
     say_ "Tunnel already running; reusing it."
@@ -200,11 +230,11 @@ else
     for _ in $(seq 1 40); do
         listening && break
         if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
-            say_ "The tunnel could not be opened. Last lines of the log:"; tail -n 5 "$LOG"; pause_exit 1
+            tunnel_failed
         fi
         sleep 0.5
     done
-    listening || { say_ "The tunnel did not start in time."; kill "$TUNNEL_PID" 2>/dev/null; pause_exit 1; }
+    listening || { kill "$TUNNEL_PID" 2>/dev/null; sleep 1; tunnel_failed; }
 fi
 cleanup() { if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then kill "$TUNNEL_PID" 2>/dev/null; say_ "Tunnel closed."; fi; }
 trap cleanup EXIT INT TERM
