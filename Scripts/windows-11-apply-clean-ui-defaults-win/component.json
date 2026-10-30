@@ -1,0 +1,48 @@
+{
+  "general": {
+    "name": "Windows 11 - Apply Clean UI Defaults [Win]",
+    "category": "scripts",
+    "description": "Applies our standard Windows 11 taskbar, Start, Explorer, privacy and animation preferences to every profile and the Default profile, hides Edge first-run, sets sleep/hibernate on AC to Never, and restarts Explorer.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/windows-11-apply-clean-ui-defaults-win",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "300",
+    "securityLevel": "3",
+    "installType": "powershell"
+  },
+  "body": "windows-11-apply-clean-ui-defaults-win.ps1",
+  "variables": [
+    {
+      "name": "usrScope",
+      "type": "map",
+      "direction": "false",
+      "description": "All = every existing local profile plus the Default profile. DefaultOnly = only the Default profile, so just users created later get the settings.",
+      "defaultVal": "All",
+      "options": [
+        { "name": "All", "value": "All" },
+        { "name": "DefaultOnly", "value": "DefaultOnly" }
+      ]
+    },
+    {
+      "name": "usrNeverSleepOnAC",
+      "type": "boolean",
+      "direction": "false",
+      "description": "true = set sleep and hibernate on AC power to Never on the active plan. Display timeout and all on-battery settings are left alone.",
+      "defaultVal": "true"
+    },
+    {
+      "name": "usrRestartExplorer",
+      "type": "boolean",
+      "direction": "false",
+      "description": "true = restart Explorer in every logged-on session so the classic context menu and animation changes apply now. false = they apply at next sign-in.",
+      "defaultVal": "true"
+    },
+    {
+      "name": "usrAllowUnsupportedOs",
+      "type": "boolean",
+      "direction": "false",
+      "description": "false = refuse to run on anything but a Windows 11 workstation. true = run anyway (Windows 10 / server). Testing only.",
+      "defaultVal": "false"
+    }
+  ]
+}
