@@ -1,0 +1,67 @@
+{
+  "platform": "windows",
+  "description": "GitHub's runner is Windows Server, so the default run must refuse at preflight with nothing changed, and bad inputs must be refused. With usrAllowUnsupportedOs=true the component must write the Default profile and the runner's own profile from SYSTEM and exit APPLIED; a second run must report 0 changes for every profile, which proves the writes landed and are idempotent. The Edge policy is the one HKLM value Tier 1 can read back directly. The visible result (left-aligned taskbar, classic right-click menu, no Widgets) can only be judged on a Windows 11 VM (Tier 2).",
+  "variables": {
+    "usrScope": "All",
+    "usrNeverSleepOnAC": "true",
+    "usrRestartExplorer": "false",
+    "usrAllowUnsupportedOs": "true"
+  },
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Server OS is refused at preflight by default",
+      "expectExitCode": 2,
+      "variables": { "usrAllowUnsupportedOs": "false" },
+      "outputContains": [ "server", "STATUS=PREFLIGHT_FAILED", "Nothing was changed" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unknown usrScope is refused",
+      "expectExitCode": 1,
+      "variables": { "usrScope": "Everyone" },
+      "outputContains": [ "STATUS=REFUSED", "usrScope" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Non-boolean usrRestartExplorer is refused",
+      "expectExitCode": 1,
+      "variables": { "usrRestartExplorer": "yes" },
+      "outputContains": [ "STATUS=REFUSED", "usrRestartExplorer" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "First run writes the Default profile and existing profiles",
+      "expectExitCode": 0,
+      "outputContains": [ "Default profile: changed", "Edge first-run experience hidden", "Power: active plan", "STATUS=APPLIED" ]
+    },
+    {
+      "type": "registry",
+      "label": "Edge first-run policy set",
+      "path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
+      "name": "HideFirstRunExperience",
+      "equals": "1"
+    },
+    {
+      "type": "runComponent",
+      "label": "Second run changes nothing in the Default profile",
+      "expectExitCode": 0,
+      "outputContains": [ "Default profile: changed 0,", "STATUS=APPLIED" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "DefaultOnly scope touches only the Default profile",
+      "expectExitCode": 0,
+      "variables": { "usrScope": "DefaultOnly" },
+      "outputContains": [ "1 of 1 profile target(s) written", "STATUS=APPLIED" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: on a Windows 11 VM with a user signed in, default settings apply and Explorer comes back",
+      "tier": 2,
+      "expectExitCode": 0,
+      "variables": { "usrAllowUnsupportedOs": "false", "usrRestartExplorer": "true" },
+      "outputContains": [ "(loaded)", "Explorer restarted in", "STATUS=APPLIED" ]
+    }
+  ]
+}
