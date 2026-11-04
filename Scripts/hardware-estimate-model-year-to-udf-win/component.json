@@ -1,0 +1,34 @@
+{
+  "general": {
+    "name": "Hardware - Estimate Model Year to UDF [Win]",
+    "category": "scripts",
+    "description": "Writes an estimated build year from model and CPU to a UDF (default 10). Read-only otherwise; won't overwrite another component's value.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/hardware-estimate-model-year-to-udf-win",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "120",
+    "securityLevel": "1",
+    "installType": "powershell"
+  },
+  "body": "hardware-estimate-model-year-to-udf-win.ps1",
+  "variables": [
+    {
+      "name": "usrUdfNumber",
+      "type": "string",
+      "direction": "false",
+      "description": "The UDF to write, 1 to 300. Anything else is refused.",
+      "defaultVal": "10"
+    },
+    {
+      "name": "usrOverwriteForeign",
+      "type": "map",
+      "direction": "false",
+      "description": "No = leave the UDF alone if it holds a value this component did not write. Yes = overwrite it.",
+      "defaultVal": "No",
+      "options": [
+        { "name": "No", "value": "No" },
+        { "name": "Yes", "value": "Yes" }
+      ]
+    }
+  ]
+}
