@@ -96,5 +96,5 @@ Never a customer first.
 
 ## Open questions
 
-- Before going wide, find out what already wrote to UDF 10 on some devices (at least one server held a two-digit number). The component refuses to overwrite those values by default, so those devices end with exit 3 until that is settled.
+- Existing values in UDF 10 on some devices were confirmed as technician typos (2026-11-04). Clear them, or run the first fleet-wide pass with `usrOverwriteForeign` set to `Yes`; leave it at `No` for the initial-audit trigger so the guard stays on.
 - Planned trigger: the initial audit for new devices, plus a one-off run across existing workstations.
