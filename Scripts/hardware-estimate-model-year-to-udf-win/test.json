@@ -1,0 +1,113 @@
+{
+  "platforms": ["windows"],
+  "description": "Proves bad input is refused, that a real run on the runner (a virtual machine) writes 'VM' to the UDF and a second run changes nothing, and that simulated Dell, Lenovo and unknown hardware produce the expected UDF text. TC_TEST_HARDWARE stands in for WMI. Refusing to overwrite another component's value, and a real workstation, are Tier 2.",
+  "variables": {
+    "usrUdfNumber": "10",
+    "usrOverwriteForeign": "No"
+  },
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "UDF number 0 is refused",
+      "expectExitCode": 1,
+      "variables": { "usrUdfNumber": "0" },
+      "outputContains": [ "STATUS=REFUSED", "usrUdfNumber" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "UDF number 301 is refused",
+      "expectExitCode": 1,
+      "variables": { "usrUdfNumber": "301" },
+      "outputContains": [ "STATUS=REFUSED", "usrUdfNumber" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Non-numeric UDF number is refused",
+      "expectExitCode": 1,
+      "variables": { "usrUdfNumber": "ten" },
+      "outputContains": [ "STATUS=REFUSED", "usrUdfNumber" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unknown usrOverwriteForeign value is refused",
+      "expectExitCode": 1,
+      "variables": { "usrOverwriteForeign": "maybe" },
+      "outputContains": [ "STATUS=REFUSED", "usrOverwriteForeign" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Real run on the runner: a virtual machine is recorded as VM",
+      "expectExitCode": 0,
+      "outputContains": [ "Result: VM | virtual machine", "STATUS=WRITTEN" ]
+    },
+    {
+      "type": "registry",
+      "label": "UDF value written where the Datto agent reads it",
+      "path": "HKLM:\\SOFTWARE\\CentraStage",
+      "name": "Custom10",
+      "equals": "VM | virtual machine"
+    },
+    {
+      "type": "runComponent",
+      "label": "Second run changes nothing",
+      "expectExitCode": 0,
+      "outputContains": [ "STATUS=UNCHANGED" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Simulated Dell Latitude 5420",
+      "expectExitCode": 0,
+      "variables": { "TC_TEST_HARDWARE": "Dell Inc.|Latitude 5420||11th Gen Intel(R) Core(TM) i5-1145G7 @ 2.60GHz" },
+      "outputContains": [ "Result: 2021 | high | Latitude 5420", "STATUS=WRITTEN" ]
+    },
+    {
+      "type": "registry",
+      "label": "Its own earlier value was replaced",
+      "path": "HKLM:\\SOFTWARE\\CentraStage",
+      "name": "Custom10",
+      "equals": "2021 | high | Latitude 5420"
+    },
+    {
+      "type": "runComponent",
+      "label": "Simulated Lenovo reported by machine type, with product name",
+      "expectExitCode": 0,
+      "variables": { "TC_TEST_HARDWARE": "LENOVO|21HD0086US|ThinkPad T14 Gen 4|13th Gen Intel(R) Core(TM) i5-1345U" },
+      "outputContains": [ "Result: 2023 | high | ThinkPad T14 Gen 4" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Simulated Lenovo with machine type only",
+      "expectExitCode": 0,
+      "variables": { "TC_TEST_HARDWARE": "LENOVO|20W0002MUS||11th Gen Intel(R) Core(TM) i5-1145G7 @ 2.60GHz" },
+      "outputContains": [ "Result: 2021 | medium | 20W0002MUS | by machine type" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Reused OptiPlex name settled by the CPU",
+      "expectExitCode": 0,
+      "variables": { "TC_TEST_HARDWARE": "Dell Inc.|OptiPlex 7010||13th Gen Intel(R) Core(TM) i5-13500T" },
+      "outputContains": [ "Result: 2023 | medium | OptiPlex 7010" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unrecognised hardware is recorded as Unknown",
+      "expectExitCode": 0,
+      "variables": { "TC_TEST_HARDWARE": "Contoso|Widget 9000||Intel(R) Celeron(R) N4020 CPU @ 1.10GHz" },
+      "outputContains": [ "Result: Unknown | Contoso Widget 9000", "STATUS=NO_ESTIMATE" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: a UDF holding another component's value is left alone (set Custom10 to any other text first)",
+      "tier": 2,
+      "expectExitCode": 3,
+      "outputContains": [ "STATUS=FOREIGN_VALUE", "Nothing was changed" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: an internal Dell or Lenovo workstation shows its estimate in Datto UDF 10 after check-in",
+      "tier": 2,
+      "expectExitCode": 0,
+      "outputContains": [ "STATUS=WRITTEN" ]
+    }
+  ]
+}
