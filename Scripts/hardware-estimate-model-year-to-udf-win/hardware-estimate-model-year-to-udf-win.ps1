@@ -5,14 +5,14 @@
 
 .DESCRIPTION
     Reads the manufacturer, model, Lenovo product name and CPU from WMI, works out
-    the year that model (or failing that, that CPU) was current, and writes one
-    line to a Datto UDF, year first so it sorts and filters:
+    the year that model (or failing that, that CPU) was current, and writes the
+    year and its confidence to a Datto UDF. The model is already on the device
+    record, so it is not repeated; the job output says which clue decided it.
 
-        2021 | high | Latitude 5420
-        2023 | high | ThinkPad T14 Gen 4
-        2020-2021 | medium | XPS 13 9310 | by CPU
-        Unknown | Contoso Widget 9000
-        VM | virtual machine
+        2021 | high
+        2020-2021 | medium
+        Unknown
+        VM
 
     It is an estimate of when the model was current, not a ship date. A unit can
     ship up to about a year later. Dell and Lenovo warranty lookups give the real
@@ -28,7 +28,7 @@
 
     Exit codes:
       0 = STATUS=WRITTEN, STATUS=UNCHANGED (same value already there) or
-          STATUS=NO_ESTIMATE (wrote "Unknown | ..."; no rule matched)
+          STATUS=NO_ESTIMATE (wrote "Unknown"; no rule matched)
       1 = STATUS=REFUSED        (invalid input variable)
       2 = STATUS=WRITE_FAILED   (the registry write did not stick)
       3 = STATUS=FOREIGN_VALUE  (the UDF holds a value this component did not write)
@@ -51,8 +51,8 @@ Set-StrictMode -Version 2
 $ScriptName = 'Hardware - Estimate Model Year to UDF [Win]'
 $Now        = (Get-Date).Year
 $UdfKey     = 'HKLM:\SOFTWARE\CentraStage'
-# A value this component wrote starts with one of these.
-$OwnPattern = '^(\d{4}(-\d{4})?|Unknown|VM) \| '
+# A value this component wrote (current or earlier format) starts with one of these.
+$OwnPattern = '^(\d{4}(-\d{4})?|Unknown|VM)( \| |$)'
 
 function Get-Var {
     param([string]$Name, [string]$Default = '')
@@ -297,7 +297,7 @@ $All = "$Make | $Model | $Version | $Cpu"
 $Value = ''; $Outcome = 'WRITTEN'; $Why = ''
 
 if ("$Make $Model" -match 'virtual machine|vmware|virtualbox|\bkvm\b|qemu|hvm domu|google compute|\bxen\b|amazon ec2|standard pc \(|parallels|droplet') {
-    $Value = 'VM | virtual machine'
+    $Value = 'VM'
     $Why = 'Virtual machine; there is no build year to estimate.'
 } else {
     $isDell   = $All -match '\b(dell|latitude|optiplex|precision|vostro|inspiron|xps|alienware|poweredge)\b'
@@ -338,17 +338,14 @@ if ("$Make $Model" -match 'virtual machine|vmware|virtualbox|\bkvm\b|qemu|hvm do
     foreach ($e in $ests) { Write-Line ("Clue: {0} {1} -> {2} ({3}). {4}" -f $e.Src, $e.Label, (Fmt $e), $e.Conf, $e.Why) }
 
     if ($pick) {
-        # Name the machine the way a report reader knows it: Lenovo's product name when it has one.
-        $name = $(if ($isLenovo -and $Version) { $Version } elseif ($Model) { $Model } else { $pick.Label })
-        $Value = '{0} | {1} | {2}' -f (Fmt $pick), $pick.Conf, $name
-        if ($pick.Src -ne 'model') { $Value += ' | by ' + $pick.Src }
-        $Why = 'Based on the {0}.' -f $pick.Src
+        $Value = '{0} | {1}' -f (Fmt $pick), $pick.Conf
+        $Why = 'Based on the {0} ({1}).' -f $pick.Src, $pick.Label
         $cp = @($ests | Where-Object { $_.Src -eq 'CPU' })
         if ($cp.Count -and $pick.Src -ne 'CPU' -and (($pick.Lo - $cp[0].Hi) -gt 1 -or ($cp[0].Lo - $pick.Hi) -gt 1)) {
             Write-Line ("WARNING: the model says {0} but the CPU says {1}; check the warranty lookup." -f (Fmt $pick), (Fmt $cp[0]))
         }
     } else {
-        $Value = 'Unknown | {0}' -f $(if ($Model) { "$Make $Model".Trim() } else { $Make })
+        $Value = 'Unknown'
         $Outcome = 'NO_ESTIMATE'
         $Why = 'No rule matched the model or the CPU.'
     }

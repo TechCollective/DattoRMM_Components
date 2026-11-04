@@ -8,14 +8,12 @@ Estimates the year a Windows machine's model came out and writes it to a Datto U
 
 **Read-only apart from one UDF value.** It reads the manufacturer, model, product name and CPU from WMI and writes one line to `HKLM\SOFTWARE\CentraStage\Custom<n>`, which the Datto agent picks up as UDF *n* on its next check-in. No network calls, nothing installed, nothing else changed.
 
-The value starts with the year, so it sorts and filters cleanly:
+The value is the year and its confidence, so it sorts and filters cleanly. The model is already on the device record, so it is not repeated; the job output names the model, the CPU and which clue decided the estimate.
 
-- `2021 | high | Latitude 5420`
-- `2023 | high | ThinkPad T14 Gen 4`
-- `2021 | medium | 20W0002MUS | by machine type`
-- `2020-2021 | medium | XPS 13 9310 | by CPU`
-- `Unknown | Contoso Widget 9000`
-- `VM | virtual machine`
+- `2021 | high`
+- `2020-2021 | medium`
+- `Unknown`
+- `VM`
 
 It is an estimate of when the **model** was current, not a ship date. A unit can ship up to about a year after its model launched, desktops especially. For a firm date, use the Dell or Lenovo warranty lookup.
 
@@ -30,7 +28,7 @@ If the model and the CPU disagree by more than a year, the job output carries a 
 
 The rules mirror the Machine Year Estimator page. **Change both together.**
 
-It will not overwrite a UDF value that this component did not write (anything not starting with a year, `Unknown` or `VM`), unless `usrOverwriteForeign` is `Yes`. It never prints the existing value, only its length, since a UDF can hold anything, including a recovery key.
+It will not overwrite a UDF value that this component did not write (anything other than a year, `Unknown` or `VM`, with or without the ` | ` detail earlier versions added), unless `usrOverwriteForeign` is `Yes`. It never prints the existing value, only its length, since a UDF can hold anything, including a recovery key.
 
 ## Installing it in Datto
 
@@ -68,7 +66,7 @@ No customer-specific value is hardcoded.
 |---|---|---|
 | 0 | `WRITTEN` | The estimate was written. |
 | 0 | `UNCHANGED` | The UDF already held this exact value. |
-| 0 | `NO_ESTIMATE` | No rule matched; `Unknown \| <make model>` was written so the device still shows up in reports. |
+| 0 | `NO_ESTIMATE` | No rule matched; `Unknown` was written so the device still shows up in reports. |
 | 1 | `REFUSED` | An input variable is invalid. Nothing was written. |
 | 2 | `WRITE_FAILED` | The registry write did not stick. |
 | 3 | `FOREIGN_VALUE` | The UDF holds a value this component did not write. Nothing was changed. |
