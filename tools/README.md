@@ -222,13 +222,21 @@ the uid. It is opaque. **Author it empty and let Datto fill it in.**
 ### The uid does not survive an import
 
 This is the one with consequences. A `.cpt` carrying a uid Datto has not seen
-gets a fresh uid assigned, so **importing creates a new component**. Whether
-Datto honours a uid it *does* recognise — updating in place rather than
-duplicating — is untested, and is the next thing worth establishing, because it
-decides how an existing component is updated from this repo.
+gets a fresh uid assigned, so **importing creates a new component**.
 
-Until that is known, treat an import as "creates a component" and delete the old
-one by hand.
+**Datto does not honour a uid it already knows, either** (measured 2026-11-04).
+`Hardware - Estimate Model Year to UDF [Win]` was re-imported carrying the uid
+Datto had assigned on the first import (`796681e0-…`, recorded in its
+`component.json` by PR). The import created a second component with a new uid
+(`998ddf3f-…`) beside the first, rather than updating it in place.
+
+So **every import creates a component**. After importing an update:
+
+1. Delete the component it supersedes from the Component Library.
+2. Re-point anything that targeted the old one — policies, scheduled jobs, the
+   new-device audit — because they reference the deleted component, not the name.
+3. Record the new uid in `component.json` by PR, so the repo still says which
+   Datto component it is.
 
 ### Datto strips the trailing newline from the body
 
@@ -241,7 +249,6 @@ a regression in this.
 
 ## What is still not established
 
-* Whether Datto honours a uid it already knows, per above.
 * What `hash` actually digests.
 * Variable types beyond `string`, `boolean` and `map`. Datto's UI offers more;
   no export we have exercises them. `cpt.py` passes any `type` through

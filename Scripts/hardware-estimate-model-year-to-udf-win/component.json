@@ -3,7 +3,7 @@
     "name": "Hardware - Estimate Model Year to UDF [Win]",
     "category": "scripts",
     "description": "Writes an estimated build year from model and CPU to a UDF (default 10). Read-only otherwise; won't overwrite another component's value.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/hardware-estimate-model-year-to-udf-win",
-    "uid": "796681e0-55e4-48a2-8147-520c11e4a1c5",
+    "uid": "998ddf3f-7a7e-40a6-83e6-bc8deaed7ca2",
     "hash": "",
     "version": "1",
     "timeout": "120",
