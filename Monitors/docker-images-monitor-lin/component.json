@@ -1,0 +1,51 @@
+{
+  "general": {
+    "name": "Docker Images monitor [Lin]",
+    "category": "monitors",
+    "description": "Alerts when a container on a moving tag is behind its registry tag by over N days; containers on pinned tags are reported, never alerted.",
+    "uid": "2fcd5983-d1dd-42fd-a459-15cc8ac0af64",
+    "hash": "",
+    "version": "1",
+    "timeout": "3600",
+    "securityLevel": "4",
+    "installType": "unix"
+  },
+  "variables": [
+    {
+      "name": "minAgeDays",
+      "type": "string",
+      "direction": "false",
+      "description": "An update does not count until the new image is this many days old. 0 disables.",
+      "defaultVal": "7"
+    },
+    {
+      "name": "excludePattern",
+      "type": "string",
+      "direction": "false",
+      "description": "ERE matched against container names; matches are skipped. e.g. ^(postgres|mysql)",
+      "defaultVal": ""
+    },
+    {
+      "name": "inspectTimeout",
+      "type": "string",
+      "direction": "false",
+      "description": "Seconds per registry lookup. Safe range 10–60.",
+      "defaultVal": "20"
+    },
+    {
+      "name": "maxParallel",
+      "type": "string",
+      "direction": "false",
+      "description": "Concurrent registry lookups. Clamped 1–8.",
+      "defaultVal": "3"
+    },
+    {
+      "name": "cacheHours",
+      "type": "string",
+      "direction": "false",
+      "description": "Reuse a previous registry lookup for this long. 168 = weekly.",
+      "defaultVal": "12"
+    }
+  ],
+  "body": "docker-images-monitor-lin.sh"
+}
