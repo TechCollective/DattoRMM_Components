@@ -6,8 +6,10 @@
 # 1. Adds log rotation and build-cache limits to /etc/docker/daemon.json.
 #    Only keys that are MISSING are added. An existing value is never changed,
 #    so a host someone already tuned keeps its tuning.
-# 2. Installs a systemd timer that prunes unused images, stopped containers,
-#    unused networks and build cache older than N hours. Never volumes.
+# 2. Installs a systemd timer that runs /usr/local/sbin/tc-docker-prune, which
+#    prunes unused images, stopped containers, unused networks and build cache
+#    older than N hours. Never volumes. Before pruning it checks that nothing
+#    which should be running is stopped, and skips the whole prune if so.
 # 3. Optionally runs that prune once, now.
 #
 # It never restarts Docker. daemon.json changes take effect at the next
@@ -18,7 +20,8 @@
 #   1  unexpected failure
 #   2  an input variable is invalid; nothing was changed
 #   3  could not apply safely (no JSON tool, config failed validation,
-#      no systemd, snap-packaged Docker); nothing was changed for that part
+#      no systemd, snap-packaged Docker), or a prune-now was skipped by the
+#      safety check; nothing was changed for that part
 
 set -u
 umask 022
@@ -26,6 +29,8 @@ umask 022
 DAEMON_JSON="/etc/docker/daemon.json"
 UNIT_DIR="/etc/systemd/system"
 UNIT_NAME="tc-docker-prune"
+PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
+PRUNE_CONF="/etc/default/tc-docker-prune"
 RESULT=1
 CHANGED_DAEMON=0
 
@@ -52,11 +57,12 @@ usrBuildCacheMax="${usrBuildCacheMax-100GB}"
 usrPruneSchedule="${usrPruneSchedule-Sun *-*-* 04:00:00}"
 usrPruneOlderThanHours="${usrPruneOlderThanHours-168}"
 usrPruneNow="${usrPruneNow:-no}"
+usrRequiredContainers="${usrRequiredContainers-}"
 
 # Trim surrounding whitespace a pasted value tends to carry.
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 for v in usrMode usrLogMaxSize usrLogMaxFile usrBuildCacheReserved usrBuildCacheMax \
-         usrPruneSchedule usrPruneOlderThanHours usrPruneNow; do
+         usrPruneSchedule usrPruneOlderThanHours usrPruneNow usrRequiredContainers; do
     printf -v "$v" '%s' "$(trim "${!v}")"
 done
 usrMode="${usrMode,,}"; usrPruneNow="${usrPruneNow,,}"
@@ -96,6 +102,15 @@ if [ "$usrPruneNow" = "yes" ]; then
     [[ "$usrPruneOlderThanHours" =~ ^[0-9]+$ ]] && [ "$usrPruneOlderThanHours" -ge 24 ] \
         || fail 2 "usrPruneNow=yes needs usrPruneOlderThanHours of 24 or more (got '$usrPruneOlderThanHours')."
 fi
+# Container names, separated by spaces or commas. Docker names are
+# [a-zA-Z0-9][a-zA-Z0-9_.-]*, which also makes the value safe to store in a
+# shell-sourced config file.
+read -r -a REQUIRED <<<"${usrRequiredContainers//,/ }"
+usrRequiredContainers="${REQUIRED[*]}"
+for c in "${REQUIRED[@]}"; do
+    [[ "$c" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] \
+        || fail 2 "usrRequiredContainers: '$c' is not a valid container name."
+done
 
 # ---------------------------------------------------------------- is Docker here?
 
@@ -246,6 +261,99 @@ PY
     return 0
 }
 
+# ---------------------------------------------------------------- prune script
+
+# The prune itself lives in one script on the host, so the weekly timer and a
+# prune-now run exactly the same code, safety check included.
+read -r -d '' PRUNE_SCRIPT <<'EOS'
+#!/bin/bash
+# tc-docker-prune -- installed by the Datto RMM component
+# "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
+# component. Settings: /etc/default/tc-docker-prune.
+#
+# Prunes unused images, stopped containers, unused networks and build cache
+# older than OLDER_THAN_HOURS. Never volumes. Skips anything labelled tc.keep.
+#
+# Safety check: the prune deletes stopped containers, and then the images only
+# they used. So before anything is removed, it checks that
+#   - every container in REQUIRED_CONTAINERS is running, and
+#   - no container with restart policy "always" or "unless-stopped" is stopped
+#     (it is meant to be running; it may be down for maintenance or crashed),
+# and skips the WHOLE prune if either fails. tc.keep containers are exempt
+# from the second check because the prune never removes them anyway.
+#
+# Exit: 0 pruned, 1 error, 3 skipped by the safety check.
+set -u
+OLDER_THAN_HOURS=168
+REQUIRED_CONTAINERS=""
+[ -r /etc/default/tc-docker-prune ] && . /etc/default/tc-docker-prune
+
+DOCKER="$(command -v docker)" || { echo "ERROR: docker not found"; exit 1; }
+"$DOCKER" info >/dev/null 2>&1 || { echo "ERROR: the Docker daemon is not reachable"; exit 1; }
+
+blockers=()
+for c in $REQUIRED_CONTAINERS; do
+    st="$("$DOCKER" inspect -f '{{.State.Running}}' "$c" 2>/dev/null)"
+    case "$st" in
+        true) ;;
+        "")   blockers+=("$c (required, not found)") ;;
+        *)    blockers+=("$c (required, not running)") ;;
+    esac
+done
+
+keep=" $("$DOCKER" ps -a --filter label=tc.keep --format '{{.Names}}' | tr '\n' ' ') "
+while IFS=$'\t' read -r name policy running; do
+    name="${name#/}"
+    [ -z "$name" ] && continue
+    case "$keep" in *" $name "*) continue ;; esac
+    if [ "$running" != "true" ] && { [ "$policy" = "always" ] || [ "$policy" = "unless-stopped" ]; }; then
+        blockers+=("$name (restart policy $policy, but stopped)")
+    fi
+done < <("$DOCKER" ps -aq | xargs -r "$DOCKER" inspect \
+            -f '{{.Name}}{{"\t"}}{{.HostConfig.RestartPolicy.Name}}{{"\t"}}{{.State.Running}}' 2>/dev/null)
+
+if [ "${#blockers[@]}" -gt 0 ]; then
+    echo "SKIPPED: nothing was pruned. These containers should be running and are not:"
+    printf '  %s\n' "${blockers[@]}"
+    echo "Start them, remove them, or label them tc.keep; the next run will prune."
+    exit 3
+fi
+
+root="$("$DOCKER" info --format '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/}"
+free() { df -h --output=avail,pcent "$root" 2>/dev/null | tail -n1 | awk '{print $1" free, "$2" used"}'; }
+echo "Safety check passed. Pruning unused items older than ${OLDER_THAN_HOURS}h (volumes are never removed)."
+echo "Disk before: $(free)"
+"$DOCKER" system prune --all --force --filter "until=${OLDER_THAN_HOURS}h" --filter "label!=tc.keep"
+rc=$?
+echo "Disk after:  $(free)"
+[ $rc -eq 0 ] || { echo "ERROR: docker system prune exited $rc"; exit 1; }
+exit 0
+EOS
+
+# Writes $2 to $1 (mode $3) if it differs. Sets WROTE=1 when it did, or would.
+WROTE=0
+put_file() {
+    local path="$1" content="$2" mode="$3"
+    if [ -f "$path" ] && [ "$(cat "$path")" = "${content%$'\n'}" ]; then
+        return 0
+    fi
+    WROTE=1
+    [ "$usrMode" = "apply" ] || return 0
+    mkdir -p "$(dirname "$path")" || return 1
+    printf '%s\n' "${content%$'\n'}" >"$path.tmp" && chmod "$mode" "$path.tmp" \
+        && mv -f "$path.tmp" "$path" || return 1
+}
+
+install_prune_script() {
+    local conf
+    conf="# Written by the Datto RMM component \"Docker - Configure Host Maintenance [Lin]\".
+# Re-run the component to change these; edits here are overwritten.
+OLDER_THAN_HOURS=$usrPruneOlderThanHours
+REQUIRED_CONTAINERS=\"$usrRequiredContainers\""
+    put_file "$PRUNE_BIN"  "$PRUNE_SCRIPT" 755 || return 1
+    put_file "$PRUNE_CONF" "$conf"         644 || return 1
+}
+
 # ---------------------------------------------------------------- prune timer
 
 timer_section() {
@@ -268,8 +376,7 @@ After=docker.service
 Type=oneshot
 Nice=10
 IOSchedulingClass=idle
-ExecStart=$DOCKER_BIN system prune --all --force --filter until=${usrPruneOlderThanHours}h --filter label!=tc.keep
-"
+ExecStart=$PRUNE_BIN"
     timer="[Unit]
 Description=Weekly Docker prune (TechCollective)
 
@@ -279,24 +386,20 @@ RandomizedDelaySec=30min
 Persistent=true
 
 [Install]
-WantedBy=timers.target
-"
-    local changed=0 f content
-    for f in service timer; do
-        if [ "$f" = service ]; then content="$svc"; else content="$timer"; fi
-        if [ -f "$UNIT_DIR/$UNIT_NAME.$f" ] && [ "$(cat "$UNIT_DIR/$UNIT_NAME.$f")" = "${content%$'\n'}" ]; then
-            continue
-        fi
-        changed=1
-        if [ "$usrMode" = "apply" ]; then
-            printf '%s' "$content" >"$UNIT_DIR/$UNIT_NAME.$f.tmp" \
-                && mv -f "$UNIT_DIR/$UNIT_NAME.$f.tmp" "$UNIT_DIR/$UNIT_NAME.$f" || return 1
-        fi
-    done
+WantedBy=timers.target"
+
+    WROTE=0
+    install_prune_script                         || return 1
+    put_file "$UNIT_DIR/$UNIT_NAME.service" "$svc"   644 || return 1
+    put_file "$UNIT_DIR/$UNIT_NAME.timer"   "$timer" 644 || return 1
+    local changed=$WROTE
+
+    local guard="safety check on"
+    [ -n "$usrRequiredContainers" ] && guard="safety check on, required: $usrRequiredContainers"
 
     if [ "$usrMode" = "report" ]; then
         if [ $changed -eq 1 ]; then
-            say "Prune timer: REPORT MODE, would install $UNIT_NAME.timer ($usrPruneSchedule, older than ${usrPruneOlderThanHours}h)."
+            say "Prune timer: REPORT MODE, would install or update $UNIT_NAME.timer ($usrPruneSchedule, older than ${usrPruneOlderThanHours}h, $guard)."
         else
             say "Prune timer: already installed with these settings."
         fi
@@ -313,7 +416,7 @@ WantedBy=timers.target
         systemctl restart "$UNIT_NAME.timer" || return 1
     fi
     if [ $changed -eq 1 ]; then
-        say "Prune timer: installed $UNIT_NAME.timer ($usrPruneSchedule, removes unused items older than ${usrPruneOlderThanHours}h; volumes are never removed)."
+        say "Prune timer: installed $UNIT_NAME.timer ($usrPruneSchedule, removes unused items older than ${usrPruneOlderThanHours}h; volumes are never removed; $guard)."
     else
         say "Prune timer: already installed with these settings."
     fi
@@ -331,16 +434,18 @@ prune_now() {
         say "Prune now: REPORT MODE, skipped."
         return 0
     fi
-    if ! "$DOCKER_BIN" info >/dev/null 2>&1; then
-        say "Prune now: the Docker daemon is not reachable; skipped."
-        return 3
-    fi
-    say "Prune now: removing unused items older than ${usrPruneOlderThanHours}h (volumes are never removed)."
-    say "Disk before: $(df -h --output=avail,pcent "$("$DOCKER_BIN" info --format '{{.DockerRootDir}}' 2>/dev/null || echo /)" 2>/dev/null | tail -n1 | awk '{print $1" free, "$2" used"}')"
-    "$DOCKER_BIN" system prune --all --force --filter "until=${usrPruneOlderThanHours}h" --filter "label!=tc.keep" 2>&1 \
-        | grep -iE 'reclaimed|error' || true
-    say "Disk after:  $(df -h --output=avail,pcent "$("$DOCKER_BIN" info --format '{{.DockerRootDir}}' 2>/dev/null || echo /)" 2>/dev/null | tail -n1 | awk '{print $1" free, "$2" used"}')"
-    return 0
+    install_prune_script || return 1
+    say "Prune now:"
+    local out rc
+    out="$("$PRUNE_BIN" 2>&1)"; rc=$?
+    # The full list of deleted IDs belongs in the journal, not the job output.
+    printf '%s\n' "$out" | grep -vE '^(deleted|untagged): |^sha256:|^[0-9a-f]{12,64}$|^Deleted (Containers|Images|Networks|build cache objects):$|^$' \
+        | sed 's/^/  /'
+    case $rc in
+        0) return 0 ;;
+        3) return 3 ;;
+        *) return 1 ;;
+    esac
 }
 
 # ---------------------------------------------------------------- run

@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker and systemd: report mode changes nothing; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, and installs an enabled prune timer whose service never touches volumes. A second run changes nothing, a one-off prune runs, and bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2.",
+  "description": "On a runner with Docker and systemd: report mode changes nothing; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, and installs an enabled prune timer whose script never touches volumes. A second run changes nothing and a one-off prune runs. The safety check skips the whole prune, from a prune-now and from the timer's service, when a container with an unless-stopped policy is stopped or a required container is missing, and lets it run once they are fine. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2.",
   "variables": {},
   "steps": [
     {
@@ -18,7 +18,7 @@
       },
       "outputContains": [
         "REPORT MODE",
-        "would install tc-docker-prune.timer"
+        "would install or update tc-docker-prune.timer"
       ]
     },
     {
@@ -71,14 +71,16 @@
     },
     {
       "type": "file",
-      "label": "Prune service has an age filter and never prunes volumes",
-      "path": "/etc/systemd/system/tc-docker-prune.service",
+      "label": "Prune script has an age filter and never prunes volumes",
+      "path": "/usr/local/sbin/tc-docker-prune",
       "contains": [
-        "system prune --all --force --filter until=168h"
+        "system prune --all --force --filter \"until=${OLDER_THAN_HOURS}h\""
       ],
       "notContains": [
-        "--volumes"
-      ]
+        "--volumes",
+        "volume prune"
+      ],
+      "executable": true
     },
     {
       "type": "runComponent",
@@ -106,6 +108,92 @@
       "outputContains": [
         "success"
       ]
+    },
+    {
+      "type": "file",
+      "label": "Settings file carries the age",
+      "path": "/etc/default/tc-docker-prune",
+      "contains": [
+        "OLDER_THAN_HOURS=168",
+        "REQUIRED_CONTAINERS=\"\""
+      ]
+    },
+    {
+      "type": "command",
+      "label": "A container meant to run (unless-stopped) is stopped",
+      "run": "set -e; d=$(mktemp -d); mkdir -p $d/bin; cp /bin/sleep $d/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $d$(dirname $l); cp $l $d$l; done; tar -C $d -c . | docker import - tc-test-sleep:1; docker run -d --name tc-web --restart unless-stopped tc-test-sleep:1 /bin/sleep 3600; docker stop -t 1 tc-web; docker ps -a --format '{{.Names}} {{.Status}}'",
+      "outputContains": [
+        "tc-web Exited"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Prune-now is skipped by the safety check",
+      "variables": {
+        "usrPruneNow": "yes"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "SKIPPED: nothing was pruned",
+        "tc-web (restart policy unless-stopped, but stopped)"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The timer's service is skipped too, and shows as failed",
+      "run": "systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl -u tc-docker-prune.service -n 30 --no-pager",
+      "outputContains": [
+        "exit-code",
+        "SKIPPED"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Start it again",
+      "run": "docker start tc-web && docker inspect -f '{{.State.Running}}' tc-web",
+      "outputContains": [
+        "true"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A missing required container skips the prune",
+      "variables": {
+        "usrPruneNow": "yes",
+        "usrRequiredContainers": "tc-web, tc-missing"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "tc-missing (required, not found)"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Required container running: prune goes ahead",
+      "variables": {
+        "usrPruneNow": "yes",
+        "usrRequiredContainers": "tc-web"
+      },
+      "outputContains": [
+        "Safety check passed",
+        "Disk after"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "Required list saved for the weekly timer",
+      "path": "/etc/default/tc-docker-prune",
+      "contains": [
+        "REQUIRED_CONTAINERS=\"tc-web\""
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a container name with shell characters",
+      "variables": {
+        "usrRequiredContainers": "web;rm"
+      },
+      "expectExitCode": 2
     },
     {
       "type": "runComponent",
