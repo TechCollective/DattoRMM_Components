@@ -1,0 +1,80 @@
+{
+  "general": {
+    "name": "Docker - Configure Host Maintenance [Lin]",
+    "category": "scripts",
+    "description": "Adds Docker log rotation and build-cache limits to daemon.json and installs a weekly prune timer; never removes volumes or restarts Docker. https://github.com/TechCollective/DattoRMM_Components",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "900",
+    "securityLevel": "5",
+    "installType": "unix"
+  },
+  "body": "docker-configure-host-maintenance-lin.sh",
+  "variables": [
+    {
+      "name": "usrMode",
+      "type": "map",
+      "direction": "false",
+      "description": "Apply makes the changes. Report says what it would change and changes nothing.",
+      "defaultVal": "Apply",
+      "options": [
+        { "name": "Apply", "value": "apply" },
+        { "name": "Report", "value": "report" }
+      ]
+    },
+    {
+      "name": "usrLogMaxSize",
+      "type": "string",
+      "direction": "false",
+      "description": "Per-container log file size before rotation, e.g. 10m (k, m or g). Blank leaves log settings alone.",
+      "defaultVal": "10m"
+    },
+    {
+      "name": "usrLogMaxFile",
+      "type": "string",
+      "direction": "false",
+      "description": "1-20. Rotated log files kept per container.",
+      "defaultVal": "3"
+    },
+    {
+      "name": "usrBuildCacheMax",
+      "type": "string",
+      "direction": "false",
+      "description": "Build cache is trimmed back below this, e.g. 100GB. Blank leaves build-cache settings alone.",
+      "defaultVal": "100GB"
+    },
+    {
+      "name": "usrBuildCacheReserved",
+      "type": "string",
+      "direction": "false",
+      "description": "Build cache is never trimmed below this, e.g. 20GB. Docker 28+ only; ignored on older engines.",
+      "defaultVal": "20GB"
+    },
+    {
+      "name": "usrPruneSchedule",
+      "type": "string",
+      "direction": "false",
+      "description": "systemd OnCalendar for the prune timer, host local time, plus up to 30 min random delay. Blank leaves the timer alone.",
+      "defaultVal": "Sun *-*-* 04:00:00"
+    },
+    {
+      "name": "usrPruneOlderThanHours",
+      "type": "string",
+      "direction": "false",
+      "description": "24-8760. Only unused items older than this are pruned. 168 = 7 days.",
+      "defaultVal": "168"
+    },
+    {
+      "name": "usrPruneNow",
+      "type": "map",
+      "direction": "false",
+      "description": "Yes also runs the prune once, now, and reports disk before and after.",
+      "defaultVal": "No",
+      "options": [
+        { "name": "No", "value": "no" },
+        { "name": "Yes", "value": "yes" }
+      ]
+    }
+  ]
+}

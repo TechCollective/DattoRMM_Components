@@ -1,0 +1,152 @@
+{
+  "platforms": [
+    "linux"
+  ],
+  "description": "On a runner with Docker and systemd: report mode changes nothing; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, and installs an enabled prune timer whose service never touches volumes. A second run changes nothing, a one-off prune runs, and bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2.",
+  "variables": {},
+  "steps": [
+    {
+      "type": "command",
+      "label": "Record daemon.json as it was before the component",
+      "run": "mkdir -p /etc/docker; if [ -s /etc/docker/daemon.json ]; then cp /etc/docker/daemon.json /tmp/tc-before.json; else echo '{}' > /tmp/tc-before.json; fi; cat /tmp/tc-before.json"
+    },
+    {
+      "type": "runComponent",
+      "label": "Report mode",
+      "variables": {
+        "usrMode": "report"
+      },
+      "outputContains": [
+        "REPORT MODE",
+        "would install tc-docker-prune.timer"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Report mode changed nothing",
+      "run": "test ! -e /etc/systemd/system/tc-docker-prune.timer && { cmp -s /tmp/tc-before.json /etc/docker/daemon.json || { test ! -s /etc/docker/daemon.json && test \"$(cat /tmp/tc-before.json)\" = '{}'; }; }"
+    },
+    {
+      "type": "runComponent",
+      "label": "Apply",
+      "outputContains": [
+        "daemon.json: written",
+        "installed tc-docker-prune.timer",
+        "RESTART PENDING",
+        "done"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "daemon.json carries the limits",
+      "path": "/etc/docker/daemon.json",
+      "contains": [
+        "\"max-size\": \"10m\"",
+        "\"max-file\": \"3\"",
+        "\"maxUsedSpace\": \"100GB\"",
+        "\"reservedSpace\": \"20GB\""
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Every key that was already there is unchanged",
+      "run": "python3 -c \"import json,sys; a=json.load(open('/tmp/tc-before.json')); b=json.load(open('/etc/docker/daemon.json')); bad=[k for k in a if b.get(k)!=a[k] and k not in ('log-opts','builder')]; print('changed:', bad); sys.exit(1 if bad else 0)\""
+    },
+    {
+      "type": "command",
+      "label": "dockerd accepts the new file",
+      "run": "dockerd --validate --config-file /etc/docker/daemon.json",
+      "outputContains": [
+        "configuration OK"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Prune timer enabled and scheduled",
+      "run": "systemctl is-enabled tc-docker-prune.timer && systemctl is-active tc-docker-prune.timer && systemctl list-timers tc-docker-prune.timer --no-pager",
+      "outputContains": [
+        "enabled",
+        "tc-docker-prune.timer"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "Prune service has an age filter and never prunes volumes",
+      "path": "/etc/systemd/system/tc-docker-prune.service",
+      "contains": [
+        "system prune --all --force --filter until=168h"
+      ],
+      "notContains": [
+        "--volumes"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Second run changes nothing",
+      "outputContains": [
+        "no change",
+        "already installed with these settings"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "One-off prune",
+      "variables": {
+        "usrPruneNow": "yes"
+      },
+      "outputContains": [
+        "Prune now",
+        "Disk after"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The prune service itself runs",
+      "run": "systemctl start tc-docker-prune.service && systemctl show tc-docker-prune.service -p Result --value",
+      "outputContains": [
+        "success"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a bad log size",
+      "variables": {
+        "usrLogMaxSize": "10x"
+      },
+      "expectExitCode": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a prune age under 24 hours",
+      "variables": {
+        "usrPruneOlderThanHours": "1"
+      },
+      "expectExitCode": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a schedule systemd cannot parse",
+      "variables": {
+        "usrPruneSchedule": "Funday"
+      },
+      "expectExitCode": 2
+    },
+    {
+      "type": "command",
+      "tier": 2,
+      "label": "After a Docker restart, a new container gets max-size 10m",
+      "run": "systemctl restart docker && docker run --rm -d --name tc-logtest alpine sleep 30 && docker inspect tc-logtest --format '{{json .HostConfig.LogConfig}}'",
+      "outputContains": [
+        "\"max-size\":\"10m\""
+      ]
+    },
+    {
+      "type": "runComponent",
+      "tier": 2,
+      "label": "Host without Docker says so and exits 0",
+      "outputContains": [
+        "Docker is not installed"
+      ]
+    }
+  ]
+}
