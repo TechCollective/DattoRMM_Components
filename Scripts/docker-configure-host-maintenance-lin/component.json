@@ -2,10 +2,10 @@
   "general": {
     "name": "Docker - Configure Host Maintenance [Lin]",
     "category": "scripts",
-    "description": "Sets Docker log and build-cache limits and a weekly prune that skips if a needed container is down; never removes volumes or restarts Docker. https://github.com/TechCollective/DattoRMM_Components",
-    "uid": "08887755-ea6b-4a7d-8a7a-2964784f556f",
+    "description": "Sets Docker log and build-cache limits, seeds the expected-containers list, adds a weekly prune that spares listed containers; never deletes volumes. https://github.com/TechCollective/DattoRMM_Components",
+    "uid": "3f5aab29-1ae2-4a8d-9956-7037cb7c1ed8",
     "hash": "",
-    "version": "2",
+    "version": "3",
     "timeout": "900",
     "securityLevel": "5",
     "installType": "unix"
@@ -75,13 +75,6 @@
         { "name": "No", "value": "no" },
         { "name": "Yes", "value": "yes" }
       ]
-    },
-    {
-      "name": "usrRequiredContainers",
-      "type": "string",
-      "direction": "false",
-      "description": "Optional. Container names, space or comma separated, that must be running or the prune is skipped. Stopped always/unless-stopped containers block it regardless.",
-      "defaultVal": ""
     }
   ]
 }

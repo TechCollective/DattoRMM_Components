@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker and systemd: report mode changes nothing; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, and installs an enabled prune timer whose script never touches volumes. A second run changes nothing and a one-off prune runs. The safety check skips the whole prune, from a prune-now and from the timer's service, when a container with an unless-stopped policy is stopped or a required container is missing, and lets it run once they are fine. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2.",
+  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once and never rewrites it, and installs an enabled prune timer whose script never touches volumes. The prune removes an old stopped container that nothing protects, and keeps, with their images, stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2.",
   "variables": {},
   "steps": [
     {
@@ -18,19 +18,21 @@
       },
       "outputContains": [
         "REPORT MODE",
+        "would create /etc/tc-docker/expected-containers",
         "would install or update tc-docker-prune.timer"
       ]
     },
     {
       "type": "command",
       "label": "Report mode changed nothing",
-      "run": "test ! -e /etc/systemd/system/tc-docker-prune.timer && { cmp -s /tmp/tc-before.json /etc/docker/daemon.json || { test ! -s /etc/docker/daemon.json && test \"$(cat /tmp/tc-before.json)\" = '{}'; }; }"
+      "run": "test ! -e /etc/systemd/system/tc-docker-prune.timer && test ! -e /etc/tc-docker/expected-containers && { cmp -s /tmp/tc-before.json /etc/docker/daemon.json || { test ! -s /etc/docker/daemon.json && test \"$(cat /tmp/tc-before.json)\" = '{}'; }; }"
     },
     {
       "type": "runComponent",
       "label": "Apply",
       "outputContains": [
         "daemon.json: written",
+        "Expected list: created /etc/tc-docker/expected-containers",
         "installed tc-docker-prune.timer",
         "RESTART PENDING",
         "done"
@@ -74,7 +76,8 @@
       "label": "Prune script has an age filter and never prunes volumes",
       "path": "/usr/local/sbin/tc-docker-prune",
       "contains": [
-        "system prune --all --force --filter \"until=${OLDER_THAN_HOURS}h\""
+        "image prune --all --force --filter \"until=${OLDER_THAN_HOURS}h\"",
+        "builder prune --all --force --filter \"until=${OLDER_THAN_HOURS}h\""
       ],
       "notContains": [
         "--volumes",
@@ -87,6 +90,8 @@
       "label": "Second run changes nothing",
       "outputContains": [
         "no change",
+        "exists",
+        "not changed",
         "already installed with these settings"
       ]
     },
@@ -98,6 +103,7 @@
       },
       "outputContains": [
         "Prune now",
+        "Stopped containers removed",
         "Disk after"
       ]
     },
@@ -111,89 +117,88 @@
     },
     {
       "type": "file",
-      "label": "Settings file carries the age",
-      "path": "/etc/default/tc-docker-prune",
+      "label": "Expected list created, with its header",
+      "path": "/etc/tc-docker/expected-containers",
       "contains": [
-        "OLDER_THAN_HOURS=168",
-        "REQUIRED_CONTAINERS=\"\""
-      ]
-    },
-    {
-      "type": "command",
-      "label": "A container meant to run (unless-stopped) is stopped",
-      "run": "set -e; d=$(mktemp -d); mkdir -p $d/bin; cp /bin/sleep $d/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $d$(dirname $l); cp $l $d$l; done; tar -C $d -c . | docker import - tc-test-sleep:1; docker run -d --name tc-web --restart unless-stopped tc-test-sleep:1 /bin/sleep 3600; docker stop -t 1 tc-web; docker ps -a --format '{{.Names}} {{.Status}}'",
-      "outputContains": [
-        "tc-web Exited"
-      ]
-    },
-    {
-      "type": "runComponent",
-      "label": "Prune-now is skipped by the safety check",
-      "variables": {
-        "usrPruneNow": "yes"
-      },
-      "expectExitCode": 3,
-      "outputContains": [
-        "SKIPPED: nothing was pruned",
-        "tc-web (restart policy unless-stopped, but stopped)"
-      ]
-    },
-    {
-      "type": "command",
-      "label": "The timer's service is skipped too, and shows as failed",
-      "run": "systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl -u tc-docker-prune.service -n 30 --no-pager",
-      "outputContains": [
-        "exit-code",
-        "SKIPPED"
-      ]
-    },
-    {
-      "type": "command",
-      "label": "Start it again",
-      "run": "docker start tc-web && docker inspect -f '{{.State.Running}}' tc-web",
-      "outputContains": [
-        "true"
-      ]
-    },
-    {
-      "type": "runComponent",
-      "label": "A missing required container skips the prune",
-      "variables": {
-        "usrPruneNow": "yes",
-        "usrRequiredContainers": "tc-web, tc-missing"
-      },
-      "expectExitCode": 3,
-      "outputContains": [
-        "tc-missing (required, not found)"
-      ]
-    },
-    {
-      "type": "runComponent",
-      "label": "Required container running: prune goes ahead",
-      "variables": {
-        "usrPruneNow": "yes",
-        "usrRequiredContainers": "tc-web"
-      },
-      "outputContains": [
-        "Safety check passed",
-        "Disk after"
+        "# Containers expected on this host",
+        "Docker - Update Expected Containers [Lin]"
       ]
     },
     {
       "type": "file",
-      "label": "Required list saved for the weekly timer",
+      "label": "Ignore file created with an example",
+      "path": "/etc/tc-docker/ignore",
+      "contains": [
+        "^name:runner-"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "Settings file carries only the age",
       "path": "/etc/default/tc-docker-prune",
       "contains": [
-        "REQUIRED_CONTAINERS=\"tc-web\""
+        "OLDER_THAN_HOURS=168"
+      ],
+      "notContains": [
+        "REQUIRED_CONTAINERS"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped containers: one listed, one unless-stopped, one tc.keep, one unprotected",
+      "run": "set -e; d=$(mktemp -d); mkdir -p $d/bin; cp /bin/sleep /bin/true $d/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $d$(dirname $l); cp $l $d$l; done; for t in listed policy labelled junk; do tar -C $d -c . | docker import --change \"LABEL tc.test=$t\" - tc-test-$t:1; done; echo name:tc-listed >> /etc/tc-docker/expected-containers; docker create --name tc-listed tc-test-listed:1 /bin/true; docker run -d --name tc-policy --restart unless-stopped tc-test-policy:1 /bin/sleep 3600; docker stop -t 1 tc-policy; docker create --name tc-labelled --label tc.keep=true tc-test-labelled:1 /bin/true; docker create --name tc-junk tc-test-junk:1 /bin/true; docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep tc-test; docker ps -a --format '{{.Names}} {{.Status}}'",
+      "outputContains": [
+        "tc-junk Created",
+        "tc-policy Exited",
+        "tc-test-junk:1"
       ]
     },
     {
       "type": "runComponent",
-      "label": "Refuses a container name with shell characters",
-      "variables": {
-        "usrRequiredContainers": "web;rm"
-      },
-      "expectExitCode": 2
+      "label": "A later run never rewrites the list",
+      "outputContains": [
+        "exists",
+        "not changed"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "The hand-added entry is still on the list",
+      "path": "/etc/tc-docker/expected-containers",
+      "contains": [
+        "name:tc-listed"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Prune with no age limit, run by the timer's service",
+      "run": "docker inspect -f 'before: {{.Name}} present' tc-junk; docker ps -a --format 'before: {{.Names}} {{.Status}}'; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune && systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl -u tc-docker-prune.service -n 40 --no-pager; docker ps -a --format 'after: {{.Names}} {{.Status}}'",
+      "outputContains": [
+        "before: /tc-junk present",
+        "success",
+        "Stopped containers removed:",
+        "tc-listed (on the expected list)",
+        "tc-policy (restart policy unless-stopped)",
+        "tc-labelled (labelled tc.keep)"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Protected containers and their images survived; the unprotected ones did not",
+      "run": "for c in tc-listed tc-policy tc-labelled; do docker inspect -f '{{.Name}} kept' $c; done; for i in listed policy labelled; do docker image inspect -f \"image tc-test-$i kept\" tc-test-$i:1; done; docker inspect tc-junk >/dev/null 2>&1 && echo 'tc-junk STILL HERE' || echo 'tc-junk removed'; docker image inspect tc-test-junk:1 >/dev/null 2>&1 && echo 'junk image STILL HERE' || echo 'junk image removed'",
+      "outputContains": [
+        "/tc-listed kept",
+        "/tc-policy kept",
+        "/tc-labelled kept",
+        "image tc-test-listed kept",
+        "image tc-test-policy kept",
+        "image tc-test-labelled kept",
+        "tc-junk removed",
+        "junk image removed"
+      ],
+      "outputNotContains": [
+        "STILL HERE"
+      ]
     },
     {
       "type": "runComponent",
