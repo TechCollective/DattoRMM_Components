@@ -6,11 +6,16 @@
 # 1. Adds log rotation and build-cache limits to /etc/docker/daemon.json.
 #    Only keys that are MISSING are added. An existing value is never changed,
 #    so a host someone already tuned keeps its tuning.
-# 2. Installs a systemd timer that runs /usr/local/sbin/tc-docker-prune, which
-#    prunes unused images, stopped containers, unused networks and build cache
-#    older than N hours. Never volumes. Before pruning it checks that nothing
-#    which should be running is stopped, and skips the whole prune if so.
-# 3. Optionally runs that prune once, now.
+# 2. Creates the host's expected-containers list, /etc/tc-docker/expected-containers,
+#    from the containers running now -- only if the list does not exist yet.
+#    After that it never changes the list; "Docker - Update Expected
+#    Containers [Lin]" does.
+# 3. Installs a systemd timer that runs /usr/local/sbin/tc-docker-prune. It
+#    removes stopped containers, unused images, networks and build cache older
+#    than N hours, never volumes, and never a stopped container that is on
+#    the expected list, has an always/unless-stopped restart policy, or is
+#    labelled tc.keep. Those are left alone, along with their images.
+# 4. Optionally runs that prune once, now.
 #
 # It never restarts Docker. daemon.json changes take effect at the next
 # Docker restart or reboot; the output says "RESTART PENDING" when that applies.
@@ -20,8 +25,8 @@
 #   1  unexpected failure
 #   2  an input variable is invalid; nothing was changed
 #   3  could not apply safely (no JSON tool, config failed validation,
-#      no systemd, snap-packaged Docker), or a prune-now was skipped by the
-#      safety check; nothing was changed for that part
+#      no systemd, snap-packaged Docker, daemon unreachable for the list or
+#      a prune-now); nothing was changed for that part
 
 set -u
 umask 022
@@ -57,12 +62,11 @@ usrBuildCacheMax="${usrBuildCacheMax-100GB}"
 usrPruneSchedule="${usrPruneSchedule-Sun *-*-* 04:00:00}"
 usrPruneOlderThanHours="${usrPruneOlderThanHours-168}"
 usrPruneNow="${usrPruneNow:-no}"
-usrRequiredContainers="${usrRequiredContainers-}"
 
 # Trim surrounding whitespace a pasted value tends to carry.
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 for v in usrMode usrLogMaxSize usrLogMaxFile usrBuildCacheReserved usrBuildCacheMax \
-         usrPruneSchedule usrPruneOlderThanHours usrPruneNow usrRequiredContainers; do
+         usrPruneSchedule usrPruneOlderThanHours usrPruneNow; do
     printf -v "$v" '%s' "$(trim "${!v}")"
 done
 usrMode="${usrMode,,}"; usrPruneNow="${usrPruneNow,,}"
@@ -102,16 +106,6 @@ if [ "$usrPruneNow" = "yes" ]; then
     [[ "$usrPruneOlderThanHours" =~ ^[0-9]+$ ]] && [ "$usrPruneOlderThanHours" -ge 24 ] \
         || fail 2 "usrPruneNow=yes needs usrPruneOlderThanHours of 24 or more (got '$usrPruneOlderThanHours')."
 fi
-# Container names, separated by spaces or commas. Docker names are
-# [a-zA-Z0-9][a-zA-Z0-9_.-]*, which also makes the value safe to store in a
-# shell-sourced config file.
-read -r -a REQUIRED <<<"${usrRequiredContainers//,/ }"
-usrRequiredContainers="${REQUIRED[*]}"
-for c in "${REQUIRED[@]}"; do
-    [[ "$c" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] \
-        || fail 2 "usrRequiredContainers: '$c' is not a valid container name."
-done
-
 # ---------------------------------------------------------------- is Docker here?
 
 DOCKER_BIN="$(command -v docker 2>/dev/null || true)"
@@ -128,6 +122,46 @@ ENGINE_VER="$( (dockerd --version 2>/dev/null || "$DOCKER_BIN" version --format 
     | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)"
 ENGINE_MAJOR="${ENGINE_VER%%.*}"
 say "Docker: $DOCKER_BIN, engine ${ENGINE_VER:-unknown}. Mode: $usrMode."
+DOCKER="$DOCKER_BIN"
+
+# >>> tc-docker shared: identical in every tc-docker component; change them together.
+TC_DIR="/etc/tc-docker"
+EXPECTED_FILE="$TC_DIR/expected-containers"
+IGNORE_FILE="$TC_DIR/ignore"
+# shellcheck disable=SC2034  # not every component uses every name
+KEY_RE='^(name:[a-zA-Z0-9][a-zA-Z0-9_.-]*|compose:[a-zA-Z0-9][a-zA-Z0-9_.-]*/[a-zA-Z0-9][a-zA-Z0-9_.-]*)$'
+
+# One line per container, tab separated:
+#   id  key  name  running  restart-policy  created  started  tc.keep(y/n)  transient(y/n)
+# key is compose:<project>/<service> for a Compose service, otherwise name:<name>.
+# transient is y for Compose one-offs (compose run) and --rm containers.
+tc_containers() {
+    "$DOCKER" ps -aq --no-trunc 2>/dev/null | xargs -r "$DOCKER" inspect -f \
+'{{.Id}}{{"\t"}}{{.Name}}{{"\t"}}{{index .Config.Labels "com.docker.compose.project"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.service"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.oneoff"}}{{"\t"}}{{.HostConfig.AutoRemove}}{{"\t"}}{{.State.Running}}{{"\t"}}{{.HostConfig.RestartPolicy.Name}}{{"\t"}}{{.Created}}{{"\t"}}{{.State.StartedAt}}{{"\t"}}{{range $k, $v := .Config.Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}' 2>/dev/null \
+    | awk -F'\t' -v OFS='\t' '{
+        for (i = 3; i <= 5; i++) if ($i == "<no value>") $i = ""
+        name = $2; sub(/^\//, "", name)
+        key = ($3 != "" && $4 != "") ? "compose:" $3 "/" $4 : "name:" name
+        print $1, key, name, $7, $8, $9, $10, ($11 == "y" ? "y" : "n"), (($5 == "True" || $6 == "true") ? "y" : "n")
+    }'
+}
+
+# The entries of a list file: comments and blank lines dropped.
+tc_list() {
+    [ -r "$1" ] || return 0
+    sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$1" | grep -v '^$'
+    return 0
+}
+
+# Succeeds if key $1 matches any pattern in the ignore file.
+tc_ignored() {
+    local p
+    while IFS= read -r p; do
+        printf '%s\n' "$1" | grep -qE -- "$p" 2>/dev/null && return 0
+    done < <(tc_list "$IGNORE_FILE")
+    return 1
+}
+# <<< tc-docker shared
 
 # ---------------------------------------------------------------- daemon.json
 
@@ -271,62 +305,106 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune.
 #
-# Prunes unused images, stopped containers, unused networks and build cache
-# older than OLDER_THAN_HOURS. Never volumes. Skips anything labelled tc.keep.
-#
-# Safety check: the prune deletes stopped containers, and then the images only
-# they used. So before anything is removed, it checks that
-#   - every container in REQUIRED_CONTAINERS is running, and
-#   - no container with restart policy "always" or "unless-stopped" is stopped
-#     (it is meant to be running; it may be down for maintenance or crashed),
-# and skips the WHOLE prune if either fails. tc.keep containers are exempt
-# from the second check because the prune never removes them anyway.
-#
-# Exit: 0 pruned, 1 error, 3 skipped by the safety check.
+# Removes, when older than OLDER_THAN_HOURS:
+#   - stopped containers, EXCEPT any that is on /etc/tc-docker/expected-containers,
+#     has restart policy always or unless-stopped, or is labelled tc.keep.
+#     Those are kept, so their images stay "in use" and are kept too;
+#   - images no container uses (tc.keep-labelled images are kept);
+#   - unused networks and build cache.
+# Never volumes. Exit: 0 done, 1 error.
 set -u
 OLDER_THAN_HOURS=168
-REQUIRED_CONTAINERS=""
 [ -r /etc/default/tc-docker-prune ] && . /etc/default/tc-docker-prune
 
 DOCKER="$(command -v docker)" || { echo "ERROR: docker not found"; exit 1; }
 "$DOCKER" info >/dev/null 2>&1 || { echo "ERROR: the Docker daemon is not reachable"; exit 1; }
 
-blockers=()
-for c in $REQUIRED_CONTAINERS; do
-    st="$("$DOCKER" inspect -f '{{.State.Running}}' "$c" 2>/dev/null)"
-    case "$st" in
-        true) ;;
-        "")   blockers+=("$c (required, not found)") ;;
-        *)    blockers+=("$c (required, not running)") ;;
-    esac
-done
+# >>> tc-docker shared: identical in every tc-docker component; change them together.
+TC_DIR="/etc/tc-docker"
+EXPECTED_FILE="$TC_DIR/expected-containers"
+IGNORE_FILE="$TC_DIR/ignore"
+# shellcheck disable=SC2034  # not every component uses every name
+KEY_RE='^(name:[a-zA-Z0-9][a-zA-Z0-9_.-]*|compose:[a-zA-Z0-9][a-zA-Z0-9_.-]*/[a-zA-Z0-9][a-zA-Z0-9_.-]*)$'
 
-keep=" $("$DOCKER" ps -a --filter label=tc.keep --format '{{.Names}}' | tr '\n' ' ') "
-while IFS=$'\t' read -r name policy running; do
-    name="${name#/}"
-    [ -z "$name" ] && continue
-    case "$keep" in *" $name "*) continue ;; esac
-    if [ "$running" != "true" ] && { [ "$policy" = "always" ] || [ "$policy" = "unless-stopped" ]; }; then
-        blockers+=("$name (restart policy $policy, but stopped)")
-    fi
-done < <("$DOCKER" ps -aq | xargs -r "$DOCKER" inspect \
-            -f '{{.Name}}{{"\t"}}{{.HostConfig.RestartPolicy.Name}}{{"\t"}}{{.State.Running}}' 2>/dev/null)
+# One line per container, tab separated:
+#   id  key  name  running  restart-policy  created  started  tc.keep(y/n)  transient(y/n)
+# key is compose:<project>/<service> for a Compose service, otherwise name:<name>.
+# transient is y for Compose one-offs (compose run) and --rm containers.
+tc_containers() {
+    "$DOCKER" ps -aq --no-trunc 2>/dev/null | xargs -r "$DOCKER" inspect -f \
+'{{.Id}}{{"\t"}}{{.Name}}{{"\t"}}{{index .Config.Labels "com.docker.compose.project"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.service"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.oneoff"}}{{"\t"}}{{.HostConfig.AutoRemove}}{{"\t"}}{{.State.Running}}{{"\t"}}{{.HostConfig.RestartPolicy.Name}}{{"\t"}}{{.Created}}{{"\t"}}{{.State.StartedAt}}{{"\t"}}{{range $k, $v := .Config.Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}' 2>/dev/null \
+    | awk -F'\t' -v OFS='\t' '{
+        for (i = 3; i <= 5; i++) if ($i == "<no value>") $i = ""
+        name = $2; sub(/^\//, "", name)
+        key = ($3 != "" && $4 != "") ? "compose:" $3 "/" $4 : "name:" name
+        print $1, key, name, $7, $8, $9, $10, ($11 == "y" ? "y" : "n"), (($5 == "True" || $6 == "true") ? "y" : "n")
+    }'
+}
 
-if [ "${#blockers[@]}" -gt 0 ]; then
-    echo "SKIPPED: nothing was pruned. These containers should be running and are not:"
-    printf '  %s\n' "${blockers[@]}"
-    echo "Start them, remove them, or label them tc.keep; the next run will prune."
-    exit 3
-fi
+# The entries of a list file: comments and blank lines dropped.
+tc_list() {
+    [ -r "$1" ] || return 0
+    sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$1" | grep -v '^$'
+    return 0
+}
+
+# Succeeds if key $1 matches any pattern in the ignore file.
+tc_ignored() {
+    local p
+    while IFS= read -r p; do
+        printf '%s\n' "$1" | grep -qE -- "$p" 2>/dev/null && return 0
+    done < <(tc_list "$IGNORE_FILE")
+    return 1
+}
+# <<< tc-docker shared
 
 root="$("$DOCKER" info --format '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/}"
 free() { df -h --output=avail,pcent "$root" 2>/dev/null | tail -n1 | awk '{print $1" free, "$2" used"}'; }
-echo "Safety check passed. Pruning unused items older than ${OLDER_THAN_HOURS}h (volumes are never removed)."
+cutoff=$(( $(date +%s) - OLDER_THAN_HOURS * 3600 ))
+expected=" $(tc_list "$EXPECTED_FILE" | tr '\n' ' ') "
+
+echo "Pruning unused items older than ${OLDER_THAN_HOURS}h. Volumes are never removed."
 echo "Disk before: $(free)"
-"$DOCKER" system prune --all --force --filter "until=${OLDER_THAN_HOURS}h" --filter "label!=tc.keep"
-rc=$?
+
+removed=0; kept=(); errors=0
+while IFS=$'\t' read -r id key name running policy created _started keep _transient; do
+    [ "$running" = "true" ] && continue
+    why=""
+    case "$expected" in *" $key "*) why="on the expected list" ;; esac
+    case "$policy" in always|unless-stopped) why="${why:-restart policy $policy}" ;; esac
+    [ "$keep" = "y" ] && why="${why:-labelled tc.keep}"
+    if [ -n "$why" ]; then kept+=("$name ($why)"); continue; fi
+    c="$(date -d "$created" +%s 2>/dev/null)" || continue     # age unknown: leave it
+    [ "$c" -lt "$cutoff" ] || continue
+    if "$DOCKER" rm "$id" >/dev/null 2>&1; then removed=$((removed + 1))
+    else echo "WARNING: could not remove stopped container $name"; errors=$((errors + 1)); fi
+done < <(tc_containers)
+
+echo "Stopped containers removed: $removed"
+if [ "${#kept[@]}" -gt 0 ]; then
+    echo "Stopped containers kept, with their images:"
+    printf '  %s\n' "${kept[@]}"
+fi
+
+step() {  # label, then the prune command
+    local label="$1" out; shift
+    if out="$("$@" 2>&1)"; then
+        local r n
+        r="$(printf '%s\n' "$out" | grep -iE '^total' | tail -n1 | sed -E 's/^Total( reclaimed space)?:[[:space:]]*//')"
+        n="$(printf '%s\n' "$out" | grep -vciE '^(deleted|total|untagged:|$)' || true)"
+        if [ -n "$r" ]; then echo "$label: $r reclaimed"
+        elif [ "$n" -gt 0 ]; then echo "$label: $n removed"
+        else echo "$label: nothing to remove"; fi
+    else
+        echo "ERROR: $label failed: $(printf '%s\n' "$out" | tail -n1)"; errors=$((errors + 1))
+    fi
+}
+step "Images"      "$DOCKER" image prune --all --force --filter "until=${OLDER_THAN_HOURS}h" --filter "label!=tc.keep"
+step "Networks"    "$DOCKER" network prune --force --filter "until=${OLDER_THAN_HOURS}h"
+step "Build cache" "$DOCKER" builder prune --all --force --filter "until=${OLDER_THAN_HOURS}h"
+
 echo "Disk after:  $(free)"
-[ $rc -eq 0 ] || { echo "ERROR: docker system prune exited $rc"; exit 1; }
+[ "$errors" -eq 0 ] || exit 1
 exit 0
 EOS
 
@@ -348,10 +426,61 @@ install_prune_script() {
     local conf
     conf="# Written by the Datto RMM component \"Docker - Configure Host Maintenance [Lin]\".
 # Re-run the component to change these; edits here are overwritten.
-OLDER_THAN_HOURS=$usrPruneOlderThanHours
-REQUIRED_CONTAINERS=\"$usrRequiredContainers\""
+OLDER_THAN_HOURS=$usrPruneOlderThanHours"
     put_file "$PRUNE_BIN"  "$PRUNE_SCRIPT" 755 || return 1
     put_file "$PRUNE_CONF" "$conf"         644 || return 1
+}
+
+# ---------------------------------------------------------------- expected list
+
+# Creates /etc/tc-docker/expected-containers from what is running, ONLY when
+# it does not exist. It is never rewritten here afterwards: a list that
+# re-seeded itself would accept whatever turned up and stop meaning anything.
+seed_section() {
+    if [ -e "$EXPECTED_FILE" ]; then
+        say "Expected list: $EXPECTED_FILE exists ($(tc_list "$EXPECTED_FILE" | wc -l) entries); not changed. Use Docker - Update Expected Containers [Lin] to change it."
+        return 0
+    fi
+    if ! "$DOCKER" info >/dev/null 2>&1; then
+        say "Expected list: the Docker daemon is not reachable, so the list was not created; the next run will try again."
+        return 3
+    fi
+    local keys old
+    keys="$(tc_containers | awk -F'\t' '$4 == "true" && $9 == "n" {print $2}')"
+    # Carry over names from the version 2 setting, if this host had one.
+    old="$(sed -n 's/^REQUIRED_CONTAINERS="\(.*\)"$/\1/p' /etc/default/tc-docker-prune 2>/dev/null)"
+    for n in $old; do
+        [[ "$n" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] && keys="$keys"$'\n'"name:$n"
+    done
+    keys="$(printf '%s\n' "$keys" | grep -E "$KEY_RE" | sort -u)"
+    local count; count="$(printf '%s\n' "$keys" | grep -c . || true)"
+
+    if [ "$usrMode" = "report" ]; then
+        say "Expected list: REPORT MODE, would create $EXPECTED_FILE with $count entries:"
+        [ "$count" -gt 0 ] && printf '%s\n' "$keys" | sed 's/^/  /'
+        return 0
+    fi
+    mkdir -p "$TC_DIR" && chmod 755 "$TC_DIR" || return 1
+    {
+        echo "# Containers expected on this host, one per line."
+        echo "#   compose:<project>/<service>  a Docker Compose service"
+        echo "#   name:<container name>        any other container"
+        echo "# Created $(date '+%Y-%m-%d %H:%M %Z') by Docker - Configure Host Maintenance [Lin]"
+        echo "# from the containers running then. Change it with"
+        echo "# Docker - Update Expected Containers [Lin]."
+        if [ "$count" -gt 0 ]; then printf '%s\n' "$keys"; fi
+    } >"$EXPECTED_FILE.tmp" && chmod 644 "$EXPECTED_FILE.tmp" && mv -f "$EXPECTED_FILE.tmp" "$EXPECTED_FILE" || return 1
+    if [ ! -e "$IGNORE_FILE" ]; then
+        {
+            echo "# Extended regular expressions, one per line, matched against a"
+            echo "# container's key (see expected-containers). A match is never"
+            echo "# reported as unexpected. Example for GitLab CI job containers:"
+            echo "#   ^name:runner-"
+        } >"$IGNORE_FILE" && chmod 644 "$IGNORE_FILE"
+    fi
+    say "Expected list: created $EXPECTED_FILE with $count entries:"
+    [ "$count" -gt 0 ] && printf '%s\n' "$keys" | sed 's/^/  /'
+    return 0
 }
 
 # ---------------------------------------------------------------- prune timer
@@ -394,8 +523,7 @@ WantedBy=timers.target"
     put_file "$UNIT_DIR/$UNIT_NAME.timer"   "$timer" 644 || return 1
     local changed=$WROTE
 
-    local guard="safety check on"
-    [ -n "$usrRequiredContainers" ] && guard="safety check on, required: $usrRequiredContainers"
+    local guard="keeps stopped containers on the expected list"
 
     if [ "$usrMode" = "report" ]; then
         if [ $changed -eq 1 ]; then
@@ -441,17 +569,15 @@ prune_now() {
     # The full list of deleted IDs belongs in the journal, not the job output.
     printf '%s\n' "$out" | grep -vE '^(deleted|untagged): |^sha256:|^[0-9a-f]{12,64}$|^Deleted (Containers|Images|Networks|build cache objects):$|^$' \
         | sed 's/^/  /'
-    case $rc in
-        0) return 0 ;;
-        3) return 3 ;;
-        *) return 1 ;;
-    esac
+    [ $rc -eq 0 ] && return 0
+    return 1
 }
 
 # ---------------------------------------------------------------- run
 
 worst=0
 daemon_section;  rc=$?; [ $rc -gt $worst ] && worst=$rc
+seed_section;    rc=$?; [ $rc -gt $worst ] && worst=$rc
 timer_section;   rc=$?; [ $rc -gt $worst ] && worst=$rc
 prune_now;       rc=$?; [ $rc -gt $worst ] && worst=$rc
 
