@@ -3,13 +3,15 @@
 A Datto RMM script component for Linux Docker hosts. It stops a Docker host's
 disk filling up over time. It adds log rotation and build-cache limits to the
 Docker daemon's configuration, and installs a systemd timer that prunes unused
-images and build cache every week.
+images and build cache every week. Before each prune, a safety check makes sure
+nothing that should be running is stopped.
 
-> **Status: Not Validated.** Written 2026-11-09. It has been exercised in a
-> sandbox against Docker 29 with no systemd: the `daemon.json` merge, the
-> pre-28 engine path, report mode and input validation. The Tier 1 test covers
-> the systemd timer on a GitHub runner. It has not yet run on a real Docker
-> host through a Datto agent.
+> **Status: Not Validated.** Written 2026-11-09. Version 1 ran through a Datto
+> agent on one internal Docker host. Version 2 adds the safety check. It was
+> exercised against a live Docker 29 daemon in a sandbox, covering the
+> `daemon.json` merge, the pre-28 engine path, report mode, input validation
+> and every safety-check outcome. The Tier 1 test covers the systemd timer and
+> the safety check on a GitHub runner.
 
 ## What it does
 
@@ -29,19 +31,48 @@ It **changes the endpoint**. One run does up to three things:
    the engine has that option. If the check fails, nothing is written. The
    previous file is kept as `daemon.json.tc-bak-<timestamp>`.
 
-2. **Installs `tc-docker-prune.timer` and `tc-docker-prune.service`** in
-   `/etc/systemd/system`. The service runs:
+2. **Installs the weekly prune.** It writes four files:
+
+   | File | What it is |
+   |---|---|
+   | `/usr/local/sbin/tc-docker-prune` | The prune script, with the safety check |
+   | `/etc/default/tc-docker-prune` | Its settings: the age, and the required containers |
+   | `/etc/systemd/system/tc-docker-prune.service` | Runs the script |
+   | `/etc/systemd/system/tc-docker-prune.timer` | Runs the service on `usrPruneSchedule` |
+
+   The timer is `Persistent`, so a run missed while the host was off happens at
+   the next boot. It also has up to 30 minutes of random delay.
+
+   **The safety check.** The prune deletes stopped containers, and then the
+   images only they used. So before removing anything, the script checks that:
+
+   - every container named in `usrRequiredContainers` is running, and
+   - no container with restart policy `always` or `unless-stopped` is stopped.
+     Those are meant to be running; one that isn't may be down for maintenance,
+     or crashed.
+
+   If either check fails, it **skips the whole prune** and lists the containers
+   it found. The service then shows as failed in `systemctl --failed` and in
+   the journal. The next run prunes once the containers are running again.
+   Containers labelled `tc.keep` are exempt from the second check, because the
+   prune never removes them anyway.
+
+   When the check passes, the script runs:
 
        docker system prune --all --force --filter until=<N>h --filter label!=tc.keep
 
-   This removes stopped containers, unused networks, images no container uses,
-   and build cache, all older than N hours. **Volumes are never removed.**
-   Anything carrying the label `tc.keep` is skipped. The timer is `Persistent`,
-   so a run missed while the host was off happens at the next boot. It also has
-   up to 30 minutes of random delay.
+   This removes stopped containers, unused networks, unused images and build
+   cache, all older than N hours, and skips anything labelled `tc.keep`.
+   **Volumes are never removed.**
 
-3. **Optionally prunes once, now** (`usrPruneNow`), and reports free disk space
-   before and after.
+   For images, "older than N hours" means the image was **built** that long
+   ago, not pulled or last used. Most pulled images are older than a week, so
+   in practice **almost every image no container uses is removed**. That
+   includes images on a CI host or an AI workstation that will be downloaded
+   again on next use. Only images built within the last N hours survive.
+
+3. **Optionally prunes once, now** (`usrPruneNow`). It runs the same script,
+   safety check included, and reports free disk space before and after.
 
 **It never restarts Docker.** A `daemon.json` change only takes effect when
 Docker restarts or the host reboots. Log rotation then applies only to
@@ -75,7 +106,7 @@ for the pull request.
 | Field | Value |
 |---|---|
 | Name | `Docker - Configure Host Maintenance [Lin]` |
-| Description | Adds Docker log rotation and build-cache limits to daemon.json and installs a weekly prune timer; never removes volumes or restarts Docker. |
+| Description | Sets Docker log and build-cache limits and a weekly prune that skips if a needed container is down; never removes volumes or restarts Docker. |
 | Category | **Scripts** |
 | Script type | Shell (Unix) |
 | Target OS | Linux |
@@ -99,6 +130,13 @@ body, then add the input variables below.
 | `usrPruneSchedule` | String | `Sun *-*-* 04:00:00` | A systemd `OnCalendar` expression in the host's local time, checked with `systemd-analyze calendar`. Blank leaves the timer alone. |
 | `usrPruneOlderThanHours` | String | `168` | 24–8760. Only unused items older than this are pruned. |
 | `usrPruneNow` | **Selection** | `No` | `Yes` also runs the prune once, now. |
+| `usrRequiredContainers` | String | *(empty)* | Optional. Container names, separated by spaces or commas, that must be running or the prune is skipped, e.g. `gitlab-runner`. Each must be a valid Docker name. Stopped `always` and `unless-stopped` containers block the prune whether this is set or not. |
+
+**The last run sets the host's settings.** `usrPruneOlderThanHours` and
+`usrRequiredContainers` are saved to `/etc/default/tc-docker-prune`, and the
+weekly timer uses whatever the most recent run of this component wrote. A
+recurring job aimed at a host that needs a required-container list has to
+carry that list. Otherwise the next run clears it.
 
 No customer-specific value is hardcoded. Different hosts get different values
 through the job's variables, not through edits to the script.
@@ -113,7 +151,10 @@ every input before it changes anything.
 | `0` | Done, or nothing needed doing. Also returned when Docker is not installed. |
 | `1` | Unexpected failure, such as a write or `systemctl` call failing. |
 | `2` | An input variable is invalid. Nothing was changed. |
-| `3` | One part could not be applied safely, and was not changed: no `python3` to merge the JSON, the existing `daemon.json` is not valid JSON, the merged file failed `dockerd --validate`, the host is not running systemd, the Docker daemon was unreachable for a prune-now, or Docker is the snap package. Other parts may still have run, and the output says which. |
+| `3` | One part could not be applied safely, and was not changed: no `python3` to merge the JSON, the existing `daemon.json` is not valid JSON, the merged file failed `dockerd --validate`, the host is not running systemd, or Docker is the snap package. **Also returned when a prune-now was skipped by the safety check.** Other parts may still have run, and the output says which. |
+
+The prune script on the host exits `0` when it pruned, `3` when the safety
+check skipped it, and `1` on an error, such as the daemon being unreachable.
 
 ## How to tell it worked
 
@@ -134,10 +175,18 @@ A first apply on a host that had none of this looks like:
 A second run says `KEPT` for each key, `no change`, and
 `already installed with these settings`.
 
+A prune the safety check skipped looks like:
+
+    SKIPPED: nothing was pruned. These containers should be running and are not:
+      web (restart policy unless-stopped, but stopped)
+    Start them, remove them, or label them tc.keep; the next run will prune.
+
 On the host itself:
 
     systemctl list-timers tc-docker-prune.timer
-    journalctl -u tc-docker-prune.service    # what each prune reclaimed
+    journalctl -u tc-docker-prune.service    # what each prune reclaimed, or why it skipped
+    systemctl --failed                       # a skipped prune shows here until the next good run
+    sudo /usr/local/sbin/tc-docker-prune     # run the prune by hand, safety check included
 
 ## Test order
 
@@ -165,9 +214,16 @@ Never a customer first.
   writes `defaultKeepStorage`, which every supported engine accepts.
 - **It never tightens an existing setting.** A host that already has
   `max-size: 500m` keeps it. Edit that host by hand if it is wrong.
-- **Removing the timer** is manual: `systemctl disable --now
-  tc-docker-prune.timer`, then delete both unit files and run
-  `systemctl daemon-reload`.
+- **A deliberately stopped `unless-stopped` container blocks every prune**
+  until it is started, removed or labelled `tc.keep`. That is intended: the
+  skip is visible in the journal and in `systemctl --failed`. But nobody is
+  alerted yet. A monitor that reads the service's last result would close
+  that gap.
+- **No alert when the timer fails or skips.** Disk space monitoring is the
+  backstop.
+- **Removing it** is manual: `systemctl disable --now tc-docker-prune.timer`,
+  then delete the two unit files, `/usr/local/sbin/tc-docker-prune` and
+  `/etc/default/tc-docker-prune`, and run `systemctl daemon-reload`.
 
 ## Open questions
 
