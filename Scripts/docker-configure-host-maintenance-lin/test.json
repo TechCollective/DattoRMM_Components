@@ -141,7 +141,7 @@
     {
       "type": "command",
       "label": "The timer's service is skipped too, and shows as failed",
-      "run": "systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl -u tc-docker-prune.service -n 5 --no-pager",
+      "run": "systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl -u tc-docker-prune.service -n 30 --no-pager",
       "outputContains": [
         "exit-code",
         "SKIPPED"
