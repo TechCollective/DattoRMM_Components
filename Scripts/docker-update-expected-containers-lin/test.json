@@ -1,0 +1,181 @@
+{
+  "platforms": [
+    "linux"
+  ],
+  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the running containers as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written.",
+  "variables": {},
+  "steps": [
+    {
+      "type": "command",
+      "label": "Four containers: plain, Compose, CI-style, --rm",
+      "run": "set -e; d=$(mktemp -d); mkdir -p $d/bin; cp /bin/sleep $d/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $d$(dirname $l); cp $l $d$l; done; tar -C $d -c . | docker import - tc-test-sleep:1; docker run -d --name tc-a tc-test-sleep:1 /bin/sleep 3600; docker run -d --name tcshop-web-1 --label com.docker.compose.project=tcshop --label com.docker.compose.service=web tc-test-sleep:1 /bin/sleep 3600; docker run -d --name tc-runner-x tc-test-sleep:1 /bin/sleep 3600; docker run -d --rm --name tc-temp tc-test-sleep:1 /bin/sleep 3600; docker ps --format '{{.Names}}'",
+      "outputContains": [
+        "tc-a",
+        "tcshop-web-1",
+        "tc-runner-x",
+        "tc-temp"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Show before any list exists",
+      "outputContains": [
+        "(does not exist yet)",
+        "UNLISTED name:tc-a",
+        "UNLISTED compose:tcshop/web"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Add an ignore pattern",
+      "variables": {
+        "usrAction": "add-ignore",
+        "usrItems": "^name:tc-runner-"
+      },
+      "outputContains": [
+        "added:   ^name:tc-runner-",
+        "ignored  name:tc-runner-x"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Accept what is running now",
+      "variables": {
+        "usrAction": "accept-current"
+      },
+      "outputContains": [
+        "added:   name:tc-a",
+        "added:   compose:tcshop/web"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "List has the keys, not the ignored or --rm containers",
+      "path": "/etc/tc-docker/expected-containers",
+      "contains": [
+        "name:tc-a",
+        "compose:tcshop/web",
+        "# Containers expected on this host"
+      ],
+      "notContains": [
+        "tc-runner-x",
+        "tc-temp",
+        "tcshop-web-1"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Accept again: no change",
+      "variables": {
+        "usrAction": "accept-current"
+      },
+      "outputContains": [
+        "no change"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Add a bare name and an explicit key",
+      "variables": {
+        "usrAction": "add",
+        "usrItems": "tc-later, compose:other/svc"
+      },
+      "outputContains": [
+        "added:   name:tc-later",
+        "added:   compose:other/svc"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Remove one, and one that is not there",
+      "variables": {
+        "usrAction": "remove",
+        "usrItems": "tc-later nothere"
+      },
+      "outputContains": [
+        "removed: name:tc-later",
+        "not on the list: name:nothere"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "Previous version kept",
+      "path": "/etc/tc-docker/expected-containers.prev",
+      "contains": [
+        "name:tc-later"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stop an expected container",
+      "run": "docker stop -t 1 tc-a && docker ps -a --filter name=tc-a --format '{{.Status}}'",
+      "outputContains": [
+        "Exited"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Show reports it stopped, and the Compose key that was never deployed as missing",
+      "outputContains": [
+        "STOPPED  name:tc-a",
+        "MISSING  compose:other/svc",
+        "running  compose:tcshop/web"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Remove the ignore pattern",
+      "variables": {
+        "usrAction": "remove-ignore",
+        "usrItems": "^name:tc-runner-"
+      },
+      "outputContains": [
+        "removed: ^name:tc-runner-",
+        "UNLISTED name:tc-runner-x"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses an unknown action",
+      "variables": {
+        "usrAction": "nuke"
+      },
+      "expectExitCode": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses add with nothing to add",
+      "variables": {
+        "usrAction": "add",
+        "usrItems": ""
+      },
+      "expectExitCode": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a name with shell characters",
+      "variables": {
+        "usrAction": "add",
+        "usrItems": "a;b"
+      },
+      "expectExitCode": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses an invalid regex",
+      "variables": {
+        "usrAction": "add-ignore",
+        "usrItems": "("
+      },
+      "expectExitCode": 2
+    },
+    {
+      "type": "runComponent",
+      "tier": 2,
+      "label": "Host without Docker says so and exits 0",
+      "outputContains": [
+        "Docker is not installed"
+      ]
+    }
+  ]
+}
