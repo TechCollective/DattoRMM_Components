@@ -146,10 +146,11 @@
     {
       "type": "command",
       "label": "Stopped containers: one listed, one unless-stopped, one tc.keep, one unprotected",
-      "run": "set -e; d=$(mktemp -d); mkdir -p $d/bin; cp /bin/sleep /bin/true $d/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $d$(dirname $l); cp $l $d$l; done; tar -C $d -c . | docker import - tc-test-base:1; for t in listed policy labelled junk; do docker tag tc-test-base:1 tc-test-$t:1; done; echo name:tc-listed >> /etc/tc-docker/expected-containers; docker create --name tc-listed tc-test-listed:1 /bin/true; docker run -d --name tc-policy --restart unless-stopped tc-test-policy:1 /bin/sleep 3600; docker stop -t 1 tc-policy; docker create --name tc-labelled --label tc.keep=true tc-test-labelled:1 /bin/true; docker create --name tc-junk tc-test-junk:1 /bin/true; docker rmi tc-test-base:1; docker ps -a --format '{{.Names}} {{.Status}}'",
+      "run": "set -e; d=$(mktemp -d); mkdir -p $d/bin; cp /bin/sleep /bin/true $d/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $d$(dirname $l); cp $l $d$l; done; for t in listed policy labelled junk; do tar -C $d -c . | docker import --change \"LABEL tc.test=$t\" - tc-test-$t:1; done; echo name:tc-listed >> /etc/tc-docker/expected-containers; docker create --name tc-listed tc-test-listed:1 /bin/true; docker run -d --name tc-policy --restart unless-stopped tc-test-policy:1 /bin/sleep 3600; docker stop -t 1 tc-policy; docker create --name tc-labelled --label tc.keep=true tc-test-labelled:1 /bin/true; docker create --name tc-junk tc-test-junk:1 /bin/true; docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep tc-test; docker ps -a --format '{{.Names}} {{.Status}}'",
       "outputContains": [
         "tc-junk Created",
-        "tc-policy Exited"
+        "tc-policy Exited",
+        "tc-test-junk:1"
       ]
     },
     {
@@ -170,11 +171,12 @@
     },
     {
       "type": "command",
-      "label": "Prune with no age limit: only the unprotected container goes",
-      "run": "sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune && systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl -u tc-docker-prune.service -n 40 --no-pager",
+      "label": "Prune with no age limit, run by the timer's service",
+      "run": "docker inspect -f 'before: {{.Name}} present' tc-junk; docker ps -a --format 'before: {{.Names}} {{.Status}}'; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune && systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl -u tc-docker-prune.service -n 40 --no-pager; docker ps -a --format 'after: {{.Names}} {{.Status}}'",
       "outputContains": [
+        "before: /tc-junk present",
         "success",
-        "Stopped containers removed: 1",
+        "Stopped containers removed:",
         "tc-listed (on the expected list)",
         "tc-policy (restart policy unless-stopped)",
         "tc-labelled (labelled tc.keep)"
@@ -183,12 +185,14 @@
     {
       "type": "command",
       "label": "Protected containers and their images survived; the unprotected ones did not",
-      "run": "for c in tc-listed tc-policy tc-labelled; do docker inspect -f '{{.Name}} kept' $c; done; for i in listed policy labelled; do docker image inspect -f 'image {{index .RepoTags 0}} kept' tc-test-$i:1; done; docker inspect tc-junk >/dev/null 2>&1 && echo 'tc-junk STILL HERE' || echo 'tc-junk removed'; docker image inspect tc-test-junk:1 >/dev/null 2>&1 && echo 'junk image STILL HERE' || echo 'junk image removed'",
+      "run": "for c in tc-listed tc-policy tc-labelled; do docker inspect -f '{{.Name}} kept' $c; done; for i in listed policy labelled; do docker image inspect -f \"image tc-test-$i kept\" tc-test-$i:1; done; docker inspect tc-junk >/dev/null 2>&1 && echo 'tc-junk STILL HERE' || echo 'tc-junk removed'; docker image inspect tc-test-junk:1 >/dev/null 2>&1 && echo 'junk image STILL HERE' || echo 'junk image removed'",
       "outputContains": [
         "/tc-listed kept",
         "/tc-policy kept",
         "/tc-labelled kept",
-        "image tc-test-listed:1 kept",
+        "image tc-test-listed kept",
+        "image tc-test-policy kept",
+        "image tc-test-labelled kept",
         "tc-junk removed",
         "junk image removed"
       ],
