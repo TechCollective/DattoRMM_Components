@@ -2,10 +2,10 @@
   "general": {
     "name": "Docker - Update Expected Containers [Lin]",
     "category": "scripts",
-    "description": "Shows or changes this host's Docker expected-containers list and ignore patterns; keeps the previous file as .prev. Changes no container. https://github.com/TechCollective/DattoRMM_Components",
+    "description": "Shows or changes this host's Docker expected-containers list, ignore patterns and review state; changes no container. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "",
     "hash": "",
-    "version": "1",
+    "version": "2",
     "timeout": "120",
     "securityLevel": "5",
     "installType": "unix"
@@ -16,10 +16,11 @@
       "name": "usrAction",
       "type": "map",
       "direction": "false",
-      "description": "Show the lists and how they compare; accept what runs now as the list; add or remove entries; add or remove ignore patterns.",
+      "description": "Show the lists and review state; confirm the list is reviewed (enables container and image cleanup); accept what exists now; add/remove entries or ignore patterns.",
       "defaultVal": "Show",
       "options": [
         { "name": "Show", "value": "show" },
+        { "name": "Confirm reviewed", "value": "confirm-reviewed" },
         { "name": "Accept current", "value": "accept-current" },
         { "name": "Add", "value": "add" },
         { "name": "Remove", "value": "remove" },
@@ -31,7 +32,7 @@
       "name": "usrItems",
       "type": "string",
       "direction": "false",
-      "description": "For Add/Remove: container names, name:<name> or compose:<project>/<service>, space or comma separated. For the ignore actions: regexes, space separated.",
+      "description": "Add/Remove: container names, name:<name> or compose:<project>/<service>, space or comma separated. Ignore actions: regexes, space separated. Confirm reviewed: an optional note.",
       "defaultVal": ""
     }
   ]

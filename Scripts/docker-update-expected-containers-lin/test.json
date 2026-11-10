@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the running containers as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written.",
+  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the containers present as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written. Confirm reviewed records the review with a note, refuses when no list exists, and Show reports the review state and stopped containers the list does not protect.",
   "variables": {},
   "steps": [
     {
@@ -22,7 +22,8 @@
       "outputContains": [
         "(does not exist yet)",
         "UNLISTED name:tc-a",
-        "UNLISTED compose:tcshop/web"
+        "UNLISTED compose:tcshop/web",
+        "NOT REVIEWED"
       ]
     },
     {
@@ -107,10 +108,11 @@
     },
     {
       "type": "command",
-      "label": "Stop an expected container",
-      "run": "docker stop -t 1 tc-a && docker ps -a --filter name=tc-a --format '{{.Status}}'",
+      "label": "Stop an expected container, and create a stopped one that is not listed",
+      "run": "docker stop -t 1 tc-a && docker create --name tc-old tc-test-sleep:1 /bin/sleep 1 && docker ps -a --filter name=tc- --format '{{.Names}} {{.Status}}'",
       "outputContains": [
-        "Exited"
+        "tc-a Exited",
+        "tc-old Created"
       ]
     },
     {
@@ -119,7 +121,8 @@
       "outputContains": [
         "STOPPED  name:tc-a",
         "MISSING  compose:other/svc",
-        "running  compose:tcshop/web"
+        "running  compose:tcshop/web",
+        "STOPPED, UNLISTED  name:tc-old"
       ]
     },
     {
@@ -132,6 +135,51 @@
       "outputContains": [
         "removed: ^name:tc-runner-",
         "UNLISTED name:tc-runner-x"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Confirm reviewed, with a note",
+      "variables": {
+        "usrAction": "confirm-reviewed",
+        "usrItems": "tc-test reviewer"
+      },
+      "outputContains": [
+        "Review recorded",
+        "tc-test reviewer",
+        "Review: confirmed"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "Review file written",
+      "path": "/etc/tc-docker/reviewed",
+      "contains": [
+        "entries, tc-test reviewer"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Take the list away",
+      "run": "mv /etc/tc-docker/expected-containers /tmp/tc-ec && echo moved",
+      "outputContains": [
+        "moved"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Confirm reviewed refuses when there is no list",
+      "variables": {
+        "usrAction": "confirm-reviewed"
+      },
+      "expectExitCode": 3
+    },
+    {
+      "type": "command",
+      "label": "Put the list back",
+      "run": "mv /tmp/tc-ec /etc/tc-docker/expected-containers && echo back",
+      "outputContains": [
+        "back"
       ]
     },
     {
