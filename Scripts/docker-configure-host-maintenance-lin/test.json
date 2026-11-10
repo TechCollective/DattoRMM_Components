@@ -98,13 +98,13 @@
     },
     {
       "type": "runComponent",
-      "label": "One-off prune",
+      "label": "One-off prune, before review: no containers or images touched",
       "variables": {
         "usrPruneNow": "yes"
       },
       "outputContains": [
         "Prune now",
-        "Stopped containers removed",
+        "List not reviewed yet",
         "Disk after"
       ]
     },
