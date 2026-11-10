@@ -1,0 +1,46 @@
+{
+  "general": {
+    "name": "Docker - Containers Differ From Expected [Lin]",
+    "category": "monitors",
+    "description": "Alerts when an expected Docker container is stopped or gone; reports unlisted ones. Read-only. Healthy when there is no Docker or no list yet. https://github.com/TechCollective/DattoRMM_Components",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "120",
+    "securityLevel": "4",
+    "installType": "unix"
+  },
+  "body": "docker-containers-differ-from-expected-lin.sh",
+  "variables": [
+    {
+      "name": "usrMissingAction",
+      "type": "map",
+      "direction": "false",
+      "description": "What an expected container that is stopped or gone does: Alert, or Warn (named in the status only).",
+      "defaultVal": "Alert",
+      "options": [
+        { "name": "Alert", "value": "alert" },
+        { "name": "Warn", "value": "warn" }
+      ]
+    },
+    {
+      "name": "usrUnlistedAction",
+      "type": "map",
+      "direction": "false",
+      "description": "What a running container not on the list does: Warn (named in the status only), Alert, or Ignore.",
+      "defaultVal": "Warn",
+      "options": [
+        { "name": "Warn", "value": "warn" },
+        { "name": "Alert", "value": "alert" },
+        { "name": "Ignore", "value": "ignore" }
+      ]
+    },
+    {
+      "name": "usrUnlistedAfterHours",
+      "type": "string",
+      "direction": "false",
+      "description": "0-8760. An unlisted container only counts once it has run this long. Keeps upgrades and short tests quiet.",
+      "defaultVal": "24"
+    }
+  ]
+}
