@@ -10,8 +10,13 @@
 # "Docker - Containers Differ From Expected [Lin]" compares it with what runs.
 #
 # usrAction:
-#   show            print both lists and how they compare with what is running (default)
-#   accept-current  replace the expected list with the containers running now
+#   show            print both lists, the review state, and how they compare with
+#                   the containers on this host (default)
+#   accept-current  replace the expected list with every container present now,
+#                   running or stopped (not ignored, not one-offs or --rm)
+#   confirm-reviewed  record that a person has checked the list. Until this has
+#                   run once, the weekly prune removes no containers and no images.
+#                   usrItems may carry a short note, e.g. who reviewed it.
 #   add / remove    add or remove the entries in usrItems
 #   add-ignore / remove-ignore   the same for ignore patterns
 #
@@ -21,7 +26,8 @@
 #   0  done
 #   1  unexpected failure
 #   2  an input variable is invalid; nothing was changed
-#   3  needs the Docker daemon (accept-current) and it is not reachable
+#   3  needs the Docker daemon (accept-current) and it is not reachable, or
+#      confirm-reviewed was run on a host that has no list yet
 
 set -u
 umask 022
@@ -40,8 +46,8 @@ usrAction="${usrAction:-show}"
 usrItems="${usrItems:-}"
 usrAction="$(printf '%s' "$usrAction" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 case "$usrAction" in
-    show|accept-current|add|remove|add-ignore|remove-ignore) ;;
-    *) fail 2 "usrAction must be show, accept-current, add, remove, add-ignore or remove-ignore (got '$usrAction')." ;;
+    show|accept-current|confirm-reviewed|add|remove|add-ignore|remove-ignore) ;;
+    *) fail 2 "usrAction must be show, accept-current, confirm-reviewed, add, remove, add-ignore or remove-ignore (got '$usrAction')." ;;
 esac
 
 DOCKER="$(command -v docker 2>/dev/null || true)"
@@ -55,6 +61,9 @@ DAEMON=0; "$DOCKER" info >/dev/null 2>&1 && DAEMON=1
 TC_DIR="/etc/tc-docker"
 EXPECTED_FILE="$TC_DIR/expected-containers"
 IGNORE_FILE="$TC_DIR/ignore"
+# Written by "Docker - Update Expected Containers [Lin]" (Confirm reviewed). Until it
+# exists, the prune removes no containers and no images on this host.
+REVIEWED_FILE="$TC_DIR/reviewed"
 # shellcheck disable=SC2034  # not every component uses every name
 KEY_RE='^(name:[a-zA-Z0-9][a-zA-Z0-9_.-]*|compose:[a-zA-Z0-9][a-zA-Z0-9_.-]*/[a-zA-Z0-9][a-zA-Z0-9_.-]*)$'
 
@@ -88,12 +97,18 @@ tc_ignored() {
     done < <(tc_list "$IGNORE_FILE")
     return 1
 }
+# Succeeds once a person has confirmed this host's expected list.
+tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # <<< tc-docker shared
 
 # ---------------------------------------------------------------- inputs
 
 ITEMS=()
+NOTE=""
 case "$usrAction" in
+    confirm-reviewed)
+        # A free-text note: printable characters only, at most 120 of them.
+        NOTE="$(printf '%s' "$usrItems" | tr -cd '[:print:]' | cut -c1-120)" ;;
     add|remove)
         # Entries: compose:<project>/<service>, name:<name>, or a bare container
         # name, which becomes that container's key if it exists, else name:<it>.
@@ -157,6 +172,8 @@ show() {
     if [ -e "$EXPECTED_FILE" ]; then tc_list "$EXPECTED_FILE" | sed 's/^/  /'; else say "  (does not exist yet)"; fi
     say "Ignore patterns ($IGNORE_FILE):"
     if [ -n "$(tc_list "$IGNORE_FILE")" ]; then tc_list "$IGNORE_FILE" | sed 's/^/  /'; else say "  (none)"; fi
+    if tc_reviewed; then say "Review: confirmed - $(head -n1 "$REVIEWED_FILE")"
+    else say "Review: NOT REVIEWED. The weekly prune removes no containers and no images on this host until Confirm reviewed is run."; fi
     if [ $DAEMON -eq 0 ]; then say "The Docker daemon is not reachable, so there is no comparison."; return 0; fi
     local rows; rows="$(tc_containers)"
     say "Compared with this host now:"
@@ -171,6 +188,14 @@ show() {
         tc_list "$EXPECTED_FILE" | grep -qxF -- "$k" && continue
         if tc_ignored "$k"; then say "  ignored  $k"; else say "  UNLISTED $k"; fi
     done
+    # Stopped containers the list does not protect: the prune removes these once
+    # the list is reviewed (unless a restart policy or tc.keep protects them).
+    printf '%s\n' "$rows" | awk -F'\t' '$4 != "true" && $9 == "n" && $8 == "n" && $5 != "always" && $5 != "unless-stopped" {print $2}' \
+        | sort -u | while IFS= read -r k; do
+        tc_list "$EXPECTED_FILE" | grep -qxF -- "$k" && continue
+        printf '%s\n' "$rows" | awk -F'\t' -v k="$k" '$2 == k && $4 == "true" {f=1} END {exit !f}' && continue
+        say "  STOPPED, UNLISTED  $k  - the prune removes it once the list is reviewed; Add it to keep it"
+    done
 }
 
 # ---------------------------------------------------------------- run
@@ -180,9 +205,20 @@ case "$usrAction" in
         show ;;
     accept-current)
         [ $DAEMON -eq 1 ] || fail 3 "the Docker daemon is not reachable, so the running containers cannot be read; nothing was changed."
-        tc_containers | awk -F'\t' '$4 == "true" && $9 == "n" {print $2}' | while IFS= read -r k; do
+        tc_containers | awk -F'\t' '$9 == "n" {print $2}' | sort -u | while IFS= read -r k; do
             tc_ignored "$k" || printf '%s\n' "$k"
         done | write_list "$EXPECTED_FILE" "$EXPECTED_HEADER" || fail 1 "could not write $EXPECTED_FILE." ;;
+    confirm-reviewed)
+        [ -e "$EXPECTED_FILE" ] || fail 3 "$EXPECTED_FILE does not exist yet; run Docker - Configure Host Maintenance [Lin] first."
+        mkdir -p "$TC_DIR" || fail 1 "could not create $TC_DIR."
+        {
+            printf '%s, %s entries%s\n' "$(date '+%Y-%m-%d %H:%M %Z')" "$(tc_list "$EXPECTED_FILE" | wc -l)" "${NOTE:+, $NOTE}"
+            echo "# Written by Docker - Update Expected Containers [Lin] (confirm-reviewed)."
+            echo "# While this file exists, the weekly prune may remove stopped containers"
+            echo "# that are not protected, and unused images. Delete it to stop that."
+        } >"$REVIEWED_FILE.tmp" && chmod 644 "$REVIEWED_FILE.tmp" && mv -f "$REVIEWED_FILE.tmp" "$REVIEWED_FILE" \
+            || fail 1 "could not write $REVIEWED_FILE."
+        say "Review recorded in $REVIEWED_FILE: $(head -n1 "$REVIEWED_FILE")" ;;
     add)
         { tc_list "$EXPECTED_FILE"; printf '%s\n' "${ITEMS[@]}"; } \
             | write_list "$EXPECTED_FILE" "$EXPECTED_HEADER" || fail 1 "could not write $EXPECTED_FILE." ;;
