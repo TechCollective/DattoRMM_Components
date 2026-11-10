@@ -8,8 +8,11 @@
 # Maintenance [Lin]", changed with "Docker - Update Expected Containers [Lin]"):
 #
 #   - an expected container that is stopped or gone      -> usrMissingAction
+#     (reported, but not alerted on, while the list is unreviewed)
 #   - a running container not on the list, running for
 #     usrUnlistedAfterHours or more, and not ignored       -> usrUnlistedAction
+#   - a list no person has confirmed yet                   -> usrUnreviewedAction
+#     (until it is, the weekly prune removes no containers or images)
 #
 # Compose one-offs, --rm containers and anything matching /etc/tc-docker/ignore
 # are never "unlisted". A host without Docker, or without a list yet, is healthy
@@ -48,10 +51,12 @@ diag() { DIAG="${DIAG}${1}"$'\n'; }
 usrUnlistedAfterHours="${usrUnlistedAfterHours:-24}"
 usrUnlistedAction="$(printf '%s' "${usrUnlistedAction:-warn}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 usrMissingAction="$(printf '%s' "${usrMissingAction:-alert}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+usrUnreviewedAction="$(printf '%s' "${usrUnreviewedAction:-warn}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 [[ "$usrUnlistedAfterHours" =~ ^[0-9]+$ ]] && [ "$usrUnlistedAfterHours" -le 8760 ] \
     || emit 1 "Check could not run: usrUnlistedAfterHours must be 0-8760 (got '$usrUnlistedAfterHours')"
 case "$usrUnlistedAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrUnlistedAction must be alert, warn or ignore (got '$usrUnlistedAction')" ;; esac
 case "$usrMissingAction"  in alert|warn) ;;        *) emit 1 "Check could not run: usrMissingAction must be alert or warn (got '$usrMissingAction')" ;; esac
+case "$usrUnreviewedAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrUnreviewedAction must be alert, warn or ignore (got '$usrUnreviewedAction')" ;; esac
 for t in awk grep sed date xargs; do
     command -v "$t" >/dev/null 2>&1 || emit 1 "Check could not run: required tool '$t' is missing"
 done
@@ -67,6 +72,9 @@ fi
 TC_DIR="/etc/tc-docker"
 EXPECTED_FILE="$TC_DIR/expected-containers"
 IGNORE_FILE="$TC_DIR/ignore"
+# Written by "Docker - Update Expected Containers [Lin]" (Confirm reviewed). Until it
+# exists, the prune removes no containers and no images on this host.
+REVIEWED_FILE="$TC_DIR/reviewed"
 # shellcheck disable=SC2034  # not every component uses every name
 KEY_RE='^(name:[a-zA-Z0-9][a-zA-Z0-9_.-]*|compose:[a-zA-Z0-9][a-zA-Z0-9_.-]*/[a-zA-Z0-9][a-zA-Z0-9_.-]*)$'
 
@@ -100,6 +108,8 @@ tc_ignored() {
     done < <(tc_list "$IGNORE_FILE")
     return 1
 }
+# Succeeds once a person has confirmed this host's expected list.
+tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # <<< tc-docker shared
 
 [ -e "$EXPECTED_FILE" ] || emit 0 "No expected-containers list on this host yet; Docker - Configure Host Maintenance [Lin] creates it"
@@ -144,16 +154,24 @@ fi
 [ "$YOUNG" -gt 0 ] && SUMMARY="$SUMMARY; $YOUNG new, under ${usrUnlistedAfterHours}h"
 [ "$IGNORED" -gt 0 ] && SUMMARY="$SUMMARY; $IGNORED ignored"
 [ "${#BAD[@]}" -gt 0 ] && SUMMARY="$SUMMARY; ${#BAD[@]} unreadable list line(s)"
+UNREVIEWED=0; tc_reviewed || UNREVIEWED=1
+if [ "$UNREVIEWED" -eq 1 ] && [ "$usrUnreviewedAction" != "ignore" ]; then
+    SUMMARY="$SUMMARY; list NOT REVIEWED, so no containers or images are pruned"
+fi
 
 ALERT=0
-if [ $(( ${#STOPPED[@]} + ${#MISSING[@]} )) -gt 0 ] && [ "$usrMissingAction" = "alert" ]; then ALERT=1; fi
+# Before review, stopped or missing containers are part of the review, not
+# separate alerts: onboarding raises one "not reviewed" item, not one per container.
+if [ $(( ${#STOPPED[@]} + ${#MISSING[@]} )) -gt 0 ] && [ "$usrMissingAction" = "alert" ] && [ "$UNREVIEWED" -eq 0 ]; then ALERT=1; fi
 if [ "${#UNLISTED[@]}" -gt 0 ] && [ "$usrUnlistedAction" = "alert" ]; then ALERT=1; fi
+if [ "$UNREVIEWED" -eq 1 ] && [ "$usrUnreviewedAction" = "alert" ]; then ALERT=1; fi
 
 if [ "$ALERT" -eq 1 ]; then
     for k in "${STOPPED[@]}"; do diag "STOPPED   $k  - start it, or remove it from the list if it was retired"; done
     for k in "${MISSING[@]}"; do diag "MISSING   $k  - no container with this key exists; redeploy it, or remove it from the list"; done
     for k in "${UNLISTED[@]}"; do diag "UNLISTED  $k  - add it to the list, add an ignore pattern, or remove the container"; done
     for k in "${BAD[@]}"; do diag "BAD LINE  $k  - not name:<name> or compose:<project>/<service>"; done
+    [ "$UNREVIEWED" -eq 1 ] && diag "NOT REVIEWED  - run Show, fix the list, then Confirm reviewed. Until then the prune removes no containers or images."
     diag ""
     diag "Change the list with Docker - Update Expected Containers [Lin] (usrAction add, remove, accept-current, add-ignore)."
     diag "List: $EXPECTED_FILE   Ignore patterns: $IGNORE_FILE"

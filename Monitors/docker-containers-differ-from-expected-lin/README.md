@@ -5,9 +5,10 @@ on a host with that host's expected-containers list. It alerts when an
 expected container is stopped or gone, and reports containers that run but
 aren't on the list.
 
-> **Status: Not Validated.** Written 2026-11-09. Every outcome below was
-> exercised against a live Docker 29 daemon in a sandbox. It has not yet run
-> through a Datto agent. Run it as a **Scripts** component first; see
+> **Status: Not Validated.** Written 2026-11-09; version 2 adds review state
+> on 2026-11-10. Every outcome below was exercised against a live Docker 29
+> daemon in a sandbox. It has not yet run through a Datto agent. Run its
+> script once as a **Scripts** component first; see
 > [Test order](#test-order).
 
 ## What it does
@@ -33,6 +34,7 @@ matches.
 | **No container** has an expected key | **Missing.** Alerts, set by `usrMissingAction` |
 | A running container is **not on the list**, has run at least `usrUnlistedAfterHours`, and doesn't match the ignore file | **Unlisted.** Named in the status; alerts only if `usrUnlistedAction` is Alert |
 | A list line is neither key form | Counted as unreadable in the status |
+| The list has **not been reviewed** (no `/etc/tc-docker/reviewed`) | Named in the status; alerts only if `usrUnreviewedAction` is Alert. **Until review, stopped or missing containers are reported but never alert**, so onboarding a host raises one item, not one per container. |
 
 These are **never** counted as unlisted:
 
@@ -71,6 +73,7 @@ from the latest release.
 |---|---|---|---|
 | `usrMissingAction` | **Selection** | `Alert` | `Alert` / `Warn`. Warn names stopped and missing containers in the status without alerting. |
 | `usrUnlistedAction` | **Selection** | `Warn` | `Warn` / `Alert` / `Ignore`. Starts at Warn on purpose; see Open questions. |
+| `usrUnreviewedAction` | **Selection** | `Warn` | `Warn` / `Alert` / `Ignore`. What an unreviewed list does. Alert turns every unreviewed host into a ticket, which suits onboarding a single client, but not turning the monitor on across the whole fleet. |
 | `usrUnlistedAfterHours` | String | `24` | 0–8760. A new container only counts as unlisted once it has run this long, which keeps upgrades and short tests quiet. |
 
 No customer-specific value is hardcoded. An invalid value makes it report
@@ -84,7 +87,9 @@ No customer-specific value is hardcoded. An invalid value makes it report
 | Docker installed, no list yet | **Exit 0**: says Host Maintenance creates it |
 | Daemon unreachable | **Exit 1**: "Check could not run: cannot talk to the Docker daemon", quoting Docker's error in the diagnostic |
 | Every expected container running, nothing unlisted | **Exit 0**: e.g. `3 expected: 3 running` |
-| Expected container stopped or missing, `usrMissingAction` Alert | **Exit 1**, naming them, with a diagnostic saying what to do |
+| List not reviewed, `usrUnreviewedAction` Warn | **Exit 0**, with `list NOT REVIEWED` in the status, even when stopped containers are listed |
+| List not reviewed, `usrUnreviewedAction` Alert | **Exit 1** |
+| Reviewed list, expected container stopped or missing, `usrMissingAction` Alert | **Exit 1**, naming them, with a diagnostic saying what to do |
 | Unlisted container, `usrUnlistedAction` Warn | **Exit 0**, naming it in the status |
 | Unlisted container, `usrUnlistedAction` Alert | **Exit 1** |
 | An input variable is invalid | **Exit 1**, `Check could not run: …` |
@@ -113,6 +118,7 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
 - **Add** the container, or **Remove** it from the list.
 - **Accept current**, after a deliberate redeploy.
 - **Add ignore**, for containers that churn.
+- **Confirm reviewed**, once a new host's list is right.
 
 ## Test order
 

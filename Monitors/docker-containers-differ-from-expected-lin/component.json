@@ -5,7 +5,7 @@
     "description": "Alerts when an expected Docker container is stopped or gone; reports unlisted ones. Read-only. Healthy when there is no Docker or no list yet. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "",
     "hash": "",
-    "version": "1",
+    "version": "2",
     "timeout": "120",
     "securityLevel": "4",
     "installType": "unix"
@@ -41,6 +41,18 @@
       "direction": "false",
       "description": "0-8760. An unlisted container only counts once it has run this long. Keeps upgrades and short tests quiet.",
       "defaultVal": "24"
+    },
+    {
+      "name": "usrUnreviewedAction",
+      "type": "map",
+      "direction": "false",
+      "description": "What a list nobody has confirmed yet does: Warn (named in the status), Alert, or Ignore. Until review, stopped or missing containers do not alert.",
+      "defaultVal": "Warn",
+      "options": [
+        { "name": "Warn", "value": "warn" },
+        { "name": "Alert", "value": "alert" },
+        { "name": "Ignore", "value": "ignore" }
+      ]
     }
   ]
 }
