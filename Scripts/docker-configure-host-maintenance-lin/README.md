@@ -9,12 +9,22 @@ disk filling up over time:
 - It installs a weekly prune that removes what is unused and leaves those
   expected containers, and their images, alone.
 
-> **Status: Not Validated.** Written 2026-11-09. Version 1 ran through a Datto
-> agent on one internal Docker host. Version 3 replaces version 2's "skip the
-> whole prune" safety check with per-container protection, and adds the
-> expected-containers list. Both were exercised against a live Docker 29
-> daemon in a sandbox. The Tier 1 test covers the systemd timer, seeding the
-> list, and protection on a GitHub runner.
+**Nothing of a host's is deleted until a person has reviewed its list.**
+Until then, the prune only clears build cache and unused networks.
+
+> **Status: Not Validated.** Written 2026-11-09. Version 3 ran through a Datto
+> agent on one internal Docker host.
+>
+> - **Version 3** added per-container protection and the expected-containers
+>   list.
+> - **Version 4** creates the list from every container, running or stopped,
+>   and holds back all container and image removal until the list has been
+>   reviewed.
+>
+> Version 4 was exercised against a live Docker 29 daemon in a sandbox,
+> including the onboarding case it exists for: a stopped container started by
+> hand, and a locally built image. The Tier 1 test covers both phases on a
+> GitHub runner.
 
 ## What it does
 
@@ -40,8 +50,21 @@ previous file is kept as `daemon.json.tc-bak-<timestamp>`.
 ### 2. Creates the expected-containers list, once
 
 If `/etc/tc-docker/expected-containers` does not exist, it is created from
-the containers running now. It also creates `/etc/tc-docker/ignore`, holding
-a commented example.
+**every container present now, running or stopped**. A container that exists
+when we take a server on is assumed to be wanted until a person says
+otherwise. It also creates `/etc/tc-docker/ignore`, holding a commented
+example.
+
+**A new list is not reviewed.** Until a person runs
+`Docker - Update Expected Containers [Lin]` with **Confirm reviewed**, which
+writes `/etc/tc-docker/reviewed`, the weekly prune removes **no containers and
+no images** on this host. It still clears unused networks and build cache.
+
+This is the onboarding safeguard. Without it, a new client's server could
+lose, at its first Sunday prune, a container that happened to be stopped when
+the weekly job first reached it. That might be a container started by hand,
+whose run command nobody wrote down, or a locally built image with no copy
+anywhere else.
 
 **After that, this component never changes the list.** A list that rewrote
 itself on every run would accept whatever turned up and stop meaning
@@ -76,6 +99,10 @@ The timer is `Persistent`, so a run missed while the host was off happens at
 the next boot. It also has up to 30 minutes of random delay.
 
 The script removes, when older than `usrPruneOlderThanHours`:
+
+**Before the list is reviewed:** only unused networks and build cache.
+
+**After review:**
 
 1. **Stopped containers, except protected ones.** A stopped container is kept
    if it is on the expected-containers list, has restart policy `always` or
@@ -151,7 +178,7 @@ re-import creates a second component; see the repo's `tools/README.md`.
 | Field | Value |
 |---|---|
 | Name | `Docker - Configure Host Maintenance [Lin]` |
-| Description | Sets Docker log and build-cache limits, seeds the expected-containers list, adds a weekly prune that spares listed containers; never deletes volumes. |
+| Description | Sets Docker log and build-cache limits, seeds the expected-containers list, and a weekly prune that deletes nothing until the list is reviewed. |
 | Category | **Scripts** |
 | Script type | Shell (Unix) |
 | Target OS | Linux |
@@ -250,16 +277,24 @@ Never a customer first.
 1. CI's "Component tests" check on the pull request (`test.json`, Tier 1).
 2. One internal Docker host. Run with `usrMode` = `Report` first, read the
    list it would create, then run `Apply`.
-3. One site, one device in it, with the job scoped to that device. Run Report,
-   then Apply, then restart Docker in that site's maintenance window.
-4. Wider, only after the first three.
+3. On that host, run Update Expected Containers with Show, correct the list,
+   then run Confirm reviewed. Check the next prune's journal.
+4. One site, one device in it, with the job scoped to that device. Run Report,
+   then Apply, then review the list. Restart Docker in that site's maintenance
+   window.
+5. Wider, only after the first four.
 
 ## Known limits
 
-- **The list is only as good as the moment it was created.** A host seeded
-  mid-incident, with a service down, starts with that service missing from
-  the list. Read the Report output before the first Apply, and fix the list
-  with `Docker - Update Expected Containers [Lin]`.
+- **An unreviewed host gets no image cleanup.** That is deliberate. Its disk
+  relief waits for the review, so review a new host's list in its first
+  week. The monitor reports every unreviewed host.
+- **A list includes whatever existed at creation, junk included.** That's
+  safe, because a listed container is kept, but stale stopped containers stay
+  until someone removes them from the list during the review.
+- **Upgrading a version 3 host** leaves its list in place, but marks it
+  unreviewed, because no `reviewed` file exists yet. Its container and image
+  removal stops until someone runs Confirm reviewed.
 - **systemd only** for the timer. On a host without systemd, the timer part
   exits `3`, and the other parts still run.
 - **Needs `python3`** to merge JSON safely. Without it, the `daemon.json` part

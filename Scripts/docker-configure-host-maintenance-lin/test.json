@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once and never rewrites it, and installs an enabled prune timer whose script never touches volumes. The prune removes an old stopped container that nothing protects, and keeps, with their images, stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2.",
+  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, it removes an old stopped container that nothing protects, and keeps, with their images, stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2.",
   "variables": {},
   "steps": [
     {
@@ -35,7 +35,8 @@
         "Expected list: created /etc/tc-docker/expected-containers",
         "installed tc-docker-prune.timer",
         "RESTART PENDING",
-        "done"
+        "done",
+        "NOT REVIEWED"
       ]
     },
     {
@@ -171,7 +172,32 @@
     },
     {
       "type": "command",
-      "label": "Prune with no age limit, run by the timer's service",
+      "label": "Before review: a prune with no age limit removes no container and no image",
+      "run": "sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune && systemctl start tc-docker-prune.service; journalctl -u tc-docker-prune.service -n 40 --no-pager; docker inspect -f '{{.Name}} survived' tc-junk; docker image inspect -f 'junk image survived' tc-test-junk:1",
+      "outputContains": [
+        "List not reviewed yet",
+        "/tc-junk survived",
+        "junk image survived"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Record a review, as Update Expected Containers' Confirm reviewed does",
+      "run": "echo 'tc-test review' > /etc/tc-docker/reviewed && cat /etc/tc-docker/reviewed",
+      "outputContains": [
+        "tc-test review"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A later run reports the list as reviewed",
+      "outputContains": [
+        "Expected list: reviewed"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "After review: prune with no age limit, run by the timer's service",
       "run": "docker inspect -f 'before: {{.Name}} present' tc-junk; docker ps -a --format 'before: {{.Names}} {{.Status}}'; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune && systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl -u tc-docker-prune.service -n 40 --no-pager; docker ps -a --format 'after: {{.Names}} {{.Status}}'",
       "outputContains": [
         "before: /tc-junk present",
