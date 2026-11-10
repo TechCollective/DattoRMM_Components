@@ -7,14 +7,17 @@
 #    Only keys that are MISSING are added. An existing value is never changed,
 #    so a host someone already tuned keeps its tuning.
 # 2. Creates the host's expected-containers list, /etc/tc-docker/expected-containers,
-#    from the containers running now -- only if the list does not exist yet.
-#    After that it never changes the list; "Docker - Update Expected
-#    Containers [Lin]" does.
-# 3. Installs a systemd timer that runs /usr/local/sbin/tc-docker-prune. It
-#    removes stopped containers, unused images, networks and build cache older
-#    than N hours, never volumes, and never a stopped container that is on
-#    the expected list, has an always/unless-stopped restart policy, or is
-#    labelled tc.keep. Those are left alone, along with their images.
+#    from every container present now, running or stopped -- only if the list
+#    does not exist yet. After that it never changes the list; "Docker -
+#    Update Expected Containers [Lin]" does. A new list is NOT REVIEWED.
+# 3. Installs a systemd timer that runs /usr/local/sbin/tc-docker-prune.
+#    Until a person confirms the list (Update Expected Containers, Confirm
+#    reviewed), the prune touches only unused networks and build cache:
+#    no container and no image is removed. After review it also removes
+#    stopped containers and unused images older than N hours, except a
+#    stopped container on the list, with an always/unless-stopped restart
+#    policy, or labelled tc.keep -- those are kept, with their images.
+#    Never volumes.
 # 4. Optionally runs that prune once, now.
 #
 # It never restarts Docker. daemon.json changes take effect at the next
@@ -128,6 +131,9 @@ DOCKER="$DOCKER_BIN"
 TC_DIR="/etc/tc-docker"
 EXPECTED_FILE="$TC_DIR/expected-containers"
 IGNORE_FILE="$TC_DIR/ignore"
+# Written by "Docker - Update Expected Containers [Lin]" (Confirm reviewed). Until it
+# exists, the prune removes no containers and no images on this host.
+REVIEWED_FILE="$TC_DIR/reviewed"
 # shellcheck disable=SC2034  # not every component uses every name
 KEY_RE='^(name:[a-zA-Z0-9][a-zA-Z0-9_.-]*|compose:[a-zA-Z0-9][a-zA-Z0-9_.-]*/[a-zA-Z0-9][a-zA-Z0-9_.-]*)$'
 
@@ -161,6 +167,8 @@ tc_ignored() {
     done < <(tc_list "$IGNORE_FILE")
     return 1
 }
+# Succeeds once a person has confirmed this host's expected list.
+tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # <<< tc-docker shared
 
 # ---------------------------------------------------------------- daemon.json
@@ -305,12 +313,14 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune.
 #
-# Removes, when older than OLDER_THAN_HOURS:
+# Always removes, when older than OLDER_THAN_HOURS: unused networks and build
+# cache. Once /etc/tc-docker/reviewed exists (a person confirmed the list),
+# it also removes:
 #   - stopped containers, EXCEPT any that is on /etc/tc-docker/expected-containers,
 #     has restart policy always or unless-stopped, or is labelled tc.keep.
 #     Those are kept, so their images stay "in use" and are kept too;
-#   - images no container uses (tc.keep-labelled images are kept);
-#   - unused networks and build cache.
+#   - images no container uses (tc.keep-labelled images are kept).
+# Before review, no container and no image is touched.
 # Never volumes. Exit: 0 done, 1 error.
 set -u
 OLDER_THAN_HOURS=168
@@ -323,6 +333,9 @@ DOCKER="$(command -v docker)" || { echo "ERROR: docker not found"; exit 1; }
 TC_DIR="/etc/tc-docker"
 EXPECTED_FILE="$TC_DIR/expected-containers"
 IGNORE_FILE="$TC_DIR/ignore"
+# Written by "Docker - Update Expected Containers [Lin]" (Confirm reviewed). Until it
+# exists, the prune removes no containers and no images on this host.
+REVIEWED_FILE="$TC_DIR/reviewed"
 # shellcheck disable=SC2034  # not every component uses every name
 KEY_RE='^(name:[a-zA-Z0-9][a-zA-Z0-9_.-]*|compose:[a-zA-Z0-9][a-zA-Z0-9_.-]*/[a-zA-Z0-9][a-zA-Z0-9_.-]*)$'
 
@@ -356,6 +369,8 @@ tc_ignored() {
     done < <(tc_list "$IGNORE_FILE")
     return 1
 }
+# Succeeds once a person has confirmed this host's expected list.
+tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # <<< tc-docker shared
 
 root="$("$DOCKER" info --format '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/}"
@@ -367,7 +382,12 @@ echo "Pruning unused items older than ${OLDER_THAN_HOURS}h. Volumes are never re
 echo "Disk before: $(free)"
 
 removed=0; kept=(); errors=0
-while IFS=$'\t' read -r id key name running policy created _started keep _transient; do
+REVIEWED=0; tc_reviewed && REVIEWED=1
+if [ "$REVIEWED" -eq 0 ]; then
+    echo "List not reviewed yet: no containers and no images are removed on this host."
+    echo "Review $EXPECTED_FILE, then run Docker - Update Expected Containers [Lin] with Confirm reviewed."
+fi
+while [ "$REVIEWED" -eq 1 ] && IFS=$'\t' read -r id key name running policy created _started keep _transient; do
     [ "$running" = "true" ] && continue
     why=""
     case "$expected" in *" $key "*) why="on the expected list" ;; esac
@@ -380,7 +400,7 @@ while IFS=$'\t' read -r id key name running policy created _started keep _transi
     else echo "WARNING: could not remove stopped container $name"; errors=$((errors + 1)); fi
 done < <(tc_containers)
 
-echo "Stopped containers removed: $removed"
+[ "$REVIEWED" -eq 1 ] && echo "Stopped containers removed: $removed"
 if [ "${#kept[@]}" -gt 0 ]; then
     echo "Stopped containers kept, with their images:"
     printf '  %s\n' "${kept[@]}"
@@ -399,7 +419,7 @@ step() {  # label, then the prune command
         echo "ERROR: $label failed: $(printf '%s\n' "$out" | tail -n1)"; errors=$((errors + 1))
     fi
 }
-step "Images"      "$DOCKER" image prune --all --force --filter "until=${OLDER_THAN_HOURS}h" --filter "label!=tc.keep"
+[ "$REVIEWED" -eq 1 ] && step "Images" "$DOCKER" image prune --all --force --filter "until=${OLDER_THAN_HOURS}h" --filter "label!=tc.keep"
 step "Networks"    "$DOCKER" network prune --force --filter "until=${OLDER_THAN_HOURS}h"
 step "Build cache" "$DOCKER" builder prune --all --force --filter "until=${OLDER_THAN_HOURS}h"
 
@@ -439,6 +459,8 @@ OLDER_THAN_HOURS=$usrPruneOlderThanHours"
 seed_section() {
     if [ -e "$EXPECTED_FILE" ]; then
         say "Expected list: $EXPECTED_FILE exists ($(tc_list "$EXPECTED_FILE" | wc -l) entries); not changed. Use Docker - Update Expected Containers [Lin] to change it."
+        if tc_reviewed; then say "Expected list: reviewed ($(head -n1 "$REVIEWED_FILE"))."
+        else say "Expected list: NOT REVIEWED. Until someone confirms it, the prune removes no containers or images here."; fi
         return 0
     fi
     if ! "$DOCKER" info >/dev/null 2>&1; then
@@ -446,7 +468,9 @@ seed_section() {
         return 3
     fi
     local keys old
-    keys="$(tc_containers | awk -F'\t' '$4 == "true" && $9 == "n" {print $2}')"
+    # Every container present, running or stopped: one that exists when we take
+    # a host on is assumed wanted until a person says otherwise.
+    keys="$(tc_containers | awk -F'\t' '$9 == "n" {print $2}')"
     # Carry over names from the version 2 setting, if this host had one.
     old="$(sed -n 's/^REQUIRED_CONTAINERS="\(.*\)"$/\1/p' /etc/default/tc-docker-prune 2>/dev/null)"
     for n in $old; do
@@ -466,8 +490,9 @@ seed_section() {
         echo "#   compose:<project>/<service>  a Docker Compose service"
         echo "#   name:<container name>        any other container"
         echo "# Created $(date '+%Y-%m-%d %H:%M %Z') by Docker - Configure Host Maintenance [Lin]"
-        echo "# from the containers running then. Change it with"
-        echo "# Docker - Update Expected Containers [Lin]."
+        echo "# from every container present then, running or stopped. Change it with"
+        echo "# Docker - Update Expected Containers [Lin]. Until a person runs its"
+        echo "# Confirm reviewed action, the prune removes no containers or images."
         if [ "$count" -gt 0 ]; then printf '%s\n' "$keys"; fi
     } >"$EXPECTED_FILE.tmp" && chmod 644 "$EXPECTED_FILE.tmp" && mv -f "$EXPECTED_FILE.tmp" "$EXPECTED_FILE" || return 1
     if [ ! -e "$IGNORE_FILE" ]; then
@@ -480,6 +505,7 @@ seed_section() {
     fi
     say "Expected list: created $EXPECTED_FILE with $count entries:"
     [ "$count" -gt 0 ] && printf '%s\n' "$keys" | sed 's/^/  /'
+    say "Expected list: NOT REVIEWED. Until someone confirms it, the prune removes no containers or images here."
     return 0
 }
 
