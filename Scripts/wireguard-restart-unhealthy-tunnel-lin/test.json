@@ -84,7 +84,7 @@
     {
       "type": "command",
       "label": "Install wireguard-tools; build tctest0's config and a peer in namespace tcpeer",
-      "run": "set -e\nexport DEBIAN_FRONTEND=noninteractive\napt-get update -qq >/dev/null && apt-get install -y -qq wireguard-tools >/dev/null\nmodprobe wireguard\numask 077; mkdir -p /etc/wireguard /root/tcwg\nfor k in a b; do wg genkey > /root/tcwg/$k.key; wg pubkey < /root/tcwg/$k.key > /root/tcwg/$k.pub; done\nprintf '[Interface]\\nPrivateKey = %s\\nAddress = 10.99.0.1/32\\nListenPort = 51820\\n\\n[Peer]\\nPublicKey = %s\\nAllowedIPs = 10.99.0.2/32\\nEndpoint = 127.0.0.1:51821\\n' \"$(cat /root/tcwg/a.key)\" \"$(cat /root/tcwg/b.pub)\" > /etc/wireguard/tctest0.conf\nip netns add tcpeer\nip link add tcpeer0 type wireguard\nwg set tcpeer0 private-key /root/tcwg/b.key listen-port 51821 peer \"$(cat /root/tcwg/a.pub)\" allowed-ips 10.99.0.1/32 endpoint 127.0.0.1:51820\nip link set tcpeer0 netns tcpeer\nip -n tcpeer addr add 10.99.0.2/32 dev tcpeer0\nip -n tcpeer link set tcpeer0 up\nip -n tcpeer route add 10.99.0.1/32 dev tcpeer0\necho setup-ok",
+      "run": "set -e\nexport DEBIAN_FRONTEND=noninteractive\napt-get update -qq >/dev/null && apt-get install -y -qq wireguard-tools >/dev/null\nmodprobe wireguard\numask 077; mkdir -p /etc/wireguard/tcwg\nfor k in a b; do wg genkey > /etc/wireguard/tcwg/$k.key; wg pubkey < /etc/wireguard/tcwg/$k.key > /etc/wireguard/tcwg/$k.pub; done\nprintf '[Interface]\\nPrivateKey = %s\\nAddress = 10.99.0.1/32\\nListenPort = 51820\\n\\n[Peer]\\nPublicKey = %s\\nAllowedIPs = 10.99.0.2/32\\nEndpoint = 127.0.0.1:51821\\n' \"$(cat /etc/wireguard/tcwg/a.key)\" \"$(cat /etc/wireguard/tcwg/b.pub)\" > /etc/wireguard/tctest0.conf\nip netns add tcpeer\nip link add tcpeer0 type wireguard\nwg set tcpeer0 private-key /etc/wireguard/tcwg/b.key listen-port 51821 peer \"$(cat /etc/wireguard/tcwg/a.pub)\" allowed-ips 10.99.0.1/32 endpoint 127.0.0.1:51820\nip link set tcpeer0 netns tcpeer\nip -n tcpeer addr add 10.99.0.2/32 dev tcpeer0\nip -n tcpeer link set tcpeer0 up\nip -n tcpeer route add 10.99.0.1/32 dev tcpeer0\necho setup-ok",
       "outputContains": [
         "setup-ok"
       ],
@@ -211,7 +211,7 @@
     {
       "type": "command",
       "label": "Add a WireGuard interface by hand, outside wg-quick, with a peer that never answers",
-      "run": "ip link add tchand0 type wireguard && wg set tchand0 private-key /root/tcwg/a.key peer \"$(cat /root/tcwg/b.pub)\" allowed-ips 10.98.0.2/32 && ip link set tchand0 up && echo made",
+      "run": "ip link add tchand0 type wireguard && wg set tchand0 private-key /etc/wireguard/tcwg/a.key peer \"$(cat /etc/wireguard/tcwg/b.pub)\" allowed-ips 10.98.0.2/32 && ip link set tchand0 up && echo made",
       "outputContains": [
         "made"
       ]

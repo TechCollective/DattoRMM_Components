@@ -65,7 +65,8 @@ refuse() { finish 2 REFUSED "Refused: $1"; }
 
 # ---- Inputs ---------------------------------------------------------------
 IF="$(trim "${usrWgInterface:-}")"
-MODE="$(trim "${usrMode:-ifunhealthy}")"; MODE="${MODE,,}"
+# A drop-down passes its value (ifunhealthy); accept the display name too (If unhealthy).
+MODE="$(trim "${usrMode:-ifunhealthy}")"; MODE="${MODE,,}"; MODE="${MODE// /}"
 MAXAGE="$(trim "${usrHandshakeMaxAgeSec:-300}")"
 VERIFY="$(trim "${usrVerifySec:-30}")"
 COOLDOWN="$(trim "${usrCooldownMin:-15}")"
