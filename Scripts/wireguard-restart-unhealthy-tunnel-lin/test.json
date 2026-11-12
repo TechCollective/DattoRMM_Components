@@ -1,0 +1,306 @@
+{
+  "platforms": [
+    "linux"
+  ],
+  "description": "Builds a real wg-quick tunnel (tctest0) to a WireGuard peer in its own network namespace, then proves: bad input is refused with exit 2 before anything is touched; a stopped tunnel that is not enabled is left down (NOT_ACTIVE); once enabled it is started and a handshake is confirmed (RESTARTED); a healthy tunnel is left alone; with the peer down a restart reports STILL_UNHEALTHY; a second run inside the cooldown does nothing; Always restarts regardless; a WireGuard interface not managed by wg-quick, one with no peers, a non-WireGuard interface and a config that does not parse are reported and not touched.",
+  "variables": {
+    "usrWgInterface": "tctest0",
+    "usrVerifySec": "20",
+    "usrCooldownMin": "0"
+  },
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Refuses an empty interface",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrWgInterface is empty"
+      ],
+      "variables": {
+        "usrWgInterface": ""
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses an interface name with shell characters",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "not a valid interface name"
+      ],
+      "variables": {
+        "usrWgInterface": "wg0;reboot"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses an unknown mode",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrMode"
+      ],
+      "variables": {
+        "usrMode": "sometimes"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a handshake age under 150",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrHandshakeMaxAgeSec"
+      ],
+      "variables": {
+        "usrHandshakeMaxAgeSec": "60"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a verify time over 120",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrVerifySec"
+      ],
+      "variables": {
+        "usrVerifySec": "600"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a ping target that looks like an option",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrPingTarget"
+      ],
+      "variables": {
+        "usrPingTarget": "-f"
+      }
+    },
+    {
+      "type": "command",
+      "label": "Install wireguard-tools; build tctest0's config and a peer in namespace tcpeer",
+      "run": "set -e\nexport DEBIAN_FRONTEND=noninteractive\napt-get update -qq >/dev/null && apt-get install -y -qq wireguard-tools >/dev/null\nmodprobe wireguard\numask 077; mkdir -p /etc/wireguard /root/tcwg\nfor k in a b; do wg genkey > /root/tcwg/$k.key; wg pubkey < /root/tcwg/$k.key > /root/tcwg/$k.pub; done\nprintf '[Interface]\\nPrivateKey = %s\\nAddress = 10.99.0.1/32\\nListenPort = 51820\\n\\n[Peer]\\nPublicKey = %s\\nAllowedIPs = 10.99.0.2/32\\nEndpoint = 127.0.0.1:51821\\n' \"$(cat /root/tcwg/a.key)\" \"$(cat /root/tcwg/b.pub)\" > /etc/wireguard/tctest0.conf\nip netns add tcpeer\nip link add tcpeer0 type wireguard\nwg set tcpeer0 private-key /root/tcwg/b.key listen-port 51821 peer \"$(cat /root/tcwg/a.pub)\" allowed-ips 10.99.0.1/32 endpoint 127.0.0.1:51820\nip link set tcpeer0 netns tcpeer\nip -n tcpeer addr add 10.99.0.2/32 dev tcpeer0\nip -n tcpeer link set tcpeer0 up\nip -n tcpeer route add 10.99.0.1/32 dev tcpeer0\necho setup-ok",
+      "outputContains": [
+        "setup-ok"
+      ],
+      "timeoutSeconds": 300
+    },
+    {
+      "type": "runComponent",
+      "label": "Tunnel down and not enabled: left down",
+      "expectExitCode": 3,
+      "outputContains": [
+        "STATUS=NOT_ACTIVE",
+        "does not exist",
+        "Not started"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Enable wg-quick@tctest0 without starting it",
+      "run": "systemctl enable wg-quick@tctest0 2>&1; systemctl is-active wg-quick@tctest0 || true",
+      "outputContains": [
+        "inactive"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Enabled but down: started, handshake confirmed",
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=RESTARTED",
+        "Restarting wg-quick@tctest0.service",
+        "prompting with ping to 10.99.0.2",
+        "handshaked since the restart"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The tunnel carries traffic",
+      "run": "ping -c 2 -W 2 10.99.0.2 && wg show tctest0 latest-handshakes | awk '{print ($2 > 0) ? \"handshaked\" : \"never\"}'",
+      "outputContains": [
+        "2 received",
+        "handshaked"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Healthy: left alone",
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=HEALTHY",
+        "nothing to do"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Second run: still nothing to do",
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=HEALTHY"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Take the peer down, and the interface administratively down",
+      "run": "ip -n tcpeer link set tcpeer0 down && ip link set tctest0 down && echo broken",
+      "outputContains": [
+        "broken"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unhealthy, peer unreachable: restarted, reported still unhealthy",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=STILL_UNHEALTHY",
+        "administratively down",
+        "no peer handshaked within 20s"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "Cooldown stamp written",
+      "path": "/var/lib/tc-wireguard/restart-tctest0.last"
+    },
+    {
+      "type": "command",
+      "label": "Make it unhealthy again",
+      "run": "ip link set tctest0 down && echo down",
+      "outputContains": [
+        "down"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Inside the cooldown: not restarted again",
+      "expectExitCode": 3,
+      "outputContains": [
+        "STATUS=COOLDOWN",
+        "cooldown is 15 minutes"
+      ],
+      "variables": {
+        "usrCooldownMin": "15"
+      }
+    },
+    {
+      "type": "command",
+      "label": "Bring the peer back",
+      "run": "ip -n tcpeer link set tcpeer0 up && (ip -n tcpeer route add 10.99.0.1/32 dev tcpeer0 2>/dev/null || true) && echo peer-up",
+      "outputContains": [
+        "peer-up"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Always, inside the cooldown: restarted anyway, handshake confirmed",
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=RESTARTED"
+      ],
+      "variables": {
+        "usrMode": "always",
+        "usrCooldownMin": "15"
+      }
+    },
+    {
+      "type": "command",
+      "label": "Add a WireGuard interface by hand, outside wg-quick, with a peer that never answers",
+      "run": "ip link add tchand0 type wireguard && wg set tchand0 private-key /root/tcwg/a.key peer \"$(cat /root/tcwg/b.pub)\" allowed-ips 10.98.0.2/32 && ip link set tchand0 up && echo made",
+      "outputContains": [
+        "made"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Not managed by wg-quick: not touched",
+      "expectExitCode": 3,
+      "outputContains": [
+        "STATUS=UNMANAGED",
+        "Not touched"
+      ],
+      "variables": {
+        "usrWgInterface": "tchand0"
+      }
+    },
+    {
+      "type": "command",
+      "label": "The hand-made interface is still there",
+      "run": "ip -o link show dev tchand0 >/dev/null && echo still-there",
+      "outputContains": [
+        "still-there"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Add a WireGuard interface with no peers",
+      "run": "ip link add tcempty0 type wireguard && ip link set tcempty0 up && echo made",
+      "outputContains": [
+        "made"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "No peers: reported, not restarted",
+      "expectExitCode": 3,
+      "outputContains": [
+        "STATUS=NO_PEERS"
+      ],
+      "variables": {
+        "usrWgInterface": "tcempty0"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Not a WireGuard interface: refused",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "not a WireGuard interface"
+      ],
+      "variables": {
+        "usrWgInterface": "lo"
+      }
+    },
+    {
+      "type": "command",
+      "label": "Break the config, then stop the tunnel",
+      "run": "systemctl stop wg-quick@tctest0 && echo 'NotAKey = 1' >> /etc/wireguard/tctest0.conf && echo broken",
+      "outputContains": [
+        "broken"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Config does not parse: not started",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=FAILED",
+        "does not parse"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Host without wireguard-tools reports NOT_INSTALLED",
+      "expectExitCode": 3,
+      "outputContains": [
+        "STATUS=NOT_INSTALLED"
+      ],
+      "tier": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Internal gateway: stop the far end, wait past the threshold, run it; expect STILL_UNHEALTHY, and no restart loop under a monitor response",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=STILL_UNHEALTHY"
+      ],
+      "tier": 2
+    }
+  ]
+}

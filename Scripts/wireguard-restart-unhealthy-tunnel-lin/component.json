@@ -1,0 +1,68 @@
+{
+  "general": {
+    "name": "WireGuard - Restart Unhealthy Tunnel [Lin]",
+    "category": "scripts",
+    "description": "Restarts a wg-quick WireGuard tunnel only if it is unhealthy and meant to be running, then confirms a peer handshakes. https://github.com/TechCollective/DattoRMM_Components",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "300",
+    "securityLevel": "4",
+    "installType": "unix"
+  },
+  "body": "wireguard-restart-unhealthy-tunnel-lin.sh",
+  "variables": [
+    {
+      "name": "usrWgInterface",
+      "type": "string",
+      "direction": "false",
+      "description": "Required. WireGuard interface to check and, if warranted, restart, such as wg0.",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrMode",
+      "type": "map",
+      "direction": "false",
+      "description": "If unhealthy: restart only when the tunnel fails the health check, with the cooldown. Always: restart even if healthy, ignoring the cooldown.",
+      "defaultVal": "If unhealthy",
+      "options": [
+        {
+          "name": "If unhealthy",
+          "value": "ifunhealthy"
+        },
+        {
+          "name": "Always",
+          "value": "always"
+        }
+      ]
+    },
+    {
+      "name": "usrHandshakeMaxAgeSec",
+      "type": "string",
+      "direction": "false",
+      "description": "150-3600. A peer whose last handshake is older than this is stale. Match the Connection Health monitor.",
+      "defaultVal": "300"
+    },
+    {
+      "name": "usrVerifySec",
+      "type": "string",
+      "direction": "false",
+      "description": "10-120. Seconds to wait after the restart for a peer to handshake.",
+      "defaultVal": "30"
+    },
+    {
+      "name": "usrCooldownMin",
+      "type": "string",
+      "direction": "false",
+      "description": "0-1440. Do not restart again within this many minutes of the last restart by this component. 0 turns it off.",
+      "defaultVal": "15"
+    },
+    {
+      "name": "usrPingTarget",
+      "type": "string",
+      "direction": "false",
+      "description": "Optional. Far-side IP or hostname to ping after the restart, to prompt a handshake. Empty: an address from each peer's allowed IPs.",
+      "defaultVal": ""
+    }
+  ]
+}
