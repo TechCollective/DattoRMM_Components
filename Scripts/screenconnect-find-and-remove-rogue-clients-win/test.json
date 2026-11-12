@@ -1,0 +1,122 @@
+{
+  "platforms": ["windows"],
+  "description": "Proves bad input is refused (an attacker thumbprint given as ours, and Remove without a thumbprint or without a relay), that Detect and Remove on a runner with no ScreenConnect report CLEAN, read both registry views and write the UDF summary, and that a second run is harmless. Defender exclusions are skipped because GitHub's image excludes whole drives on purpose. Finding and removing planted indicators, and removing a real second client, are Tier 2 on an internal VM.",
+  "variables": {
+    "usrKnownThumbprints": "0123456789abcdef",
+    "usrUdfNumber": "250",
+    "usrCheckDefenderExclusions": "No"
+  },
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Unknown mode is refused",
+      "expectExitCode": 1,
+      "variables": { "usrMode": "Nuke" },
+      "outputContains": [ "STATUS=REFUSED", "usrMode" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Remove without known thumbprints is refused",
+      "expectExitCode": 1,
+      "variables": { "usrMode": "Remove", "usrKnownThumbprints": "", "usrKnownRelayHosts": "relay.example.com" },
+      "outputContains": [ "STATUS=REFUSED", "usrKnownThumbprints" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Remove without a known relay is refused",
+      "expectExitCode": 1,
+      "variables": { "usrMode": "Remove" },
+      "outputContains": [ "STATUS=REFUSED", "usrKnownRelayHosts" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A published attacker thumbprint given as ours is refused",
+      "expectExitCode": 1,
+      "variables": { "usrKnownThumbprints": "2588ef5c15954b10" },
+      "outputContains": [ "STATUS=REFUSED", "attacker thumbprint" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A malformed thumbprint is refused",
+      "expectExitCode": 1,
+      "variables": { "usrKnownThumbprints": "not-a-thumbprint" },
+      "outputContains": [ "STATUS=REFUSED", "usrKnownThumbprints" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "UDF number 301 is refused",
+      "expectExitCode": 1,
+      "variables": { "usrUdfNumber": "301" },
+      "outputContains": [ "STATUS=REFUSED", "usrUdfNumber" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Detect on a runner with no ScreenConnect is clean, and both registry views were read",
+      "expectExitCode": 0,
+      "outputContains": [ "Mode: Detect", "No ScreenConnect clients", "Run values checked: HKLM 2 view(s)", "UDF=WRITTEN", "STATUS=CLEAN" ]
+    },
+    {
+      "type": "registry",
+      "label": "UDF summary written where the Datto agent reads it",
+      "path": "HKLM:\\SOFTWARE\\CentraStage",
+      "name": "Custom250",
+      "matches": "^SCHunt: CLEAN \\| IOC 0 \\| Review 0 \\| \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$"
+    },
+    {
+      "type": "runComponent",
+      "label": "Second Detect run is harmless",
+      "expectExitCode": 0,
+      "outputContains": [ "STATUS=CLEAN" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Several thumbprints, upper case, separated by a semicolon and a space, are accepted",
+      "expectExitCode": 0,
+      "variables": { "usrKnownThumbprints": "0123456789ABCDEF; fedcba9876543210" },
+      "outputContains": [ "Known thumbprints: 2", "STATUS=CLEAN" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Remove with nothing to remove changes nothing",
+      "expectExitCode": 0,
+      "variables": { "usrMode": "Remove", "usrKnownRelayHosts": "relay.example.com" },
+      "outputContains": [ "Mode: Remove", "STATUS=CLEAN" ]
+    },
+    {
+      "type": "file",
+      "label": "Remove with nothing found saves no evidence",
+      "path": "%ProgramData%\\TechCollective\\SCHunt",
+      "exists": false
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: on an internal VM with a planted C:\\ProgramData\\RelayTrap folder, a sckit-test file in C:\\Windows\\Temp, a harmless scheduled task named TrapWatch and a RelayTrapLiteAlert value under HKLM Run, Detect reports IOC_HIT",
+      "tier": 2,
+      "expectExitCode": 3,
+      "outputContains": [ "FOLDER:", "TEMP ARTIFACT:", "SCHEDULED TASK:", "RUN VALUE:", "STATUS=IOC_HIT" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: Remove on that VM deletes all four, saves evidence, and the re-check finds nothing left",
+      "tier": 2,
+      "variables": { "usrMode": "Remove", "usrKnownRelayHosts": "relay.example.com" },
+      "expectExitCode": 0,
+      "outputContains": [ "Deleted scheduled task", "Deleted Run value", "Evidence log:", "STATUS=REMOVED" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: on an internal VM with our client and a second ScreenConnect client from another instance, Remove (with our real thumbprint and relay) uninstalls the other one and ours keeps working",
+      "tier": 2,
+      "variables": { "usrMode": "Remove" },
+      "expectExitCode": 0,
+      "outputContains": [ "Removing ScreenConnect client", "[ok] Known:", "STATUS=REMOVED" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: a real workstation shows its summary in the chosen Datto UDF after the agent's next check-in",
+      "tier": 2,
+      "expectExitCode": 0,
+      "outputContains": [ "UDF=WRITTEN" ]
+    }
+  ]
+}

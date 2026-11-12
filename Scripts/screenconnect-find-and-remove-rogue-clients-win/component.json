@@ -1,0 +1,70 @@
+{
+  "general": {
+    "name": "ScreenConnect - Find and Remove Rogue Clients [Win]",
+    "category": "scripts",
+    "description": "Finds ScreenConnect clients that aren't ours plus RelayTrap persistence; Remove mode deletes them. Detect only writes the optional UDF.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/screenconnect-find-and-remove-rogue-clients-win",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "1200",
+    "securityLevel": "1",
+    "installType": "powershell"
+  },
+  "body": "screenconnect-find-and-remove-rogue-clients-win.ps1",
+  "variables": [
+    {
+      "name": "usrMode",
+      "type": "map",
+      "direction": "false",
+      "description": "Detect = read-only report. Remove = delete every ScreenConnect client not in usrKnownThumbprints, and the RelayTrap persistence.",
+      "defaultVal": "Detect",
+      "options": [
+        { "name": "Detect", "value": "Detect" },
+        { "name": "Remove", "value": "Remove" }
+      ]
+    },
+    {
+      "name": "usrKnownThumbprints",
+      "type": "string",
+      "direction": "false",
+      "description": "Our ScreenConnect instance thumbprint(s): the 16 hex characters in the service name ScreenConnect Client (...). Comma-separated. Required for Remove.",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrKnownRelayHosts",
+      "type": "string",
+      "direction": "false",
+      "description": "Our relay host name(s), comma-separated: the relay= value a Detect run prints for our client. Required for Remove.",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrUdfNumber",
+      "type": "string",
+      "direction": "false",
+      "description": "UDF to write a one-line summary to, 1 to 300. Blank = write no UDF.",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrOverwriteForeign",
+      "type": "map",
+      "direction": "false",
+      "description": "No = leave the UDF alone if it holds a value this component did not write. Yes = overwrite it.",
+      "defaultVal": "No",
+      "options": [
+        { "name": "No", "value": "No" },
+        { "name": "Yes", "value": "Yes" }
+      ]
+    },
+    {
+      "name": "usrCheckDefenderExclusions",
+      "type": "map",
+      "direction": "false",
+      "description": "Yes = report Defender exclusions that look like evasion (never changes them). No = skip.",
+      "defaultVal": "Yes",
+      "options": [
+        { "name": "Yes", "value": "Yes" },
+        { "name": "No", "value": "No" }
+      ]
+    }
+  ]
+}
