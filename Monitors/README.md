@@ -27,6 +27,8 @@ One folder per component. See [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `Disk Health - SMART Failure Detected [Mac][Lin]` | [`disk-health-smart-failure-detected-mac-lin`](disk-health-smart-failure-detected-mac-lin) | Not validated — written, not yet run for real |
 | `Disk Space - Free Space Below Threshold [Lin]` | [`disk-space-free-space-below-threshold-lin`](disk-space-free-space-below-threshold-lin) | Not validated — written and reviewed, not yet run for real |
 | `Docker - Container Health and Resource Usage [Lin]` | [`docker-container-health-and-resource-usage-lin`](docker-container-health-and-resource-usage-lin) | Not validated — written and reviewed, not yet run for real |
+| `Site-to-Site VPN - Tunnel Down [Lin]` | [`site-to-site-vpn-tunnel-down-lin`](site-to-site-vpn-tunnel-down-lin) | Not validated — written and reviewed, not yet run for real |
+| `Site-to-Site VPN - Tunnel Down [Win]` | [`site-to-site-vpn-tunnel-down-win`](site-to-site-vpn-tunnel-down-win) | Not validated — written and reviewed, not yet run on Windows |
 | `Unattended Upgrades - Not Running [Lin]` | [`unattended-upgrades-not-running-lin`](unattended-upgrades-not-running-lin) | Not validated — imported, unreviewed. **Alert text is unusable** |
 
 Nothing here is validated. *Validated* is a second person's call, after the
