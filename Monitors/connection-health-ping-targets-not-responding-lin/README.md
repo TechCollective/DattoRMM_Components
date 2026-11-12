@@ -52,9 +52,19 @@ Automation → Components → New Component.
 | Attachments | None (monitors cannot have them) |
 | Monitor interval | Set in the monitoring policy. 5 minutes is a sensible start. |
 
-Paste the whole of `connection-health-ping-targets-not-responding-lin.sh` as the script body,
-then add the input variables below. Or import the `.cpt` that CI builds from
-`component.json`.
+Paste the whole of `connection-health-ping-targets-not-responding-lin.sh` as
+the script body, then add the input variables below.
+
+> **Do not import the `.cpt` for this one; paste instead.** On 2026-11-12 the
+> CI-built `.cpt` was refused by Datto's Import Component with "We're having
+> trouble loading this data", while the `[Win]` twin imported fine. Splitting
+> it showed the cause is the script body as a whole: either half imported with
+> all five variables, the full body failed even with no variables, and no
+> single line stood out. Pasting the same body into the Create Component form
+> saved without trouble. The likely cause is a filter on Datto's import upload
+> that scores shell-command-like text and blocks once the total passes a
+> threshold; that is inferred, not confirmed by Datto. Re-test the import
+> after any material change to the script, and update this note.
 
 ## Input variables
 
