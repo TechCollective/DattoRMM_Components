@@ -1,0 +1,61 @@
+{
+  "general": {
+    "name": "Connection Health - Ping Targets Not Responding [Lin]",
+    "category": "monitors",
+    "description": "Alerts when hosts stop answering ping, such as the far side of a site-to-site tunnel. Read-only. Bad input or a failed check also alerts. https://github.com/TechCollective/DattoRMM_Components",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "180",
+    "securityLevel": "4",
+    "installType": "unix"
+  },
+  "body": "connection-health-ping-targets-not-responding-lin.sh",
+  "variables": [
+    {
+      "name": "usrTargets",
+      "type": "string",
+      "direction": "false",
+      "description": "Required. 1-8 IPs or hostnames to ping, space or comma separated. Use hosts that are always on (e.g. the far gateway LAN IP).",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrRequire",
+      "type": "map",
+      "direction": "false",
+      "description": "Any: alert only when no target replies. All: alert when any target does not reply.",
+      "defaultVal": "Any",
+      "options": [
+        {
+          "name": "Any",
+          "value": "any"
+        },
+        {
+          "name": "All",
+          "value": "all"
+        }
+      ]
+    },
+    {
+      "name": "usrPingCount",
+      "type": "string",
+      "direction": "false",
+      "description": "1-10. Pings sent to each target.",
+      "defaultVal": "3"
+    },
+    {
+      "name": "usrReplyTimeoutSec",
+      "type": "string",
+      "direction": "false",
+      "description": "1-5. Seconds to wait for each reply.",
+      "defaultVal": "2"
+    },
+    {
+      "name": "usrSource",
+      "type": "string",
+      "direction": "false",
+      "description": "Optional. Interface (wg0) or local IP to ping from. Needed on a tunnel gateway whose tunnel only carries LAN-sourced traffic.",
+      "defaultVal": ""
+    }
+  ]
+}
