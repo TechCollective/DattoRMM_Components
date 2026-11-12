@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Site-to-Site VPN - Tunnel Down [Lin]
+# Connection Health - Ping Targets Not Responding [Lin]
 #
 # Datto RMM custom monitor. Runs as root. Read-only; changes nothing.
 #
-# Pings one or more hosts on the far side of a site-to-site tunnel and alerts
-# when the tunnel looks down:
+# Pings one or more hosts (typically the far side of a site-to-site tunnel) and
+# alerts when the connection looks down:
 #
 #   usrRequire=any   alert only when no target replies (default)
 #   usrRequire=all   alert when any target does not reply
@@ -66,9 +66,9 @@ COUNT="$(trim "${usrPingCount:-3}")"
 WAIT="$(trim "${usrReplyTimeoutSec:-2}")"
 SOURCE="$(trim "${usrSource:-}")"
 
-[ -n "$TARGETS_RAW" ] || emit 1 "Check could not run: usrTargets is empty; set the far-side address(es) to ping"
+[ -n "$TARGETS_RAW" ] || emit 1 "Check could not run: usrTargets is empty; set the address(es) to ping"
 read -r -a TARGETS <<< "${TARGETS_RAW//,/ }"
-[ "${#TARGETS[@]}" -ge 1 ] || emit 1 "Check could not run: usrTargets is empty; set the far-side address(es) to ping"
+[ "${#TARGETS[@]}" -ge 1 ] || emit 1 "Check could not run: usrTargets is empty; set the address(es) to ping"
 [ "${#TARGETS[@]}" -le "$MAX_TARGETS" ] \
     || emit 1 "Check could not run: usrTargets has ${#TARGETS[@]} entries; the most allowed is ${MAX_TARGETS}"
 for t in "${TARGETS[@]}"; do
@@ -170,16 +170,16 @@ fi
 
 if [ "$REQUIRE" = "any" ]; then
     if [ "$UP" -ge 1 ]; then
-        emit 0 "Tunnel up: ${UP} of ${TOTAL} ${NOUN} replied${FROM} (${DETAIL})"
+        emit 0 "Connection up: ${UP} of ${TOTAL} ${NOUN} replied${FROM} (${DETAIL})"
     fi
-    emit 1 "Tunnel down: 0 of ${TOTAL} ${NOUN} replied${FROM} (${DETAIL})"
+    emit 1 "Connection down: 0 of ${TOTAL} ${NOUN} replied${FROM} (${DETAIL})"
 fi
 
 # REQUIRE=all
 if [ "$UP" -eq "$TOTAL" ]; then
-    emit 0 "Tunnel up: all ${TOTAL} ${NOUN} replied${FROM} (${DETAIL})"
+    emit 0 "Connection up: all ${TOTAL} ${NOUN} replied${FROM} (${DETAIL})"
 fi
 if [ "$UP" -eq 0 ]; then
-    emit 1 "Tunnel down: 0 of ${TOTAL} ${NOUN} replied${FROM} (${DETAIL})"
+    emit 1 "Connection down: 0 of ${TOTAL} ${NOUN} replied${FROM} (${DETAIL})"
 fi
-emit 1 "Tunnel degraded: $((TOTAL - UP)) of ${TOTAL} targets did not reply and all are required${FROM} (${DETAIL})"
+emit 1 "Connection degraded: $((TOTAL - UP)) of ${TOTAL} targets did not reply and all are required${FROM} (${DETAIL})"

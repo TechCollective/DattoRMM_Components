@@ -1,15 +1,17 @@
-# Site-to-Site VPN - Tunnel Down [Lin]
+# Connection Health - Ping Targets Not Responding [Lin]
 
-A Datto RMM custom monitor for Linux. Pings hosts on the far side of a
-site-to-site tunnel and alerts when they stop answering. Meant to run on the
-tunnel endpoint itself (a WireGuard gateway, say) or on any Linux host behind it.
+A Datto RMM custom monitor for Linux. Pings the hosts you give it and alerts
+when they stop answering. The targets are set per monitor, so the same
+component can watch any connection that should always be up. It was written
+for the far side of a site-to-site tunnel, run on the tunnel endpoint itself
+(a WireGuard gateway, say) or on any Linux host behind it.
 
 > **Status: Not Validated.** Written 2026-11-12. Reviewed against the monitor
 > contract and security checklist the same day. 19-case regression sweep passing
 > in a test container. Not yet run on a real tunnel endpoint.
 
-Its Windows counterpart is `Site-to-Site VPN - Tunnel Down [Win]`, with the same
-inputs (except `usrSource`) and the same alert wording.
+Its Windows counterpart is `Connection Health - Ping Targets Not Responding [Win]`,
+with the same inputs (except `usrSource`) and the same alert wording.
 
 ## What it does
 
@@ -24,7 +26,7 @@ one target after another, and decides from ping's exit code and output:
 - **Error** — ping could not run for this target: the name did not resolve, or
   `usrSource` does not exist.
 
-With `usrRequire=any` (the default), the tunnel is up if any target replied.
+With `usrRequire=any` (the default), the connection is up if any target replied.
 With `all`, every target must reply.
 
 **Read-only.** It changes nothing on the endpoint. It sends ICMP echo requests
@@ -40,8 +42,8 @@ Automation → Components → New Component.
 
 | Field | Value |
 |---|---|
-| Name | `Site-to-Site VPN - Tunnel Down [Lin]` |
-| Description | Alerts when hosts across a site-to-site tunnel stop answering ping. Read-only. Bad input or a failed check also alerts. |
+| Name | `Connection Health - Ping Targets Not Responding [Lin]` |
+| Description | Alerts when hosts stop answering ping, such as the far side of a site-to-site tunnel. Read-only. Bad input or a failed check also alerts. |
 | Category | **Monitors** — permanent, cannot be changed after the first save |
 | Script type | Bash (Unix) |
 | Target OS | Linux |
@@ -50,7 +52,7 @@ Automation → Components → New Component.
 | Attachments | None (monitors cannot have them) |
 | Monitor interval | Set in the monitoring policy. 5 minutes is a sensible start. |
 
-Paste the whole of `site-to-site-vpn-tunnel-down-lin.sh` as the script body,
+Paste the whole of `connection-health-ping-targets-not-responding-lin.sh` as the script body,
 then add the input variables below. Or import the `.cpt` that CI builds from
 `component.json`.
 
@@ -77,9 +79,9 @@ Worst-case runtime is bounded by the input limits: 8 × (10 + 5) = 120 seconds.
 | Host state | Result |
 |---|---|
 | `usrTargets` not set | exit 1, `STATUS=Check could not run: usrTargets is empty…` |
-| Any target replies (`any`), or all reply (`all`) | exit 0, `STATUS=Tunnel up: …` with per-target replies and average RTT |
-| No target replies | exit 1, `STATUS=Tunnel down: 0 of N targets replied (…)` |
-| Some but not all reply, with `all` | exit 1, `STATUS=Tunnel degraded: …` |
+| Any target replies (`any`), or all reply (`all`) | exit 0, `STATUS=Connection up: …` with per-target replies and average RTT |
+| No target replies | exit 1, `STATUS=Connection down: 0 of N targets replied (…)` |
+| Some but not all reply, with `all` | exit 1, `STATUS=Connection degraded: …` |
 | Route to the targets has gone | Counted as down: `… no route` |
 | ping errors on **every** target (bad names, bad `usrSource`) | exit 1, `STATUS=Check could not run: ping failed on every target (…)` |
 | `ping` not installed | exit 1, `STATUS=Check could not run: the ping command is not installed` |
@@ -102,13 +104,13 @@ one result block with one `STATUS=` line and no space after the `=`.
 Healthy:
 
     <-Start Result->
-    STATUS=Tunnel up: 2 of 2 targets replied (10.x.x.1 3/3 24 ms; 10.x.x.10 3/3 26 ms)
+    STATUS=Connection up: 2 of 2 targets replied (10.x.x.1 3/3 24 ms; 10.x.x.10 3/3 26 ms)
     <-End Result->
 
 Alert:
 
     <-Start Result->
-    STATUS=Tunnel down: 0 of 2 targets replied (10.x.x.1 no route; 10.x.x.10 no route)
+    STATUS=Connection down: 0 of 2 targets replied (10.x.x.1 no route; 10.x.x.10 no route)
     <-End Result->
     <-Start Diagnostic->
     == 10.x.x.1 (exit 2)
@@ -136,7 +138,7 @@ busybox `ping`, non-Debian distros.
 - **ICMP must be allowed** end to end. A far-side host or firewall that drops
   echo requests looks exactly like a dead tunnel. Test each target by hand first.
 - **It measures reachability, not the tunnel.** A target that is down for its
-  own reasons alerts as "tunnel down" under `all`; use `any` with several
+  own reasons alerts as "Connection down" under `all`; use `any` with several
   targets to tell the two apart.
 - `bash` 4+ is required (Debian, Ubuntu, RHEL, SUSE all qualify; Alpine needs
   it installed). `ping` from iputils or busybox. `timeout`, `ip`, `getent`,
