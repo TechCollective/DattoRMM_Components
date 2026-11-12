@@ -3,7 +3,7 @@
     "name": "Connection Health - Ping Targets Not Responding [Win]",
     "category": "monitors",
     "description": "Alerts when hosts stop answering ping, such as the far side of a site-to-site tunnel. Read-only. Bad input or a failed check also alerts. https://github.com/TechCollective/DattoRMM_Components",
-    "uid": "",
+    "uid": "3788cc29-f83d-4ead-a9e2-e9fe941ad184",
     "hash": "",
     "version": "1",
     "timeout": "180",
