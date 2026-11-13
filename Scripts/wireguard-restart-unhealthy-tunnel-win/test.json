@@ -1,0 +1,208 @@
+{
+  "platforms": [
+    "windows"
+  ],
+  "description": "Proves every invalid input is refused with exit 2 before anything is read or changed, and that a machine without WireGuard for Windows (the runner) reports NOT_INSTALLED with exit 3 and changes nothing. The Windows harness cannot yet build a tunnel, so every live-tunnel behaviour is listed as Tier 2.",
+  "variables": {
+    "usrWgTunnel": "tctest",
+    "usrVerifySec": "20",
+    "usrCooldownMin": "0"
+  },
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Refuses an empty tunnel name",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrWgTunnel is empty"
+      ],
+      "variables": {
+        "usrWgTunnel": ""
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a tunnel name with a space",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "not a valid WireGuard tunnel name"
+      ],
+      "variables": {
+        "usrWgTunnel": "a b"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a tunnel name with a dollar sign",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "not a valid WireGuard tunnel name"
+      ],
+      "variables": {
+        "usrWgTunnel": "x$y"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a 33-character tunnel name",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "not a valid WireGuard tunnel name"
+      ],
+      "variables": {
+        "usrWgTunnel": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses an unknown mode",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrMode"
+      ],
+      "variables": {
+        "usrMode": "sometimes"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a handshake age under 150",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrHandshakeMaxAgeSec"
+      ],
+      "variables": {
+        "usrHandshakeMaxAgeSec": "60"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a verify time over 120",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrVerifySec"
+      ],
+      "variables": {
+        "usrVerifySec": "600"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a cooldown with a sign",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrCooldownMin"
+      ],
+      "variables": {
+        "usrCooldownMin": "+5"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a ping target that looks like an option",
+      "expectExitCode": 2,
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrPingTarget"
+      ],
+      "variables": {
+        "usrPingTarget": "-f"
+      }
+    },
+    {
+      "type": "runComponent",
+      "label": "No WireGuard for Windows on the runner: NOT_INSTALLED, nothing changed",
+      "expectExitCode": 3,
+      "outputContains": [
+        "STATUS=NOT_INSTALLED"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "No cooldown stamp written",
+      "path": "%ProgramData%\\TechCollective\\WireGuard\\restart-tctest.last",
+      "exists": false
+    },
+    {
+      "type": "runComponent",
+      "label": "Tunnel deactivated in the WireGuard app (no service): NOT_ACTIVE, not activated",
+      "expectExitCode": 3,
+      "outputContains": [
+        "STATUS=NOT_ACTIVE"
+      ],
+      "tier": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Healthy tunnel: HEALTHY, left alone",
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=HEALTHY",
+        "nothing to do"
+      ],
+      "tier": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Tunnel service stopped: restarted, handshake confirmed",
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=RESTARTED",
+        "Restarting the WireGuardTunnel$tctest service"
+      ],
+      "tier": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Far end down: restarted, STILL_UNHEALTHY",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=STILL_UNHEALTHY"
+      ],
+      "tier": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Again inside the cooldown: COOLDOWN, not restarted",
+      "expectExitCode": 3,
+      "outputContains": [
+        "STATUS=COOLDOWN"
+      ],
+      "variables": {
+        "usrCooldownMin": "15"
+      },
+      "tier": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Always inside the cooldown: restarted anyway",
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=RESTARTED"
+      ],
+      "variables": {
+        "usrMode": "always",
+        "usrCooldownMin": "15"
+      },
+      "tier": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Tunnel service set to Disabled: NOT_ACTIVE, not started",
+      "expectExitCode": 3,
+      "outputContains": [
+        "STATUS=NOT_ACTIVE",
+        "Disabled"
+      ],
+      "tier": 2
+    }
+  ]
+}
