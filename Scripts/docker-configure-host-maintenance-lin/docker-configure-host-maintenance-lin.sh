@@ -5,7 +5,13 @@
 #
 # 1. Adds log rotation and build-cache limits to /etc/docker/daemon.json.
 #    Only keys that are MISSING are added. An existing value is never changed,
-#    so a host someone already tuned keeps its tuning.
+#    so a host someone already tuned keeps its tuning. First it reads how the
+#    daemon is really started (the running dockerd's command line, or
+#    docker.service when Docker is stopped). Log rotation is skipped when the
+#    daemon uses a driver that does not rotate, is started with --log-opt, or
+#    its flags cannot be determined. Nothing is written when the daemon reads a
+#    --config-file other than /etc/docker/daemon.json, or when the file already
+#    holds log-opts that will stop Docker starting ("DAEMON WILL NOT START").
 # 2. Creates the host's expected-containers list, /etc/tc-docker/expected-containers,
 #    from every container present now, running or stopped -- only if the list
 #    does not exist yet. After that it never changes the list; "Docker -
@@ -28,8 +34,10 @@
 #   1  unexpected failure
 #   2  an input variable is invalid; nothing was changed
 #   3  could not apply safely (no JSON tool, config failed validation,
-#      no systemd, snap-packaged Docker, daemon unreachable for the list or
-#      a prune-now); nothing was changed for that part
+#      Docker's start flags unknown, a --config-file elsewhere, daemon.json
+#      already stops Docker starting, no systemd, snap-packaged Docker, daemon
+#      unreachable for the list or a prune-now); nothing was changed for that
+#      part
 
 set -u
 umask 022
@@ -173,9 +181,254 @@ tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 
 # ---------------------------------------------------------------- daemon.json
 
+# daemon.json is not the whole of Docker's configuration: dockerd can also be
+# given --log-driver, --log-opt and --config-file on its command line, by the
+# systemd unit, a drop-in or an environment file. A daemon.json that clashes
+# with those flags stops Docker at its next start, and dockerd --validate does
+# not catch every clash (an unknown log opt for the flag's driver only fails a
+# real start). So before merging, find out how the daemon is really started.
+#
+# Writes a JSON description to $1 and the daemon's logging flags, NUL
+# separated, to $2 (for dockerd --validate). Prints one "daemon.json:" line.
+# Exit: 0 flags known; 3 flags could not be determined with confidence;
+#       5 the daemon reads a --config-file other than $DAEMON_JSON.
+detect_daemon_flags() {
+    python3 - "$DAEMON_JSON" "$1" "$2" "$DOCKER_BIN" <<'PY'
+import json, os, re, shlex, shutil, subprocess, sys
+target, out_json, out_args, docker = sys.argv[1:5]
+
+class Unsure(Exception):
+    pass
+
+def run(cmd, timeout=20):
+    try:
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, timeout=timeout, universal_newlines=True)
+        return p.returncode, p.stdout
+    except Exception:
+        return 1, ""
+
+def read(path):
+    with open(path) as f:
+        return f.read()
+
+def is_host_root_dockerd(pid):
+    # A root dockerd in this host's own PID namespace: not a rootless
+    # per-user daemon, and not Docker-in-Docker inside a container.
+    try:
+        if read(f"/proc/{pid}/comm").strip() != "dockerd":
+            return False
+        if os.readlink(f"/proc/{pid}/ns/pid") != os.readlink("/proc/self/ns/pid"):
+            return False
+        for line in read(f"/proc/{pid}/status").splitlines():
+            if line.startswith("Uid:"):
+                return line.split()[1] == "0"
+    except OSError:
+        return False
+    return False
+
+systemd = os.path.isdir("/run/systemd/system") and shutil.which("systemctl")
+
+def find_running_dockerd():
+    if systemd:
+        rc, o = run(["systemctl", "show", "docker.service", "-p", "MainPID", "--value"])
+        o = o.strip()
+        if rc == 0 and o.isdigit() and o != "0" and is_host_root_dockerd(o):
+            return o
+    try:
+        p = read("/var/run/docker.pid").strip()
+        if p.isdigit() and is_host_root_dockerd(p):
+            return p
+    except OSError:
+        pass
+    found = [d for d in os.listdir("/proc") if d.isdigit() and is_host_root_dockerd(d)]
+    if len(found) > 1:
+        raise Unsure(f"{len(found)} dockerd processes are running on this host")
+    return found[0] if found else None
+
+def read_env_file(path):
+    # systemd EnvironmentFile= syntax. Returns {name: value}; a name whose
+    # value this cannot reproduce exactly maps to an Unsure instead.
+    vals, bad_line = {}, False
+    text = re.sub(r"\\\n", "", read(path))
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line[0] in "#;":
+            continue
+        m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)", line)
+        if not m:
+            bad_line = True
+            continue
+        k, v = m.groups()
+        if v[:1] in ("'", '"'):
+            try:
+                parts = shlex.split(v)
+            except ValueError:
+                parts = []
+            if len(parts) != 1:
+                vals[k] = Unsure(f"{path} sets {k} in a form this component cannot read")
+                continue
+            v = parts[0]
+        if "$" in v or "`" in v:
+            vals[k] = Unsure(f"{path} sets {k} from another variable")
+        else:
+            vals[k] = v
+    return vals, bad_line
+
+def unit_args():
+    # The dockerd arguments docker.service would start with, from the unit as
+    # systemd has loaded it (drop-ins included), with its variables expanded
+    # the way systemd expands them.
+    if not systemd:
+        raise Unsure("Docker is not running, and this host has no systemd unit to read its start flags from")
+    rc, o = run(["systemctl", "show", "docker.service", "-p", "LoadState",
+                 "-p", "ExecStart", "-p", "Environment", "-p", "EnvironmentFiles"])
+    if rc != 0:
+        raise Unsure("Docker is not running, and systemctl show docker.service failed")
+    props = {}
+    for line in o.splitlines():
+        k, _, v = line.partition("=")
+        props.setdefault(k, []).append(v)
+    if props.get("LoadState", [""])[0] != "loaded":
+        raise Unsure("Docker is not running, and there is no docker.service unit to read its start flags from")
+    argvs = re.findall(r"argv\[\]=(.*?) ;", " ".join(props.get("ExecStart", [])))
+    if len(argvs) != 1:
+        raise Unsure(f"Docker is not running, and docker.service has {len(argvs)} ExecStart commands")
+    words = argvs[0].split()
+    if not words or os.path.basename(words[0]) != "dockerd":
+        raise Unsure("Docker is not running, and docker.service does not start dockerd directly")
+
+    env, files_unreadable = {}, []
+    try:
+        for e in shlex.split(" ".join(props.get("Environment", []))):
+            k, _, v = e.partition("=")
+            env[k] = Unsure(f"docker.service sets {k} from another variable") if "$" in v else v
+    except ValueError:
+        files_unreadable.append("the unit's Environment= setting")
+    # Files listed later override earlier ones, and all override Environment=.
+    for path, ignore in re.findall(r"(\S+) \(ignore_errors=(yes|no)\)",
+                                   " ".join(props.get("EnvironmentFiles", []))):
+        if not os.path.exists(path):
+            if ignore == "yes":
+                continue
+            raise Unsure(f"Docker is not running, and its required environment file {path} is missing")
+        try:
+            vals, bad = read_env_file(path)
+        except OSError:
+            files_unreadable.append(path)
+            continue
+        if bad:
+            files_unreadable.append(path)
+        env.update(vals)
+
+    def lookup(name):
+        if files_unreadable:
+            raise Unsure(f"Docker is not running, and docker.service uses ${name} but {files_unreadable[0]} cannot be read with confidence")
+        v = env.get(name, "")      # systemd expands an unset variable to nothing
+        if isinstance(v, Unsure):
+            raise Unsure(f"Docker is not running, and {v}")
+        return v
+
+    args = []
+    for w in words[1:]:
+        if re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", w):
+            try:
+                args.extend(shlex.split(lookup(w[1:])))
+            except ValueError:
+                raise Unsure(f"Docker is not running, and ${w[1:]} is not a list of arguments this component can split")
+            continue
+        if "$" in re.sub(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", "", w):
+            raise Unsure(f"Docker is not running, and docker.service uses a variable in a form this component cannot expand ({w})")
+        args.append(re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: lookup(m.group(1)), w))
+    return args
+
+def parse_flags(args):
+    driver, opts, cfg = None, [], None
+    names = ("--log-driver", "--log-opt", "--config-file")
+    i = 0
+    while i < len(args):
+        a, name, val = args[i], None, None
+        if a == "--":
+            break
+        for n in names:
+            if a == n:
+                if i + 1 >= len(args):
+                    raise Unsure(f"{n} is given without a value")
+                name, val = n, args[i + 1]
+                i += 1
+                break
+            if a.startswith(n + "="):
+                name, val = n, a[len(n) + 1:]
+                break
+        i += 1
+        if name == "--log-driver":
+            driver = val
+        elif name == "--log-opt":
+            opts.append(val)
+        elif name == "--config-file":
+            cfg = val
+    return driver, opts, cfg
+
+det = {"known": False, "why": "", "source": "", "driver_flag": None, "opt_keys": [],
+       "config_file": None, "live_driver": None}
+vargs = []
+rc = 0
+try:
+    pid = find_running_dockerd()
+    if pid:
+        try:
+            raw = read(f"/proc/{pid}/cmdline")
+        except OSError:
+            raise Unsure(f"the command line of the running dockerd (pid {pid}) cannot be read")
+        args = raw.split("\0")
+        if args and args[-1] == "":
+            args.pop()
+        args = args[1:]
+        det["source"] = f"the running dockerd, pid {pid}"
+        r, o = run([docker, "info", "--format", "{{.LoggingDriver}}"])
+        if r == 0 and o.strip():
+            det["live_driver"] = o.strip()
+    else:
+        args = unit_args()
+        det["source"] = "docker.service, as it would start Docker; Docker is not running"
+    driver, opts, cfg = parse_flags(args)
+    det.update(known=True, driver_flag=driver, opt_keys=[o.split("=", 1)[0] for o in opts],
+               config_file=cfg)
+    if driver:
+        vargs += ["--log-driver", driver]
+    for o in opts:
+        vargs += ["--log-opt", o]
+    flags = []
+    if driver:
+        flags.append(f"--log-driver={driver}")
+    if opts:
+        flags.append("--log-opt " + ", ".join(det["opt_keys"]))
+    if cfg:
+        flags.append(f"--config-file={cfg}")
+    said = "; ".join(flags) if flags else "no --log-driver, --log-opt or --config-file flag"
+    print(f"daemon.json: Docker starts with {said} (read from {det['source']}).")
+    if cfg and os.path.realpath(os.path.join("/", cfg)) != os.path.realpath(target):
+        print(f"daemon.json: NOT CHANGED. Docker reads its configuration from {cfg}, not {target}, "
+              f"so this component does not edit either file. Add these settings to {cfg} by hand if that host needs them.")
+        rc = 5
+except Unsure as e:
+    det["why"] = str(e)
+    print(f"daemon.json: could not tell which flags Docker starts with: {det['why']}.")
+    rc = 3
+
+with open(out_json, "w") as f:
+    json.dump(det, f)
+with open(out_args, "w") as f:
+    f.write("".join(a + "\0" for a in vargs))
+sys.exit(rc)
+PY
+}
+
 merge_daemon_json() {
     # Prints the merged JSON on stdout and one "ADDED:"/"KEPT:"/"SKIPPED:" line
     # per decision on stderr. Never changes an existing value.
+    # Exits 4, with one "CONFLICT:" line on stderr and nothing on stdout, when
+    # the file ALREADY holds log-opts that stop this daemon starting.
     python3 - "$DAEMON_JSON" <<'PY'
 import json, os, sys
 path = sys.argv[1]
@@ -186,14 +439,49 @@ if os.path.exists(path) and os.path.getsize(path) > 0:
         data = json.load(f)
 if not isinstance(data, dict):
     raise SystemExit("daemon.json is not a JSON object")
+with open(env["TC_DAEMON_DET"]) as f:
+    det = json.load(f)
 
 def note(kind, msg): print(f"{kind}: {msg}", file=sys.stderr)
 
+# The log driver Docker will use at its next start: the flag wins, then this
+# file, then whatever the running daemon reports, then Docker's default.
+if det["driver_flag"]:
+    driver, src = det["driver_flag"], "from the --log-driver flag"
+elif data.get("log-driver"):
+    driver, src = data["log-driver"], "from daemon.json"
+elif det["live_driver"]:
+    driver, src = det["live_driver"], "as the running daemon reports it"
+else:
+    driver, src = "json-file", "Docker's default"
+rotates = driver in ("json-file", "local")
+
+# A host an earlier version already broke: this file carries max-size or
+# max-file, and the daemon's own flags mean it will refuse them.
+opts_now = data.get("log-opts")
+ours = [k for k in ("max-size", "max-file") if isinstance(opts_now, dict) and k in opts_now]
+if ours and det["known"]:
+    conflict = None
+    if det["opt_keys"]:
+        conflict = (f"daemon.json has log-opts ({', '.join(ours)}) and dockerd is also started with "
+                    f"--log-opt ({', '.join(det['opt_keys'])}); Docker refuses log-opts set in both places")
+    elif not rotates:
+        conflict = (f"daemon.json has log-opts.{ours[0]} but the log driver is {driver} ({src}), "
+                    f"which does not accept {ours[0]}")
+    if conflict:
+        print(f"CONFLICT: {conflict}", file=sys.stderr)
+        sys.exit(4)
+
 size, files = env.get("usrLogMaxSize", ""), env.get("usrLogMaxFile", "")
 if size:
-    driver = data.get("log-driver", "json-file")
-    if driver not in ("json-file", "local"):
-        note("SKIPPED", f"log rotation: log-driver is {driver}, which does not take max-size/max-file")
+    if not det["known"]:
+        note("SKIPPED", "log rotation: Docker's start flags could not be determined, so it cannot be "
+                        "known whether Docker would accept log-opts in daemon.json")
+    elif det["opt_keys"]:
+        note("SKIPPED", f"log rotation: dockerd is started with --log-opt ({', '.join(det['opt_keys'])}); "
+                        "Docker will not start with log-opts both as a flag and in daemon.json")
+    elif not rotates:
+        note("SKIPPED", f"log rotation: log-driver is {driver} ({src}), which does not take max-size/max-file")
     else:
         opts = data.get("log-opts")
         if opts is None:
@@ -246,10 +534,34 @@ daemon_section() {
         return 3
     fi
 
-    local tmp notes rc
+    local tmp notes det vfile rc section_rc=0 a
+    local -a vargs=()
+    det="$(mktemp)"; vfile="$(mktemp)"
+    detect_daemon_flags "$det" "$vfile"; rc=$?
+    case $rc in
+        0) ;;
+        3) section_rc=3 ;;     # flags unknown: log rotation is skipped below
+        5) rm -f "$det" "$vfile"; return 3 ;;
+        *) say "daemon.json: could not work out how Docker is started; not touched."
+           rm -f "$det" "$vfile"; return 3 ;;
+    esac
+    while IFS= read -r -d '' a; do vargs+=("$a"); done <"$vfile"
+    rm -f "$vfile"
+
     tmp="$(mktemp)"; notes="$(mktemp)"
-    export usrLogMaxSize usrLogMaxFile usrBuildCacheMax usrBuildCacheReserved ENGINE_MAJOR
+    TC_DAEMON_DET="$det"
+    export usrLogMaxSize usrLogMaxFile usrBuildCacheMax usrBuildCacheReserved ENGINE_MAJOR TC_DAEMON_DET
     merge_daemon_json >"$tmp" 2>"$notes"; rc=$?
+    rm -f "$det"
+    if [ $rc -eq 4 ]; then
+        local conflict bak="" f
+        conflict="$(sed -n 's/^CONFLICT: //p' "$notes" | head -n 1)"
+        # The glob sorts, and the timestamp suffix sorts by time: last is newest.
+        for f in "$DAEMON_JSON".tc-bak-*; do [ -e "$f" ] && bak="$f"; done
+        say "DAEMON WILL NOT START: $conflict. Newest backup: ${bak:-none found (no $DAEMON_JSON.tc-bak-* file)}."
+        say "daemon.json: NOT CHANGED. Docker fails at its next start or reboot until a person restores that backup or removes the conflicting setting."
+        rm -f "$tmp" "$notes"; return 3
+    fi
     if [ $rc -ne 0 ]; then
         say "daemon.json: could not read the existing file as JSON; not touched."
         sed 's/^/  /' "$notes" | tail -n 1
@@ -265,27 +577,34 @@ sys.exit(0 if a == b else 1)
 PY
     then
         say "daemon.json: already has everything this component sets; no change."
-        rm -f "$tmp" "$notes"; return 0
+        rm -f "$tmp" "$notes"; return $section_rc
     fi
     if ! grep -q '^ADDED' "$notes"; then
         say "daemon.json: nothing to add; no change."
-        rm -f "$tmp" "$notes"; return 0
+        rm -f "$tmp" "$notes"; return $section_rc
     fi
 
     if dockerd --help 2>/dev/null | grep -q -- '--validate'; then
-        if ! dockerd --validate --config-file "$tmp" >/dev/null 2>"$notes"; then
+        # With the daemon's own logging flags, so the check covers the
+        # combination that will actually run.
+        if ! dockerd --validate --config-file "$tmp" ${vargs[@]+"${vargs[@]}"} >/dev/null 2>"$notes"; then
             say "daemon.json: the merged file failed dockerd --validate; not written."
-            sed 's/^/  /' "$notes" | tail -n 3
+            # Flag values can carry a logging token; print the keys only.
+            sed -e 's/map\[[^]]*\]/map[...]/g' -e 's/^/  /' "$notes" | tail -n 3
             rm -f "$tmp" "$notes"; return 3
         fi
-        say "daemon.json: merged file passes dockerd --validate."
+        if [ ${#vargs[@]} -gt 0 ]; then
+            say "daemon.json: merged file passes dockerd --validate with the daemon's logging flags."
+        else
+            say "daemon.json: merged file passes dockerd --validate."
+        fi
     else
         say "daemon.json: this dockerd has no --validate; merged file checked as JSON only."
     fi
 
     if [ "$usrMode" = "report" ]; then
         say "daemon.json: REPORT MODE, would write the change above."
-        rm -f "$tmp" "$notes"; return 0
+        rm -f "$tmp" "$notes"; return $section_rc
     fi
 
     mkdir -p "$(dirname "$DAEMON_JSON")"
@@ -300,7 +619,7 @@ PY
     rm -f "$notes"
     CHANGED_DAEMON=1
     say "daemon.json: written."
-    return 0
+    return $section_rc
 }
 
 # ---------------------------------------------------------------- prune script
