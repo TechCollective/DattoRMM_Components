@@ -23,6 +23,8 @@
 #    stopped containers and unused images older than N hours, except a
 #    stopped container on the list, with an always/unless-stopped restart
 #    policy, or labelled tc.keep -- those are kept, with their images.
+#    A container whose Compose labels are not plain names is never removed.
+#    If Docker does not return its container list, nothing at all is removed.
 #    Never volumes.
 # 4. Optionally runs that prune once, now.
 #
@@ -36,8 +38,9 @@
 #   3  could not apply safely (no JSON tool, config failed validation,
 #      Docker's start flags unknown, a --config-file elsewhere, daemon.json
 #      already stops Docker starting, no systemd, snap-packaged Docker, daemon
-#      unreachable for the list or a prune-now); nothing was changed for that
-#      part
+#      unreachable for the list or a prune-now, or the daemon answered but did
+#      not return its container list, so the list was not created); nothing
+#      was changed for that part
 
 set -u
 umask 022
@@ -145,19 +148,45 @@ REVIEWED_FILE="$TC_DIR/reviewed"
 # shellcheck disable=SC2034  # not every component uses every name
 KEY_RE='^(name:[a-zA-Z0-9][a-zA-Z0-9_.-]*|compose:[a-zA-Z0-9][a-zA-Z0-9_.-]*/[a-zA-Z0-9][a-zA-Z0-9_.-]*)$'
 
-# One line per container, tab separated:
+# One line per container, tab separated, every field non-empty:
 #   id  key  name  running  restart-policy  created  started  tc.keep(y/n)  transient(y/n)
 # key is compose:<project>/<service> for a Compose service, otherwise name:<name>.
+# Labels are untrusted (a container inherits them from its image), so they are
+# read JSON-encoded, one line each: a tab or newline in a label cannot add a
+# field or a row. A container whose Compose labels are set but are not plain
+# names gets the key unreadable:<first 12 characters of its id>, which matches
+# no list entry and never carries the label. A row with the wrong field count,
+# or an id that is not 64 hex characters, is dropped.
 # transient is y for Compose one-offs (compose run) and --rm containers.
+# Returns 1, printing nothing, when docker ps or docker inspect fails three
+# times (a container removed between the two is normal; the whole listing is
+# retried). Capture the output, rows="$(tc_containers)", and check the status:
+# a pipe or < <(...) hides it, and "Docker did not answer" is not "no containers".
 tc_containers() {
-    "$DOCKER" ps -aq --no-trunc 2>/dev/null | xargs -r "$DOCKER" inspect -f \
-'{{.Id}}{{"\t"}}{{.Name}}{{"\t"}}{{index .Config.Labels "com.docker.compose.project"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.service"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.oneoff"}}{{"\t"}}{{.HostConfig.AutoRemove}}{{"\t"}}{{.State.Running}}{{"\t"}}{{.HostConfig.RestartPolicy.Name}}{{"\t"}}{{.Created}}{{"\t"}}{{.State.StartedAt}}{{"\t"}}{{range $k, $v := .Config.Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}' 2>/dev/null \
-    | awk -F'\t' -v OFS='\t' '{
-        for (i = 3; i <= 5; i++) if ($i == "<no value>") $i = ""
-        name = $2; sub(/^\//, "", name)
-        key = ($3 != "" && $4 != "") ? "compose:" $3 "/" $4 : "name:" name
-        print $1, key, name, $7, $8, $9, $10, ($11 == "y" ? "y" : "n"), (($5 == "True" || $6 == "true") ? "y" : "n")
-    }'
+    local try ids out
+    for try in 1 2 3; do
+        [ "$try" -gt 1 ] && sleep 1
+        ids="$("$DOCKER" ps -aq --no-trunc 2>/dev/null)" || continue
+        [ -n "$ids" ] || return 0
+        out="$(printf '%s\n' "$ids" | xargs "$DOCKER" inspect -f \
+'{{.Id}}{{"\t"}}{{.Name}}{{"\t"}}{{json (index .Config.Labels "com.docker.compose.project")}}{{"\t"}}{{json (index .Config.Labels "com.docker.compose.service")}}{{"\t"}}{{json (index .Config.Labels "com.docker.compose.oneoff")}}{{"\t"}}{{.HostConfig.AutoRemove}}{{"\t"}}{{.State.Running}}{{"\t"}}{{.HostConfig.RestartPolicy.Name}}{{"\t"}}{{.Created}}{{"\t"}}{{.State.StartedAt}}{{"\t"}}{{range $k, $v := .Config.Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}' 2>/dev/null)" || continue
+        printf '%s\n' "$out" | awk -F'\t' -v OFS='\t' '
+            function absent(v) { return v == "null" || v == "\"\"" }
+            function plain(v)  { return v ~ /^"[a-zA-Z0-9][a-zA-Z0-9_.-]*"$/ }
+            function unq(v)    { return substr(v, 2, length(v) - 2) }
+            NF != 11 || length($1) != 64 || $1 ~ /[^0-9a-f]/ { next }
+            $7 != "true" && $7 != "false" || $9 == "" || $10 == "" { next }
+            {
+                name = $2; sub(/^\//, "", name)
+                if (name !~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/) next
+                if (!(absent($3) || plain($3)) || !(absent($4) || plain($4))) key = "unreadable:" substr($1, 1, 12)
+                else if (plain($3) && plain($4)) key = "compose:" unq($3) "/" unq($4)
+                else key = "name:" name
+                print $1, key, name, $7, ($8 == "" ? "no" : $8), $9, $10, ($11 == "y" ? "y" : "n"), (($5 == "\"True\"" || $6 == "true") ? "y" : "n")
+            }'
+        return 0
+    done
+    return 1
 }
 
 # The entries of a list file: comments and blank lines dropped.
@@ -641,7 +670,9 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 #     has restart policy always or unless-stopped, or is labelled tc.keep.
 #     Those are kept, so their images stay "in use" and are kept too;
 #   - images no container uses (tc.keep-labelled images are kept).
-# Before review, no container and no image is touched.
+# Before review, no container and no image is touched. A container whose
+# Compose labels are not plain names is never removed. If Docker does not
+# return its container list, nothing at all is removed and the exit is 1.
 # Never volumes. Exit: 0 done, 1 error.
 set -u
 OLDER_THAN_HOURS=168
@@ -660,19 +691,45 @@ REVIEWED_FILE="$TC_DIR/reviewed"
 # shellcheck disable=SC2034  # not every component uses every name
 KEY_RE='^(name:[a-zA-Z0-9][a-zA-Z0-9_.-]*|compose:[a-zA-Z0-9][a-zA-Z0-9_.-]*/[a-zA-Z0-9][a-zA-Z0-9_.-]*)$'
 
-# One line per container, tab separated:
+# One line per container, tab separated, every field non-empty:
 #   id  key  name  running  restart-policy  created  started  tc.keep(y/n)  transient(y/n)
 # key is compose:<project>/<service> for a Compose service, otherwise name:<name>.
+# Labels are untrusted (a container inherits them from its image), so they are
+# read JSON-encoded, one line each: a tab or newline in a label cannot add a
+# field or a row. A container whose Compose labels are set but are not plain
+# names gets the key unreadable:<first 12 characters of its id>, which matches
+# no list entry and never carries the label. A row with the wrong field count,
+# or an id that is not 64 hex characters, is dropped.
 # transient is y for Compose one-offs (compose run) and --rm containers.
+# Returns 1, printing nothing, when docker ps or docker inspect fails three
+# times (a container removed between the two is normal; the whole listing is
+# retried). Capture the output, rows="$(tc_containers)", and check the status:
+# a pipe or < <(...) hides it, and "Docker did not answer" is not "no containers".
 tc_containers() {
-    "$DOCKER" ps -aq --no-trunc 2>/dev/null | xargs -r "$DOCKER" inspect -f \
-'{{.Id}}{{"\t"}}{{.Name}}{{"\t"}}{{index .Config.Labels "com.docker.compose.project"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.service"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.oneoff"}}{{"\t"}}{{.HostConfig.AutoRemove}}{{"\t"}}{{.State.Running}}{{"\t"}}{{.HostConfig.RestartPolicy.Name}}{{"\t"}}{{.Created}}{{"\t"}}{{.State.StartedAt}}{{"\t"}}{{range $k, $v := .Config.Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}' 2>/dev/null \
-    | awk -F'\t' -v OFS='\t' '{
-        for (i = 3; i <= 5; i++) if ($i == "<no value>") $i = ""
-        name = $2; sub(/^\//, "", name)
-        key = ($3 != "" && $4 != "") ? "compose:" $3 "/" $4 : "name:" name
-        print $1, key, name, $7, $8, $9, $10, ($11 == "y" ? "y" : "n"), (($5 == "True" || $6 == "true") ? "y" : "n")
-    }'
+    local try ids out
+    for try in 1 2 3; do
+        [ "$try" -gt 1 ] && sleep 1
+        ids="$("$DOCKER" ps -aq --no-trunc 2>/dev/null)" || continue
+        [ -n "$ids" ] || return 0
+        out="$(printf '%s\n' "$ids" | xargs "$DOCKER" inspect -f \
+'{{.Id}}{{"\t"}}{{.Name}}{{"\t"}}{{json (index .Config.Labels "com.docker.compose.project")}}{{"\t"}}{{json (index .Config.Labels "com.docker.compose.service")}}{{"\t"}}{{json (index .Config.Labels "com.docker.compose.oneoff")}}{{"\t"}}{{.HostConfig.AutoRemove}}{{"\t"}}{{.State.Running}}{{"\t"}}{{.HostConfig.RestartPolicy.Name}}{{"\t"}}{{.Created}}{{"\t"}}{{.State.StartedAt}}{{"\t"}}{{range $k, $v := .Config.Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}' 2>/dev/null)" || continue
+        printf '%s\n' "$out" | awk -F'\t' -v OFS='\t' '
+            function absent(v) { return v == "null" || v == "\"\"" }
+            function plain(v)  { return v ~ /^"[a-zA-Z0-9][a-zA-Z0-9_.-]*"$/ }
+            function unq(v)    { return substr(v, 2, length(v) - 2) }
+            NF != 11 || length($1) != 64 || $1 ~ /[^0-9a-f]/ { next }
+            $7 != "true" && $7 != "false" || $9 == "" || $10 == "" { next }
+            {
+                name = $2; sub(/^\//, "", name)
+                if (name !~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/) next
+                if (!(absent($3) || plain($3)) || !(absent($4) || plain($4))) key = "unreadable:" substr($1, 1, 12)
+                else if (plain($3) && plain($4)) key = "compose:" unq($3) "/" unq($4)
+                else key = "name:" name
+                print $1, key, name, $7, ($8 == "" ? "no" : $8), $9, $10, ($11 == "y" ? "y" : "n"), (($5 == "\"True\"" || $6 == "true") ? "y" : "n")
+            }'
+        return 0
+    done
+    return 1
 }
 
 # The entries of a list file: comments and blank lines dropped.
@@ -699,6 +756,13 @@ free() { df -h --output=avail,pcent "$root" 2>/dev/null | tail -n1 | awk '{print
 cutoff=$(( $(date +%s) - OLDER_THAN_HOURS * 3600 ))
 expected=" $(tc_list "$EXPECTED_FILE" | tr '\n' ' ') "
 
+# Read the containers before anything is removed. If Docker does not answer,
+# nothing is removed at all: an empty answer would look like "no containers".
+if ! ROWS="$(tc_containers)"; then
+    echo "ERROR: Docker did not return its container list (docker ps or docker inspect failed 3 times). Nothing was removed."
+    exit 1
+fi
+
 echo "Pruning unused items older than ${OLDER_THAN_HOURS}h. Volumes are never removed."
 echo "Disk before: $(free)"
 
@@ -708,10 +772,19 @@ if [ "$REVIEWED" -eq 0 ]; then
     echo "List not reviewed yet: no containers and no images are removed on this host."
     echo "Review $EXPECTED_FILE, then run Docker - Update Expected Containers [Lin] with Confirm reviewed."
 fi
+# A container whose Compose labels could not be read is never removed, and is
+# named whatever its state, so someone looks at where it came from.
+unreadable="$(printf '%s\n' "$ROWS" | awk -F'\t' '$2 ~ /^unreadable:/ {print "  " $3 " (" substr($1, 1, 12) ", " ($4 == "true" ? "running" : "stopped") ")"}')"
+if [ -n "$unreadable" ]; then
+    echo "WARNING: containers whose Compose labels are not plain names; they are never removed here:"
+    printf '%s\n' "$unreadable"
+fi
 while [ "$REVIEWED" -eq 1 ] && IFS=$'\t' read -r id key name running policy created _started keep _transient; do
+    [ -n "$id" ] || continue
     [ "$running" = "true" ] && continue
     why=""
-    case "$expected" in *" $key "*) why="on the expected list" ;; esac
+    case "$key" in unreadable:*) why="Compose labels unreadable, never removed" ;; esac
+    case "$expected" in *" $key "*) why="${why:-on the expected list}" ;; esac
     case "$policy" in always|unless-stopped) why="${why:-restart policy $policy}" ;; esac
     [ "$keep" = "y" ] && why="${why:-labelled tc.keep}"
     if [ -n "$why" ]; then kept+=("$name ($why)"); continue; fi
@@ -719,7 +792,7 @@ while [ "$REVIEWED" -eq 1 ] && IFS=$'\t' read -r id key name running policy crea
     [ "$c" -lt "$cutoff" ] || continue
     if "$DOCKER" rm "$id" >/dev/null 2>&1; then removed=$((removed + 1))
     else echo "WARNING: could not remove stopped container $name"; errors=$((errors + 1)); fi
-done < <(tc_containers)
+done <<<"$ROWS"
 
 [ "$REVIEWED" -eq 1 ] && echo "Stopped containers removed: $removed"
 if [ "${#kept[@]}" -gt 0 ]; then
@@ -774,6 +847,13 @@ OLDER_THAN_HOURS=$usrPruneOlderThanHours"
 
 # ---------------------------------------------------------------- expected list
 
+# Names the containers whose Compose labels could not be read ($1, one per line).
+report_unreadable() {
+    [ -n "$1" ] || return 0
+    say "Expected list: $2 - Compose labels are not plain names, so these have no key to list:"
+    printf '%s\n' "$1" | sed 's/^/  /'
+}
+
 # Creates /etc/tc-docker/expected-containers from what is running, ONLY when
 # it does not exist. It is never rewritten here afterwards: a list that
 # re-seeded itself would accept whatever turned up and stop meaning anything.
@@ -788,10 +868,18 @@ seed_section() {
         say "Expected list: the Docker daemon is not reachable, so the list was not created; the next run will try again."
         return 3
     fi
-    local keys old
+    local rows keys old unreadable
+    # Docker answered "info" but not the listing: an empty list now would be
+    # read later as "this host runs nothing". Leave it for the next run.
+    if ! rows="$(tc_containers)"; then
+        say "Expected list: Docker did not return its container list, so the list was not created; the next run will try again."
+        return 3
+    fi
     # Every container present, running or stopped: one that exists when we take
     # a host on is assumed wanted until a person says otherwise.
-    keys="$(tc_containers | awk -F'\t' '$9 == "n" {print $2}')"
+    keys="$(printf '%s\n' "$rows" | awk -F'\t' '$9 == "n" {print $2}')"
+    # A container whose Compose labels cannot be read has no key to list.
+    unreadable="$(printf '%s\n' "$rows" | awk -F'\t' '$2 ~ /^unreadable:/ {print $3 " (" substr($1, 1, 12) ")"}')"
     # Carry over names from the version 2 setting, if this host had one.
     old="$(sed -n 's/^REQUIRED_CONTAINERS="\(.*\)"$/\1/p' /etc/default/tc-docker-prune 2>/dev/null)"
     for n in $old; do
@@ -803,6 +891,7 @@ seed_section() {
     if [ "$usrMode" = "report" ]; then
         say "Expected list: REPORT MODE, would create $EXPECTED_FILE with $count entries:"
         [ "$count" -gt 0 ] && printf '%s\n' "$keys" | sed 's/^/  /'
+        report_unreadable "$unreadable" "would be left off"
         return 0
     fi
     mkdir -p "$TC_DIR" && chmod 755 "$TC_DIR" || return 1
@@ -826,6 +915,7 @@ seed_section() {
     fi
     say "Expected list: created $EXPECTED_FILE with $count entries:"
     [ "$count" -gt 0 ] && printf '%s\n' "$keys" | sed 's/^/  /'
+    report_unreadable "$unreadable" "left off"
     say "Expected list: NOT REVIEWED. Until someone confirms it, the prune removes no containers or images here."
     return 0
 }

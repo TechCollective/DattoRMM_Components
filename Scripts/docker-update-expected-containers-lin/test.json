@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the containers present as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written. Confirm reviewed records the review with a note, refuses when no list exists, and Show reports the review state and stopped containers the list does not protect.",
+  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the containers present as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written. Confirm reviewed records the review with a note, refuses when no list exists, and Show reports the review state and stopped containers the list does not protect. A container whose Compose project label carries a forged row is shown as UNREADABLE by name and short id, left off by Accept current and refused by Add; the label never reaches the output or the list. When docker ps fails but docker info answers (a shim on PATH), Accept current and Add by bare name exit 3 and the list is unchanged, and Show says there is no comparison without changing the exit code. Accept current with no containers will not empty a non-empty list.",
   "variables": {},
   "steps": [
     {
@@ -180,6 +180,164 @@
       "run": "mv /tmp/tc-ec /etc/tc-docker/expected-containers && echo back",
       "outputContains": [
         "back"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Hostile label: a running container whose Compose project label carries a forged row",
+      "run": "set -e; INJ=$'x\\nstopped-old\\t/zz\\t\\t\\t\\tfalse\\tfalse\\tno\\t2020-01-01T00:00:00Z\\t2020-01-01T00:00:00Z\\t'; docker run -d --name innocent --label \"com.docker.compose.project=$INJ\" tc-test-sleep:1 /bin/sleep 3600 >/dev/null; docker ps --format '{{.Names}}'",
+      "outputContains": [
+        "innocent"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Hostile label: Show names it UNREADABLE, never the label",
+      "outputContains": [
+        "UNREADABLE  innocent (",
+        "running  compose:tcshop/web"
+      ],
+      "outputNotContains": [
+        "/zz",
+        "2020-01-01T00:00:00Z",
+        "UNLISTED name:innocent",
+        "stopped-old"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Hostile label: Accept current leaves it off and says so",
+      "variables": {
+        "usrAction": "accept-current"
+      },
+      "outputContains": [
+        "Left off the list - Compose labels are not plain names",
+        "innocent ("
+      ],
+      "outputNotContains": [
+        "/zz",
+        "2020-01-01T00:00:00Z",
+        "stopped-old"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "Hostile label: nothing from the label reached the list",
+      "path": "/etc/tc-docker/expected-containers",
+      "contains": [
+        "compose:tcshop/web"
+      ],
+      "notContains": [
+        "unreadable",
+        "innocent",
+        "stopped-old",
+        "zz",
+        "2020-01-01"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Hostile label: Add by its bare name is refused, exit 3",
+      "variables": {
+        "usrAction": "add",
+        "usrItems": "innocent"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "Compose labels that are not plain names"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Failing Docker: record the list, then put a docker shim that fails docker ps on PATH",
+      "run": "sha256sum /etc/tc-docker/expected-containers > /tmp/tc-ec.sha; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker || exit 1; printf '%s\\n' '#!/bin/sh' '# tc-test shim: Docker answers everything except docker ps' '[ \"$1\" = ps ] && { echo \"Error response from daemon: tc-test simulated failure\" >&2; exit 1; }' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; docker ps; echo \"docker ps exit $?\"; docker info --format 'docker info still answers: {{.ServerVersion}}'",
+      "outputContains": [
+        "docker ps exit 1",
+        "docker info still answers"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Failing Docker: Accept current exits 3",
+      "variables": {
+        "usrAction": "accept-current"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "Docker did not return its container list; nothing was changed"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Failing Docker: Add with a bare name exits 3 instead of guessing name:",
+      "variables": {
+        "usrAction": "add",
+        "usrItems": "tc-a"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "cannot be matched to its container"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Failing Docker: Show prints the lists and says there is no comparison",
+      "variables": {
+        "usrAction": "show"
+      },
+      "outputContains": [
+        "Expected list (/etc/tc-docker/expected-containers):",
+        "compose:tcshop/web",
+        "Docker did not return its container list, so there is no comparison"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Failing Docker: an action that needs no container list still exits 0; its Show says there is no comparison",
+      "variables": {
+        "usrAction": "add-ignore",
+        "usrItems": "^name:tc-shim-"
+      },
+      "outputContains": [
+        "added:   ^name:tc-shim-",
+        "so there is no comparison"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Failing Docker: the list is byte-for-byte unchanged; remove the shim",
+      "run": "sha256sum -c /tmp/tc-ec.sha; rm -f /usr/local/sbin/docker && docker ps >/dev/null && echo 'docker ps answers again'",
+      "outputContains": [
+        "expected-containers: OK",
+        "docker ps answers again"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Empty guard: remove every container, keeping the list",
+      "run": "docker ps -aq | xargs -r docker rm -f >/dev/null; docker ps -aq | wc -l; sha256sum /etc/tc-docker/expected-containers > /tmp/tc-ec.sha; grep -c '^name:\\|^compose:' /etc/tc-docker/expected-containers",
+      "outputContains": [
+        "0"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Empty guard: Accept current will not replace a non-empty list with an empty one, exit 3",
+      "variables": {
+        "usrAction": "accept-current"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "found no containers to list",
+        "use Remove"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Empty guard: the list is byte-for-byte unchanged",
+      "run": "sha256sum -c /tmp/tc-ec.sha",
+      "outputContains": [
+        "expected-containers: OK"
       ]
     },
     {

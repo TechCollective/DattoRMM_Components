@@ -88,6 +88,17 @@ jobs:
           COMPONENT: ${{ matrix.component }}
         run: ./tools/test-harness/invoke-component-test.sh "$COMPONENT"
 
+  # Some components carry the same block of code between "# >>> <name>" and
+  # "# <<< <name>" markers (the tc-docker components share how they read the
+  # container list). Every copy must be byte-identical; this fails when one
+  # was changed without the others.
+  shared-blocks:
+    name: Shared blocks match
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: python3 tools/check-shared-blocks.py
+
   # The one check to require in the branch ruleset. Per-component job names
   # change with every component, so they cannot be required directly. This
   # passes when every test passed or there was nothing to test, and fails

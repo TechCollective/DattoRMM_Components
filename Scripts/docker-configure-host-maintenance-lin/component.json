@@ -5,7 +5,7 @@
     "description": "Sets Docker log and build-cache limits, seeds the expected-containers list, and a weekly prune that deletes nothing until the list is reviewed. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "3f5aab29-1ae2-4a8d-9956-7037cb7c1ed8",
     "hash": "",
-    "version": "5",
+    "version": "6",
     "timeout": "900",
     "securityLevel": "5",
     "installType": "unix"

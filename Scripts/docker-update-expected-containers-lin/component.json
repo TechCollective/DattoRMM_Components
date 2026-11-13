@@ -5,7 +5,7 @@
     "description": "Shows or changes this host's Docker expected-containers list, ignore patterns and review state; changes no container. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "",
     "hash": "",
-    "version": "2",
+    "version": "3",
     "timeout": "120",
     "securityLevel": "5",
     "installType": "unix"

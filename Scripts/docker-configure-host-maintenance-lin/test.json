@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, it removes an old stopped container that nothing protects, and keeps, with their images, stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are read from docker.service and its environment file, and flags it cannot resolve skip log rotation with exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2.",
+  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, it removes an old stopped container that nothing protects, and keeps, with their images, stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are read from docker.service and its environment file, and flags it cannot resolve skip log rotation with exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, not even a network; Prune now exits 1; and the list is not created, exit 3.",
   "variables": {},
   "steps": [
     {
@@ -221,6 +221,158 @@
         "image tc-test-labelled kept",
         "tc-junk removed",
         "junk image removed"
+      ],
+      "outputNotContains": [
+        "STILL HERE"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Hostile label: stopped-old, stopped and on the list; innocent, running, whose Compose project label carries a forged row for stopped-old; odd-stopped, stopped, with a tab in its label",
+      "run": "set -e; INJ=$'x\\nstopped-old\\t/zz\\t\\t\\t\\tfalse\\tfalse\\tno\\t2020-01-01T00:00:00Z\\t2020-01-01T00:00:00Z\\t'; docker create --name stopped-old tc-test-listed:1 /bin/true >/dev/null; echo name:stopped-old >> /etc/tc-docker/expected-containers; docker run -d --name innocent --label \"com.docker.compose.project=$INJ\" tc-test-listed:1 /bin/sleep 3600 >/dev/null; docker create --name odd-stopped --label $'com.docker.compose.project=a\\tb' --label com.docker.compose.service=web tc-test-listed:1 /bin/true >/dev/null; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; test -s /etc/tc-docker/reviewed; docker ps -a --format 'before: {{.Names}} {{.Status}}'",
+      "outputContains": [
+        "before: stopped-old Created",
+        "before: innocent Up",
+        "before: odd-stopped Created"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Hostile label: a reviewed prune with no age limit keeps stopped-old and names the unreadable containers, never the label",
+      "run": "/usr/local/sbin/tc-docker-prune; echo \"prune exit $?\"; docker ps -a --format 'after: {{.Names}} {{.Status}}'",
+      "outputContains": [
+        "prune exit 0",
+        "never removed here",
+        "innocent (",
+        "odd-stopped (Compose labels unreadable, never removed)",
+        "stopped-old (on the expected list)",
+        "after: stopped-old Created",
+        "after: innocent Up",
+        "after: odd-stopped Created"
+      ],
+      "outputNotContains": [
+        "/zz",
+        "2020-01-01T00:00:00Z"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Hostile label: Prune now through the component says the same",
+      "variables": {
+        "usrPruneNow": "yes"
+      },
+      "outputContains": [
+        "Prune now",
+        "never removed here",
+        "innocent (",
+        "odd-stopped ("
+      ],
+      "outputNotContains": [
+        "/zz",
+        "2020-01-01T00:00:00Z"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Failing Docker: an unprotected stopped container and an unused network, which a working prune would remove; then a docker shim that fails docker ps",
+      "run": "set -e; docker create --name tc-shim-junk tc-test-listed:1 /bin/true >/dev/null; docker network create tc-shim-net >/dev/null; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; set +e; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker || exit 1; printf '%s\\n' '#!/bin/sh' '# tc-test shim: Docker answers everything except docker ps' '[ \"$1\" = ps ] && { echo \"Error response from daemon: tc-test simulated failure\" >&2; exit 1; }' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; docker ps; echo \"docker ps exit $?\"; docker info --format 'docker info still answers: {{.ServerVersion}}'",
+      "outputContains": [
+        "docker ps exit 1",
+        "docker info still answers"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Failing Docker: the prune says ERROR, exits 1 and removes nothing at all",
+      "run": "/usr/local/sbin/tc-docker-prune; echo \"prune exit $?\"; docker inspect -f '{{.Name}} survived' tc-shim-junk stopped-old; docker network inspect -f '{{.Name}} survived' tc-shim-net",
+      "outputContains": [
+        "ERROR: Docker did not return its container list",
+        "Nothing was removed",
+        "prune exit 1",
+        "/tc-shim-junk survived",
+        "/stopped-old survived",
+        "tc-shim-net survived"
+      ],
+      "outputNotContains": [
+        "Disk before",
+        "Networks:",
+        "Build cache:"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Failing Docker: Prune now through the component fails with exit 1",
+      "variables": {
+        "usrPruneNow": "yes"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "ERROR: Docker did not return its container list"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Failing Docker: take the list away, so the component tries to create one",
+      "run": "mv /etc/tc-docker/expected-containers /tmp/tc-ec-hm && echo moved",
+      "outputContains": [
+        "moved"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Failing Docker: the list is not created, exit 3",
+      "expectExitCode": 3,
+      "outputContains": [
+        "Expected list: Docker did not return its container list, so the list was not created; the next run will try again"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Failing Docker: no list was written; remove the shim",
+      "run": "test ! -e /etc/tc-docker/expected-containers && echo 'no list written'; rm -f /usr/local/sbin/docker && docker ps >/dev/null && echo 'docker ps answers again'",
+      "outputContains": [
+        "no list written",
+        "docker ps answers again"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Hostile label: a new list leaves the unreadable containers off, and says so",
+      "outputContains": [
+        "Expected list: created",
+        "left off - Compose labels are not plain names",
+        "innocent (",
+        "odd-stopped ("
+      ],
+      "outputNotContains": [
+        "/zz",
+        "2020-01-01T00:00:00Z"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "Hostile label: the new list has stopped-old and nothing from the labels",
+      "path": "/etc/tc-docker/expected-containers",
+      "contains": [
+        "name:stopped-old"
+      ],
+      "notContains": [
+        "unreadable",
+        "innocent",
+        "odd-stopped",
+        "zz",
+        "2020-01-01"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Working Docker again: the same prune removes the stopped container and network it left alone; clean up",
+      "run": "mv -f /tmp/tc-ec-hm /etc/tc-docker/expected-containers; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; /usr/local/sbin/tc-docker-prune >/dev/null; echo \"prune exit $?\"; docker inspect tc-shim-junk >/dev/null 2>&1 && echo 'tc-shim-junk STILL HERE' || echo 'tc-shim-junk removed'; docker network inspect tc-shim-net >/dev/null 2>&1 && echo 'tc-shim-net STILL HERE' || echo 'tc-shim-net removed'; docker inspect -f '{{.Name}} kept' stopped-old; docker rm -f innocent odd-stopped stopped-old >/dev/null; sed -i '/^name:stopped-old$/d' /etc/tc-docker/expected-containers",
+      "outputContains": [
+        "prune exit 0",
+        "tc-shim-junk removed",
+        "tc-shim-net removed",
+        "/stopped-old kept"
       ],
       "outputNotContains": [
         "STILL HERE"
