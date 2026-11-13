@@ -422,7 +422,7 @@
       "label": "Daemon flags: the broken host is reported, exit 3, nothing written",
       "expectExitCode": 3,
       "outputContains": [
-        "DAEMON WILL NOT START: daemon.json has log-opts.max-size but the log driver is journald (from the --log-driver flag)",
+        "DAEMON WILL NOT START: daemon.json has log-opts max-size and max-file, but the log driver is journald (from the --log-driver flag), which does not accept them",
         "Newest backup: /etc/docker/daemon.json.tc-bak-",
         "daemon.json: NOT CHANGED"
       ],
@@ -446,7 +446,8 @@
       "expectExitCode": 1,
       "outputContains": [
         "docker DID NOT START",
-        "unknown log opt 'max-size' for journald log driver"
+        "unknown log opt 'max-",
+        "for journald log driver"
       ]
     },
     {

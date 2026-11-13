@@ -466,8 +466,10 @@ if ours and det["known"]:
         conflict = (f"daemon.json has log-opts ({', '.join(ours)}) and dockerd is also started with "
                     f"--log-opt ({', '.join(det['opt_keys'])}); Docker refuses log-opts set in both places")
     elif not rotates:
-        conflict = (f"daemon.json has log-opts.{ours[0]} but the log driver is {driver} ({src}), "
-                    f"which does not accept {ours[0]}")
+        # Name every key: Docker stops at whichever it checks first, so
+        # removing only one would leave the next to fail.
+        conflict = (f"daemon.json has log-opts {' and '.join(ours)}, but the log driver is {driver} ({src}), "
+                    f"which does not accept {'them' if len(ours) > 1 else 'it'}")
     if conflict:
         print(f"CONFLICT: {conflict}", file=sys.stderr)
         sys.exit(4)
