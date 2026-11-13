@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, it removes an old stopped container that nothing protects, and keeps, with their images, stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2.",
+  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, it removes an old stopped container that nothing protects, and keeps, with their images, stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are read from docker.service and its environment file, and flags it cannot resolve skip log rotation with exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2.",
   "variables": {},
   "steps": [
     {
@@ -249,6 +249,214 @@
         "usrPruneSchedule": "Funday"
       },
       "expectExitCode": 2
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: set up a helper that restarts Docker with extra dockerd flags through a docker.service drop-in",
+      "run": "set -e; systemctl show docker.service -p ExecStart --value | sed -n 's/.*argv\\[\\]=\\([^;]*\\) ;.*/\\1/p' | head -n 1 > /tmp/tc-execstart; test -s /tmp/tc-execstart; printf '%s\\n' '#!/bin/bash' '# tc-test-docker-flags FLAG...: restart docker.service with these extra dockerd flags (a drop-in).' 'd=/etc/systemd/system/docker.service.d' 'mkdir -p \"$d\"' '{ echo \"[Service]\"; echo \"EnvironmentFile=-/etc/default/tc-test-docker\"; echo \"ExecStart=\"; echo \"ExecStart=$(cat /tmp/tc-execstart) $*\"; } > \"$d/tc-test.conf\"' 'systemctl daemon-reload' 'systemctl reset-failed docker.service docker.socket 2>/dev/null' 'if systemctl restart docker.service; then' '  for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done' '  echo \"docker came up with [$*]: LoggingDriver=$(docker info --format \"{{.LoggingDriver}}\")\"' 'else' '  echo \"docker DID NOT START with [$*]\"' '  journalctl -u docker.service -n 50 --no-pager | grep -E \"failed to start|unable to configure|unknown log opt|specified both\" | tail -n 3' '  exit 1' 'fi' > /usr/local/sbin/tc-test-docker-flags; chmod 755 /usr/local/sbin/tc-test-docker-flags; echo \"docker.service starts: $(cat /tmp/tc-execstart)\"",
+      "outputContains": [
+        "docker.service starts:",
+        "dockerd"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker running with --log-driver=journald",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && tc-test-docker-flags --log-driver=journald",
+      "outputContains": [
+        "docker came up",
+        "LoggingDriver=journald"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: a --log-driver=journald daemon gets no log rotation",
+      "outputContains": [
+        "Docker starts with --log-driver=journald (read from the running dockerd",
+        "SKIPPED: log rotation: log-driver is journald (from the --log-driver flag)",
+        "ADDED: builder.gc",
+        "passes dockerd --validate with the daemon's logging flags",
+        "done"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: journald - daemon.json has no log-opts, and Docker restarts, comes up and runs a container",
+      "run": "python3 -c \"import json,sys; d=json.load(open('/etc/docker/daemon.json')); print('daemon.json has log-opts' if 'log-opts' in d else 'daemon.json has no log-opts'); sys.exit(1 if 'log-opts' in d else 0)\" && tc-test-docker-flags --log-driver=journald && docker run -d --name tc-logtest-journald tc-test-listed:1 /bin/sleep 5 >/dev/null && docker inspect -f \"tc-logtest-journald LogConfig {{json .HostConfig.LogConfig}}\" tc-logtest-journald; docker rm -f tc-logtest-journald >/dev/null",
+      "outputContains": [
+        "daemon.json has no log-opts",
+        "docker came up",
+        "LoggingDriver=journald",
+        "tc-logtest-journald LogConfig {\"Type\":\"journald\""
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker running with --log-opt max-size=50m",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && tc-test-docker-flags --log-opt max-size=50m",
+      "outputContains": [
+        "docker came up",
+        "LoggingDriver=json-file"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: a daemon with --log-opt gets no log rotation",
+      "outputContains": [
+        "Docker starts with --log-opt max-size (read from the running dockerd",
+        "SKIPPED: log rotation: dockerd is started with --log-opt (max-size)",
+        "ADDED: builder.gc",
+        "done"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: --log-opt - daemon.json has no log-opts, and Docker restarts and keeps the flag's max-size",
+      "run": "python3 -c \"import json,sys; d=json.load(open('/etc/docker/daemon.json')); print('daemon.json has log-opts' if 'log-opts' in d else 'daemon.json has no log-opts'); sys.exit(1 if 'log-opts' in d else 0)\" && tc-test-docker-flags --log-opt max-size=50m && docker run -d --name tc-logtest-50m tc-test-listed:1 /bin/sleep 5 >/dev/null && docker inspect -f \"tc-logtest-50m LogConfig {{json .HostConfig.LogConfig}}\" tc-logtest-50m; docker rm -f tc-logtest-50m >/dev/null",
+      "outputContains": [
+        "daemon.json has no log-opts",
+        "docker came up",
+        "tc-logtest-50m LogConfig {\"Type\":\"json-file\",\"Config\":{\"max-size\":\"50m\"}}"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker running with --log-driver=json-file and no --log-opt",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && tc-test-docker-flags --log-driver=json-file",
+      "outputContains": [
+        "docker came up",
+        "LoggingDriver=json-file"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: --log-driver=json-file still gets log rotation",
+      "outputContains": [
+        "Docker starts with --log-driver=json-file (read from the running dockerd",
+        "ADDED: log-opts.max-size = 10m",
+        "ADDED: log-opts.max-file = 3",
+        "passes dockerd --validate with the daemon's logging flags",
+        "daemon.json: written",
+        "RESTART PENDING"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: json-file - log-opts added, and after a real restart Docker is up and new containers rotate at 10m",
+      "run": "python3 -c \"import json,sys; o=json.load(open('/etc/docker/daemon.json')).get('log-opts', {}); print('daemon.json log-opts:', json.dumps(o)); sys.exit(0 if o.get('max-size') == '10m' else 1)\" && tc-test-docker-flags --log-driver=json-file && docker run -d --name tc-logtest-10m tc-test-listed:1 /bin/sleep 5 >/dev/null && docker inspect -f \"tc-logtest-10m LogConfig {{json .HostConfig.LogConfig}}\" tc-logtest-10m; docker rm -f tc-logtest-10m >/dev/null",
+      "outputContains": [
+        "\"max-size\": \"10m\"",
+        "docker came up",
+        "LoggingDriver=json-file",
+        "tc-logtest-10m LogConfig {\"Type\":\"json-file\",\"Config\":{\"max-file\":\"3\",\"max-size\":\"10m\"}}"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker stopped; docker.service passes $DOCKER_OPTS=--log-driver=journald from an environment file",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && printf '%s\\n' '# test' 'DOCKER_OPTS=\"--log-driver=journald\"' > /etc/default/tc-test-docker && tc-test-docker-flags '$DOCKER_OPTS' && systemctl stop docker.socket docker.service; systemctl is-active docker.service || true",
+      "outputContains": [
+        "docker came up with [$DOCKER_OPTS]: LoggingDriver=journald",
+        "inactive"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: stopped Docker - the unit's journald flag is found and log rotation is skipped",
+      "outputContains": [
+        "Docker starts with --log-driver=journald (read from docker.service",
+        "SKIPPED: log rotation: log-driver is journald (from the --log-driver flag)",
+        "Docker is not running"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: stopped Docker - daemon.json has no log-opts, and Docker starts",
+      "run": "python3 -c \"import json,sys; d=json.load(open('/etc/docker/daemon.json')); print('daemon.json has log-opts' if 'log-opts' in d else 'daemon.json has no log-opts'); sys.exit(1 if 'log-opts' in d else 0)\" && tc-test-docker-flags '$DOCKER_OPTS'",
+      "outputContains": [
+        "daemon.json has no log-opts",
+        "docker came up",
+        "LoggingDriver=journald"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker stopped; $DOCKER_OPTS is built from another variable",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && printf '%s\\n' 'DOCKER_OPTS=\"--log-driver=json-file --label=tc-test=$TCX\"' > /etc/default/tc-test-docker && tc-test-docker-flags '$DOCKER_OPTS' && systemctl stop docker.socket docker.service; systemctl is-active docker.service || true",
+      "outputContains": [
+        "docker came up",
+        "inactive"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: flags that cannot be determined skip log rotation and exit 3",
+      "expectExitCode": 3,
+      "outputContains": [
+        "could not tell which flags Docker starts with",
+        "sets DOCKER_OPTS from another variable",
+        "SKIPPED: log rotation: Docker's start flags could not be determined",
+        "ADDED: builder.gc"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: undetermined - daemon.json has no log-opts, and Docker starts",
+      "run": "python3 -c \"import json,sys; d=json.load(open('/etc/docker/daemon.json')); print('daemon.json has log-opts' if 'log-opts' in d else 'daemon.json has no log-opts'); sys.exit(1 if 'log-opts' in d else 0)\" && tc-test-docker-flags '$DOCKER_OPTS'",
+      "outputContains": [
+        "daemon.json has no log-opts",
+        "docker came up"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: a host version 4 broke - journald daemon running, daemon.json given max-size after it started",
+      "run": "rm -f /etc/default/tc-test-docker && cp /tmp/tc-before.json /etc/docker/daemon.json && tc-test-docker-flags --log-driver=journald && cp -p /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-$(date +%Y%m%d%H%M%S) && python3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d['log-opts']={'max-size': '10m', 'max-file': '3'}; json.dump(d, open(p, 'w'), indent=2)\" && sha256sum /etc/docker/daemon.json > /tmp/tc-broken.sha && ls -1 /etc/docker/",
+      "outputContains": [
+        "LoggingDriver=journald",
+        "daemon.json.tc-bak-"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: the broken host is reported, exit 3, nothing written",
+      "expectExitCode": 3,
+      "outputContains": [
+        "DAEMON WILL NOT START: daemon.json has log-opts max-size and max-file, but the log driver is journald (from the --log-driver flag), which does not accept them",
+        "Newest backup: /etc/docker/daemon.json.tc-bak-",
+        "daemon.json: NOT CHANGED"
+      ],
+      "outputNotContains": [
+        "daemon.json: written",
+        "RESTART PENDING"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: the broken host's daemon.json is byte-for-byte unchanged",
+      "run": "sha256sum -c /tmp/tc-broken.sha",
+      "outputContains": [
+        "daemon.json: OK"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: and the report was right - Docker really does not start with that file",
+      "run": "tc-test-docker-flags --log-driver=journald",
+      "expectExitCode": 1,
+      "outputContains": [
+        "docker DID NOT START",
+        "unknown log opt 'max-",
+        "for journald log driver"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: clean up - original daemon.json, no drop-in, Docker running",
+      "run": "rm -f /etc/systemd/system/docker.service.d/tc-test.conf /etc/default/tc-test-docker && cp /tmp/tc-before.json /etc/docker/daemon.json && systemctl daemon-reload && systemctl reset-failed docker.service docker.socket; systemctl restart docker.service && docker info --format \"docker up, LoggingDriver={{.LoggingDriver}}\"",
+      "outputContains": [
+        "docker up, LoggingDriver=json-file"
+      ]
     },
     {
       "type": "command",
