@@ -26,6 +26,10 @@
 #    A container whose Compose labels are not plain names is never removed.
 #    If Docker does not return its container list, nothing at all is removed.
 #    Never volumes.
+#    The installed prune carries its version (TC_PRUNE_VERSION=<the component's
+#    version>) and prints it first, so a host's prune can be told apart from an
+#    older one; the monitor "Docker - Containers Differ From Expected [Lin]"
+#    flags a host whose prune is older than its PRUNE_MIN_VERSION.
 # 4. Optionally runs that prune once, now.
 #
 # It never restarts Docker. daemon.json changes take effect at the next
@@ -662,6 +666,12 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # tc-docker-prune -- installed by the Datto RMM component
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune.
+TC_PRUNE_VERSION=7
+# The line above is the version of the component that installed this script,
+# and the first thing a run prints is that version, so the journal shows which
+# prune ran. "Docker - Containers Differ From Expected [Lin]" reads it to flag
+# a host whose prune is older than the monitor's PRUNE_MIN_VERSION. Keep it the
+# only line starting TC_PRUNE_VERSION=, equal to "version" in component.json.
 #
 # Always removes, when older than OLDER_THAN_HOURS: unused networks and build
 # cache. Once /etc/tc-docker/reviewed exists (a person confirmed the list),
@@ -675,6 +685,7 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # return its container list, nothing at all is removed and the exit is 1.
 # Never volumes. Exit: 0 done, 1 error.
 set -u
+echo "tc-docker-prune version $TC_PRUNE_VERSION"
 OLDER_THAN_HOURS=168
 [ -r /etc/default/tc-docker-prune ] && . /etc/default/tc-docker-prune
 

@@ -44,6 +44,19 @@ Until then, the prune only clears build cache and unused networks.
 > Version 6 was exercised against a live Docker 29 daemon in a sandbox, its
 > label handling against Docker 17.12, 18.09 and 20.10 engines, and the Tier 1
 > test covers both defects. It has not yet run through a Datto agent.
+>
+> - **Version 7** stamps the installed prune with its version
+>   (`TC_PRUNE_VERSION=7`) and prints `tc-docker-prune version 7` as the first
+>   line of every run, so a host's prune can be told apart from an older one.
+>   What the prune removes, the units, `daemon.json` handling and the shared
+>   block are unchanged. The monitor
+>   [`Docker - Containers Differ From Expected [Lin]`](../../Monitors/docker-containers-differ-from-expected-lin/)
+>   version 4 reads the stamp and flags a host whose prune is older than its
+>   `PRUNE_MIN_VERSION`. The Tier 1 test fails if the stamp and
+>   `component.json`'s `version` differ. Version 7 was run against a live
+>   Docker 29 daemon in a sandbox for the stamp and its first output line; the
+>   journal check and the timer steps run on the CI runner. It has not yet run
+>   through a Datto agent.
 
 ## What it does
 
@@ -171,6 +184,34 @@ carried onto the new list.
 
 The timer is `Persistent`, so a run missed while the host was off happens at
 the next boot. It also has up to 30 minutes of random delay.
+
+**The prune is only replaced when this component runs on the host again.**
+Nothing else updates it, so a host keeps whichever prune it last received. To
+make that visible, the script carries a line `TC_PRUNE_VERSION=<n>` near the
+top, where `<n>` is this component's version, and prints
+`tc-docker-prune version <n>` as the first line of every run, so the journal
+(`journalctl -u tc-docker-prune.service`) shows which prune ran. The Tier 1
+test fails when the stamp and `component.json`'s `version` differ, so a
+version bump cannot ship without it.
+
+**Raising `PRUNE_MIN_VERSION` in the monitor is how a future safety fix to the
+prune gets flagged fleet-wide.** The monitor's constant is the oldest prune it
+accepts. When a fix to the prune ships, bump this component's version, raise
+`PRUNE_MIN_VERSION` in
+[`Docker - Containers Differ From Expected [Lin]`](../../Monitors/docker-containers-differ-from-expected-lin/)
+to that version, and every host still on an older prune alerts on its next
+check, with the fix named: run this component on it.
+
+What earlier versions left on a host, which the monitor flags:
+
+| Version | What it left | Why it is unsafe |
+|---|---|---|
+| 1 | No script. The service's `ExecStart` runs `docker system prune --all --force` directly | No list, no review |
+| 2 | The script, running `docker system prune --all` behind a `REQUIRED_CONTAINERS` check | No expected-containers list |
+| 3 | Per-container protection | No review gate |
+| 4, 5 | Review gate | A container label can still make it delete a protected container |
+| 6 | The current rules, without a stamp | The monitor cannot tell it from an older one |
+| 7 | Current | |
 
 The script removes, when older than `usrPruneOlderThanHours`:
 
@@ -375,7 +416,7 @@ On the host itself:
 
     cat /etc/tc-docker/expected-containers
     systemctl list-timers tc-docker-prune.timer
-    journalctl -u tc-docker-prune.service    # what each prune removed and kept
+    journalctl -u tc-docker-prune.service    # what each prune removed and kept; its first line is "tc-docker-prune version <n>"
     sudo /usr/local/sbin/tc-docker-prune     # run the prune by hand
 
 ## Test order
@@ -394,6 +435,13 @@ Never a customer first.
 
 ## Known limits
 
+- **A host's prune is only as new as the last run of this component on it.**
+  Until it runs again, the older prune's rules apply, including the unsafe
+  ones in the table under *Installs the weekly prune*. The monitor flags such
+  a host; it does not fix it.
+- **The version stamp is what this component wrote, not a checksum.** A prune
+  edited by hand on the host, with the stamp left on, still reads as current.
+  Edits there are overwritten at the next run, and the script says so.
 - **An unreviewed host gets no image cleanup.** That is deliberate. Its disk
   relief waits for the review, so review a new host's list in its first
   week. The monitor reports every unreviewed host.

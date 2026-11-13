@@ -87,6 +87,23 @@
       "executable": true
     },
     {
+      "type": "command",
+      "label": "Prune script carries one TC_PRUNE_VERSION stamp, a whole number, near the top",
+      "run": "f=/usr/local/sbin/tc-docker-prune; n=$(grep -c '^TC_PRUNE_VERSION=' $f); first=$(grep -n '^TC_PRUNE_VERSION=' $f | head -n 1 | cut -d: -f1); echo \"stamp lines: $n, first at line $first\"; grep '^TC_PRUNE_VERSION=' $f; [ \"$n\" = 1 ] && [ \"$first\" -le 10 ] && grep -qE '^TC_PRUNE_VERSION=[0-9]+$' $f",
+      "outputContains": [
+        "stamp lines: 1, first at line"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The stamp equals the version in component.json",
+      "run": "m=Scripts/docker-configure-host-maintenance-lin/component.json; [ -f \"$m\" ] || { echo \"cannot find $m from $(pwd)\"; exit 1; }; want=$(jq -r '.general.version' \"$m\"); have=$(sed -n 's/^TC_PRUNE_VERSION=\\([0-9][0-9]*\\)$/\\1/p' /usr/local/sbin/tc-docker-prune); echo \"component.json version: $want; installed stamp: $have\"; [ -n \"$want\" ] && [ \"$want\" = \"$have\" ]",
+      "outputContains": [
+        "component.json version:",
+        "installed stamp:"
+      ]
+    },
+    {
       "type": "runComponent",
       "label": "Second run changes nothing",
       "outputContains": [
@@ -110,10 +127,26 @@
     },
     {
       "type": "command",
+      "label": "A run of the prune prints its version as its first line",
+      "run": "m=Scripts/docker-configure-host-maintenance-lin/component.json; want=$(jq -r '.general.version' \"$m\"); out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; first=$(printf '%s\\n' \"$out\" | head -n 1); echo \"first line: $first (exit $rc)\"; [ \"$rc\" = 0 ] && [ \"$first\" = \"tc-docker-prune version $want\" ]",
+      "outputContains": [
+        "first line: tc-docker-prune version"
+      ]
+    },
+    {
+      "type": "command",
       "label": "The prune service itself runs",
       "run": "systemctl start tc-docker-prune.service && systemctl show tc-docker-prune.service -p Result --value",
       "outputContains": [
         "success"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The timer's service puts the version in the journal",
+      "run": "want=$(jq -r '.general.version' Scripts/docker-configure-host-maintenance-lin/component.json); journalctl --sync >/dev/null 2>&1; journalctl -u tc-docker-prune.service --no-pager | grep \"tc-docker-prune version $want\"",
+      "outputContains": [
+        "tc-docker-prune version"
       ]
     },
     {
