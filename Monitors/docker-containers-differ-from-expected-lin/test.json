@@ -1,0 +1,125 @@
+{
+  "platforms": [
+    "linux"
+  ],
+  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A host without Docker is Tier 2.",
+  "variables": {},
+  "steps": [
+    {
+      "type": "command",
+      "label": "One running container on a reviewed list",
+      "run": "set -e; d=$(mktemp -d); mkdir -p $d/bin; cp /bin/sleep $d/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $d$(dirname $l); cp $l $d$l; done; tar -C $d -c . | docker import - tc-test-sleep:1 >/dev/null; docker run -d --name tc-plain tc-test-sleep:1 /bin/sleep 3600 >/dev/null; mkdir -p /etc/tc-docker; echo name:tc-plain > /etc/tc-docker/expected-containers; echo 'tc-test review' > /etc/tc-docker/reviewed; docker ps --format '{{.Names}}'",
+      "outputContains": [
+        "tc-plain"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Healthy",
+      "outputContains": [
+        "STATUS=1 expected: 1 running"
+      ],
+      "outputNotContains": [
+        "unreadable",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Hostile label: a running container whose Compose project label carries a forged row",
+      "run": "set -e; INJ=$'x\\nstopped-old\\t/zz\\t\\t\\t\\tfalse\\tfalse\\tno\\t2020-01-01T00:00:00Z\\t2020-01-01T00:00:00Z\\t'; docker run -d --name innocent --label \"com.docker.compose.project=$INJ\" tc-test-sleep:1 /bin/sleep 3600 >/dev/null; docker ps --format '{{.Names}}'",
+      "outputContains": [
+        "innocent"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Hostile label, usrUnlistedAction Warn (default): counted in the status, exit 0",
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 with unreadable Compose labels"
+      ],
+      "outputNotContains": [
+        "/zz",
+        "2020-01-01T00:00:00Z",
+        "stopped-old",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Hostile label, usrUnlistedAction Alert: alerts, and the diagnostic names it",
+      "variables": {
+        "usrUnlistedAction": "Alert"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "1 with unreadable Compose labels",
+        "<-Start Diagnostic->",
+        "UNREADABLE  innocent ("
+      ],
+      "outputNotContains": [
+        "/zz",
+        "2020-01-01T00:00:00Z",
+        "stopped-old"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Hostile label, usrUnlistedAction Ignore: still counted, no alert",
+      "variables": {
+        "usrUnlistedAction": "Ignore"
+      },
+      "outputContains": [
+        "1 with unreadable Compose labels"
+      ],
+      "outputNotContains": [
+        "/zz",
+        "2020-01-01T00:00:00Z",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Failing Docker: a docker shim that fails docker ps",
+      "run": "real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker || exit 1; printf '%s\\n' '#!/bin/sh' '# tc-test shim: Docker answers everything except docker ps' '[ \"$1\" = ps ] && { echo \"Error response from daemon: tc-test simulated failure\" >&2; exit 1; }' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; docker ps; echo \"docker ps exit $?\"; docker info --format 'docker info still answers: {{.ServerVersion}}'",
+      "outputContains": [
+        "docker ps exit 1",
+        "docker info still answers"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Failing Docker: the check says it could not run, and alerts",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: Docker did not return its container list"
+      ],
+      "outputNotContains": [
+        "expected:"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Failing Docker: remove the shim",
+      "run": "rm -f /usr/local/sbin/docker && docker ps >/dev/null && echo 'docker ps answers again'",
+      "outputContains": [
+        "docker ps answers again"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker answers again: back to the status with the unreadable count",
+      "outputContains": [
+        "1 with unreadable Compose labels"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "tier": 2,
+      "label": "Host without Docker says so and is healthy",
+      "outputContains": [
+        "Docker is not installed"
+      ]
+    }
+  ]
+}

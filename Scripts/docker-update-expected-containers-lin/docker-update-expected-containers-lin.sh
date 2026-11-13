@@ -26,8 +26,11 @@
 #   0  done
 #   1  unexpected failure
 #   2  an input variable is invalid; nothing was changed
-#   3  needs the Docker daemon (accept-current) and it is not reachable, or
-#      confirm-reviewed was run on a host that has no list yet
+#   3  nothing was changed because: accept-current or add (a bare name) needs
+#      Docker's container list and Docker did not return it; accept-current
+#      found no containers and the list is not empty (use remove for that);
+#      add was given a bare name whose container has unreadable Compose
+#      labels; or confirm-reviewed was run on a host that has no list yet
 
 set -u
 umask 022
@@ -67,19 +70,45 @@ REVIEWED_FILE="$TC_DIR/reviewed"
 # shellcheck disable=SC2034  # not every component uses every name
 KEY_RE='^(name:[a-zA-Z0-9][a-zA-Z0-9_.-]*|compose:[a-zA-Z0-9][a-zA-Z0-9_.-]*/[a-zA-Z0-9][a-zA-Z0-9_.-]*)$'
 
-# One line per container, tab separated:
+# One line per container, tab separated, every field non-empty:
 #   id  key  name  running  restart-policy  created  started  tc.keep(y/n)  transient(y/n)
 # key is compose:<project>/<service> for a Compose service, otherwise name:<name>.
+# Labels are untrusted (a container inherits them from its image), so they are
+# read JSON-encoded, one line each: a tab or newline in a label cannot add a
+# field or a row. A container whose Compose labels are set but are not plain
+# names gets the key unreadable:<first 12 characters of its id>, which matches
+# no list entry and never carries the label. A row with the wrong field count,
+# or an id that is not 64 hex characters, is dropped.
 # transient is y for Compose one-offs (compose run) and --rm containers.
+# Returns 1, printing nothing, when docker ps or docker inspect fails three
+# times (a container removed between the two is normal; the whole listing is
+# retried). Capture the output, rows="$(tc_containers)", and check the status:
+# a pipe or < <(...) hides it, and "Docker did not answer" is not "no containers".
 tc_containers() {
-    "$DOCKER" ps -aq --no-trunc 2>/dev/null | xargs -r "$DOCKER" inspect -f \
-'{{.Id}}{{"\t"}}{{.Name}}{{"\t"}}{{index .Config.Labels "com.docker.compose.project"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.service"}}{{"\t"}}{{index .Config.Labels "com.docker.compose.oneoff"}}{{"\t"}}{{.HostConfig.AutoRemove}}{{"\t"}}{{.State.Running}}{{"\t"}}{{.HostConfig.RestartPolicy.Name}}{{"\t"}}{{.Created}}{{"\t"}}{{.State.StartedAt}}{{"\t"}}{{range $k, $v := .Config.Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}' 2>/dev/null \
-    | awk -F'\t' -v OFS='\t' '{
-        for (i = 3; i <= 5; i++) if ($i == "<no value>") $i = ""
-        name = $2; sub(/^\//, "", name)
-        key = ($3 != "" && $4 != "") ? "compose:" $3 "/" $4 : "name:" name
-        print $1, key, name, $7, $8, $9, $10, ($11 == "y" ? "y" : "n"), (($5 == "True" || $6 == "true") ? "y" : "n")
-    }'
+    local try ids out
+    for try in 1 2 3; do
+        [ "$try" -gt 1 ] && sleep 1
+        ids="$("$DOCKER" ps -aq --no-trunc 2>/dev/null)" || continue
+        [ -n "$ids" ] || return 0
+        out="$(printf '%s\n' "$ids" | xargs "$DOCKER" inspect -f \
+'{{.Id}}{{"\t"}}{{.Name}}{{"\t"}}{{json (index .Config.Labels "com.docker.compose.project")}}{{"\t"}}{{json (index .Config.Labels "com.docker.compose.service")}}{{"\t"}}{{json (index .Config.Labels "com.docker.compose.oneoff")}}{{"\t"}}{{.HostConfig.AutoRemove}}{{"\t"}}{{.State.Running}}{{"\t"}}{{.HostConfig.RestartPolicy.Name}}{{"\t"}}{{.Created}}{{"\t"}}{{.State.StartedAt}}{{"\t"}}{{range $k, $v := .Config.Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}' 2>/dev/null)" || continue
+        printf '%s\n' "$out" | awk -F'\t' -v OFS='\t' '
+            function absent(v) { return v == "null" || v == "\"\"" }
+            function plain(v)  { return v ~ /^"[a-zA-Z0-9][a-zA-Z0-9_.-]*"$/ }
+            function unq(v)    { return substr(v, 2, length(v) - 2) }
+            NF != 11 || length($1) != 64 || $1 ~ /[^0-9a-f]/ { next }
+            $7 != "true" && $7 != "false" || $9 == "" || $10 == "" { next }
+            {
+                name = $2; sub(/^\//, "", name)
+                if (name !~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/) next
+                if (!(absent($3) || plain($3)) || !(absent($4) || plain($4))) key = "unreadable:" substr($1, 1, 12)
+                else if (plain($3) && plain($4)) key = "compose:" unq($3) "/" unq($4)
+                else key = "name:" name
+                print $1, key, name, $7, ($8 == "" ? "no" : $8), $9, $10, ($11 == "y" ? "y" : "n"), (($5 == "\"True\"" || $6 == "true") ? "y" : "n")
+            }'
+        return 0
+    done
+    return 1
 }
 
 # The entries of a list file: comments and blank lines dropped.
@@ -114,12 +143,24 @@ case "$usrAction" in
         # name, which becomes that container's key if it exists, else name:<it>.
         read -r -a raw <<<"${usrItems//,/ }"
         [ "${#raw[@]}" -gt 0 ] || fail 2 "usrAction=$usrAction needs at least one entry in usrItems."
+        ROWS=""; LISTED=0
         for it in "${raw[@]}"; do
             if [[ "$it" =~ $KEY_RE ]]; then
                 ITEMS+=("$it")
             elif [[ "$it" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
                 k=""
-                [ $DAEMON -eq 1 ] && k="$(tc_containers | awk -F'\t' -v n="$it" '$3 == n {print $2; exit}')"
+                if [ $DAEMON -eq 1 ]; then
+                    # Docker answers: a guess of name:<it> could be the wrong key for
+                    # a Compose container, so a listing that fails stops here.
+                    if [ $LISTED -eq 0 ]; then
+                        ROWS="$(tc_containers)" || fail 3 "Docker did not return its container list, so '$it' cannot be matched to its container; nothing was changed. Give the key instead (name:$it or compose:<project>/<service>)."
+                        LISTED=1
+                    fi
+                    k="$(printf '%s\n' "$ROWS" | awk -F'\t' -v n="$it" '$3 == n {print $2; exit}')"
+                    case "$k" in unreadable:*)
+                        fail 3 "container '$it' has Compose labels that are not plain names, so it has no key to add; nothing was changed." ;;
+                    esac
+                fi
                 ITEMS+=("${k:-name:$it}")
             else
                 fail 2 "usrItems: '$it' is not a container name, name:<name> or compose:<project>/<service>."
@@ -175,7 +216,11 @@ show() {
     if tc_reviewed; then say "Review: confirmed - $(head -n1 "$REVIEWED_FILE")"
     else say "Review: NOT REVIEWED. The weekly prune removes no containers and no images on this host until Confirm reviewed is run."; fi
     if [ $DAEMON -eq 0 ]; then say "The Docker daemon is not reachable, so there is no comparison."; return 0; fi
-    local rows; rows="$(tc_containers)"
+    local rows
+    if ! rows="$(tc_containers)"; then
+        say "Docker did not return its container list, so there is no comparison."
+        return 0
+    fi
     say "Compared with this host now:"
     local k state
     while IFS= read -r k; do
@@ -184,17 +229,23 @@ show() {
         else state="MISSING"; fi
         say "  $state  $k"
     done < <(tc_list "$EXPECTED_FILE")
-    printf '%s\n' "$rows" | awk -F'\t' '$4 == "true" && $9 == "n" {print $2}' | sort -u | while IFS= read -r k; do
+    printf '%s\n' "$rows" | awk -F'\t' '$4 == "true" && $9 == "n" && $2 !~ /^unreadable:/ {print $2}' | sort -u | while IFS= read -r k; do
         tc_list "$EXPECTED_FILE" | grep -qxF -- "$k" && continue
         if tc_ignored "$k"; then say "  ignored  $k"; else say "  UNLISTED $k"; fi
     done
     # Stopped containers the list does not protect: the prune removes these once
     # the list is reviewed (unless a restart policy or tc.keep protects them).
-    printf '%s\n' "$rows" | awk -F'\t' '$4 != "true" && $9 == "n" && $8 == "n" && $5 != "always" && $5 != "unless-stopped" {print $2}' \
+    printf '%s\n' "$rows" | awk -F'\t' '$4 != "true" && $9 == "n" && $8 == "n" && $5 != "always" && $5 != "unless-stopped" && $2 !~ /^unreadable:/ {print $2}' \
         | sort -u | while IFS= read -r k; do
         tc_list "$EXPECTED_FILE" | grep -qxF -- "$k" && continue
         printf '%s\n' "$rows" | awk -F'\t' -v k="$k" '$2 == k && $4 == "true" {f=1} END {exit !f}' && continue
         say "  STOPPED, UNLISTED  $k  - the prune removes it once the list is reviewed; Add it to keep it"
+    done
+    # Compose labels that are not plain names: no key, so never listed, and
+    # never pruned. Named, not quoted - the label itself is untrusted.
+    printf '%s\n' "$rows" | awk -F'\t' '$2 ~ /^unreadable:/ {print $3 " (" substr($1, 1, 12) ", " ($4 == "true" ? "running" : "stopped") ")"}' \
+        | while IFS= read -r k; do
+        say "  UNREADABLE  $k  - its Compose labels are not plain names; it cannot be listed and the prune never removes it"
     done
 }
 
@@ -205,9 +256,21 @@ case "$usrAction" in
         show ;;
     accept-current)
         [ $DAEMON -eq 1 ] || fail 3 "the Docker daemon is not reachable, so the running containers cannot be read; nothing was changed."
-        tc_containers | awk -F'\t' '$9 == "n" {print $2}' | sort -u | while IFS= read -r k; do
+        ROWS="$(tc_containers)" || fail 3 "Docker did not return its container list; nothing was changed."
+        KEYS="$(printf '%s\n' "$ROWS" | awk -F'\t' '$9 == "n" && $2 !~ /^unreadable:/ {print $2}' | sort -u | while IFS= read -r k; do
+            [ -n "$k" ] || continue
             tc_ignored "$k" || printf '%s\n' "$k"
-        done | write_list "$EXPECTED_FILE" "$EXPECTED_HEADER" || fail 1 "could not write $EXPECTED_FILE." ;;
+        done)"
+        OLD_COUNT="$(tc_list "$EXPECTED_FILE" | grep -c . || true)"
+        if [ -z "$KEYS" ] && [ "$OLD_COUNT" -gt 0 ]; then
+            fail 3 "Accept current found no containers to list, and would replace the $OLD_COUNT entries on $EXPECTED_FILE with none; nothing was changed. If an empty list is really intended, use Remove."
+        fi
+        UNREADABLE="$(printf '%s\n' "$ROWS" | awk -F'\t' '$2 ~ /^unreadable:/ {print $3 " (" substr($1, 1, 12) ")"}')"
+        if [ -n "$UNREADABLE" ]; then
+            say "Left off the list - Compose labels are not plain names, so these have no key:"
+            printf '%s\n' "$UNREADABLE" | sed 's/^/  /'
+        fi
+        printf '%s\n' "$KEYS" | write_list "$EXPECTED_FILE" "$EXPECTED_HEADER" || fail 1 "could not write $EXPECTED_FILE." ;;
     confirm-reviewed)
         [ -e "$EXPECTED_FILE" ] || fail 3 "$EXPECTED_FILE does not exist yet; run Docker - Configure Host Maintenance [Lin] first."
         mkdir -p "$TC_DIR" || fail 1 "could not create $TC_DIR."

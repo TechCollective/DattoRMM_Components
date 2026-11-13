@@ -5,9 +5,11 @@ host's **expected-containers list**, its **ignore patterns** and its **review
 state**. It is the one supported way to change any of them.
 
 > **Status: Not Validated.** Written 2026-11-09; version 2 adds Confirm
-> reviewed on 2026-11-10. Every action, and refusal of bad input, passed the
-> repo's Linux Tier 1 harness against a live Docker 29 daemon in a sandbox.
-> Version 1 ran through a Datto agent.
+> reviewed on 2026-11-10; version 3 (2026-11-13) reads container labels so
+> that a hostile one cannot forge a container, and refuses to act when Docker
+> does not return its container list. Every action, and refusal of bad input,
+> passed the repo's Linux Tier 1 harness against a live Docker 29 daemon in a
+> sandbox. Version 1 ran through a Datto agent; version 3 has not.
 
 ## What it does
 
@@ -40,13 +42,25 @@ changes one, the previous version is kept as `<file>.prev`.
 |---|---|
 | **Show** (default) | Changes nothing. Prints both lists and the review state, then compares them with the host now. See the Show details below. |
 | **Confirm reviewed** | Records that a person has checked the list, with the date and an optional note from `usrItems`. **The weekly prune removes no containers and no images on a host until this has been run once.** It refuses, with exit 3, if the host has no list yet. |
-| **Accept current** | Replaces the list with every container present now, running or stopped. Containers matching an ignore pattern, Compose one-offs and `--rm` containers are left out. Use it after a deliberate change, when the host's current state is correct. |
-| **Add** | Adds the entries in `usrItems`. A bare container name becomes that container's key: `compose:…` if it is a Compose service, otherwise `name:…`. |
+| **Accept current** | Replaces the list with every container present now, running or stopped. Containers matching an ignore pattern, Compose one-offs, `--rm` containers and containers with unreadable Compose labels (named in the output) are left out. Use it after a deliberate change, when the host's current state is correct. It refuses, with exit 3, to replace a non-empty list with an empty one; use Remove if that is really intended. |
+| **Add** | Adds the entries in `usrItems`. A bare container name becomes that container's key: `compose:…` if it is a Compose service, otherwise `name:…`. When Docker is not running, a bare name becomes `name:…`; when Docker is running but does not return its container list, or the container's Compose labels are unreadable, it refuses with exit 3 rather than guess. |
 | **Remove** | Removes the entries in `usrItems`, for a container that was retired on purpose. |
 | **Add ignore** / **Remove ignore** | The same, for patterns in the ignore file. For example, `^name:runner-` keeps GitLab CI job containers out of the monitor. |
 
 Every action except Show ends by running Show, so the output always says
 where the host now stands.
+
+A container's labels are untrusted: a container inherits them from its image.
+They are read JSON-encoded, so a tab or newline in a label cannot add a field
+or a container to what this component sees. A container whose Compose labels
+are set but are not plain names (letters, digits, `_`, `.`, `-`) has no key:
+it is shown as `UNREADABLE` by container name and short id, never by the label,
+and can never be on the list.
+
+When `docker info` answers but `docker ps` or `docker inspect` fails three
+times, the actions that need the container list (Accept current, Add with a
+bare name) change nothing and exit 3. "Docker did not answer" is never read
+as "no containers".
 
 ### Show details
 
@@ -58,6 +72,11 @@ where the host now stands.
 | `UNLISTED` | A running container not on the list |
 | `ignored` | A running container matching an ignore pattern |
 | `STOPPED, UNLISTED` | A stopped container the list doesn't protect. The prune will remove it once the list is reviewed. |
+| `UNREADABLE` | A container, running or stopped, whose Compose labels are not plain names. Shown as its container name and short id. It cannot be listed, and the prune never removes it. Find out where it came from. |
+
+If Docker does not return its container list, Show prints the lists and the
+review state, says there is no comparison, and does not change the exit code
+of the action that ran before it.
 
 ### Reviewing a new host
 
@@ -114,7 +133,7 @@ exit `2` and change nothing.
 | `0` | Done. Also returned when Docker is not installed. |
 | `1` | Unexpected failure, such as a write failing. |
 | `2` | An input variable is invalid. Nothing was changed. |
-| `3` | Accept current needs the Docker daemon and it's not reachable, or Confirm reviewed was run on a host with no list yet. Nothing was changed. |
+| `3` | Nothing was changed, because: Accept current or Add (with a bare name) needs Docker's container list and Docker is not reachable or did not return it; Accept current found no containers and the list is not empty; Add was given the bare name of a container whose Compose labels are unreadable; or Confirm reviewed was run on a host with no list yet. |
 
 ## How to tell it worked
 
@@ -150,8 +169,16 @@ Never a customer first.
 - **It doesn't check that a name you add exists.** Adding a container that
   isn't deployed yet is allowed on purpose. The monitor reports it as missing
   until it runs.
-- It shares its container-identity code with Host Maintenance and the monitor,
-  in a block marked `tc-docker shared`. It must stay identical in all three.
+- **Show on its own exits 0 when Docker does not return its container list,**
+  as it does when the daemon is down. It says there is no comparison; the
+  monitor is what alerts on it.
+- **An unreadable container cannot be ignored or listed.** Its key is made
+  from its id, which changes when it is recreated. Fix the labels (or the
+  image they come from) instead.
+- It shares its container-identity code with Host Maintenance (twice: the
+  component and the prune script it installs) and the monitor, in a block
+  marked `tc-docker shared`. All four copies must stay byte-identical; CI's
+  "Shared blocks match" check fails the pull request when they are not.
 
 ## Open questions
 

@@ -6,8 +6,11 @@ expected container is stopped or gone, and reports containers that run but
 aren't on the list.
 
 > **Status: Not Validated.** Written 2026-11-09; version 2 adds review state
-> on 2026-11-10. Every outcome below was exercised against a live Docker 29
-> daemon in a sandbox. It has not yet run through a Datto agent. Run its
+> on 2026-11-10; version 3 (2026-11-13) reports containers with unreadable
+> Compose labels and alerts when Docker does not return its container list.
+> Every outcome below was exercised against a live Docker 29 daemon in a
+> sandbox, and version 3 has a Tier 1 `test.json`. It has not yet run through
+> a Datto agent. Run its
 > script once as a **Scripts** component first; see
 > [Test order](#test-order).
 
@@ -33,8 +36,13 @@ matches.
 | An expected container exists but **none of its containers is running** | **Stopped.** Alerts, set by `usrMissingAction` |
 | **No container** has an expected key | **Missing.** Alerts, set by `usrMissingAction` |
 | A running container is **not on the list**, has run at least `usrUnlistedAfterHours`, and doesn't match the ignore file | **Unlisted.** Named in the status; alerts only if `usrUnlistedAction` is Alert |
-| A list line is neither key form | Counted as unreadable in the status |
+| A container, running or stopped, has **Compose labels that are not plain names** | **Unreadable.** Counted in the status (`1 with unreadable Compose labels`) whatever `usrUnlistedAction` says; alerts only if `usrUnlistedAction` is Alert, and then named by container name and short id in the diagnostic. Not age-gated and not matched against the ignore file. |
+| A list line is neither key form | Counted as unreadable list lines in the status |
 | The list has **not been reviewed** (no `/etc/tc-docker/reviewed`) | Named in the status; alerts only if `usrUnreviewedAction` is Alert. **Until review, stopped or missing containers are reported but never alert**, so onboarding a host raises one item, not one per container. |
+
+A container's labels are untrusted: it inherits them from its image. They are
+read JSON-encoded, so a tab or newline in a label cannot add a field or a
+container to what the monitor sees, and a label's value is never printed.
 
 These are **never** counted as unlisted:
 
@@ -86,12 +94,15 @@ No customer-specific value is hardcoded. An invalid value makes it report
 | Docker not installed | **Exit 0**: "Docker is not installed on this host; nothing to check" |
 | Docker installed, no list yet | **Exit 0**: says Host Maintenance creates it |
 | Daemon unreachable | **Exit 1**: "Check could not run: cannot talk to the Docker daemon", quoting Docker's error in the diagnostic |
+| Daemon answers `docker info`, but `docker ps` or `docker inspect` fails 3 times | **Exit 1**: "Check could not run: Docker did not return its container list". Never read as "no containers". |
 | Every expected container running, nothing unlisted | **Exit 0**: e.g. `3 expected: 3 running` |
 | List not reviewed, `usrUnreviewedAction` Warn | **Exit 0**, with `list NOT REVIEWED` in the status, even when stopped containers are listed |
 | List not reviewed, `usrUnreviewedAction` Alert | **Exit 1** |
 | Reviewed list, expected container stopped or missing, `usrMissingAction` Alert | **Exit 1**, naming them, with a diagnostic saying what to do |
 | Unlisted container, `usrUnlistedAction` Warn | **Exit 0**, naming it in the status |
 | Unlisted container, `usrUnlistedAction` Alert | **Exit 1** |
+| Container with unreadable Compose labels, `usrUnlistedAction` Warn or Ignore | **Exit 0**, counted in the status |
+| Container with unreadable Compose labels, `usrUnlistedAction` Alert | **Exit 1**, `UNREADABLE  <name> (<short id>)` in the diagnostic |
 | An input variable is invalid | **Exit 1**, `Check could not run: …` |
 | A required tool is missing | **Exit 1**, `Check could not run: …` |
 | The script dies unexpectedly | **Exit 1**, through an `EXIT` trap that emits a result block, so an alert is never empty |
@@ -122,6 +133,7 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
 
 ## Test order
 
+0. CI's "Component tests" check on the pull request (`test.json`, Tier 1).
 1. One internal Docker host, saved as a **Scripts** component. Run it and read
    the raw output.
 2. One site, one device, with the job scoped to that device.
@@ -139,8 +151,15 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
 - `date -d` for container age is a GNU spelling. Where it fails, the container
   counts as just started, so it can't be reported as unlisted. That fails
   quiet on purpose.
+- **An unreadable container cannot be listed or ignored.** Its key is made
+  from its id. Fix the labels, or the image they come from.
+- Under `usrUnlistedAction` Ignore, an unreadable container is still counted
+  in the status, but never alerts.
 - It shares its container-identity code with the two script components, in a
-  block marked `tc-docker shared`. It must stay identical in all three.
+  block marked `tc-docker shared`. All four copies (Host Maintenance carries
+  two: the component and the prune script it installs) must stay
+  byte-identical; CI's "Shared blocks match" check fails the pull request
+  when they are not.
 
 ## Open questions
 

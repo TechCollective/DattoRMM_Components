@@ -27,12 +27,23 @@ Until then, the prune only clears build cache and unused networks.
 >   really started before it merges, and reports a host that version 4
 >   already broke (`DAEMON WILL NOT START`).
 >
+> - **Version 6** reads container labels so that a hostile one cannot forge a
+>   container. A label is untrusted (a container inherits it from its image),
+>   and in version 5 a Compose label carrying a tab and a newline could add a
+>   fake row to the prune's container list and get a protected stopped
+>   container removed. Version 6 also stops when Docker does not return its
+>   container list: version 5 read that as "no containers".
+>
 > Version 5 was exercised against a live Docker 29 daemon in a sandbox,
 > restarted under each set of flags, and the Tier 1 test restarts Docker
 > under each set on a GitHub runner. It has not yet run through a Datto
 > agent. **Run version 5 in Report mode across the Docker hosts version 4 has
 > already reached**, and look for `DAEMON WILL NOT START` before those hosts
 > next reboot.
+>
+> Version 6 was exercised against a live Docker 29 daemon in a sandbox, its
+> label handling against Docker 17.12, 18.09 and 20.10 engines, and the Tier 1
+> test covers both defects. It has not yet run through a Datto agent.
 
 ## What it does
 
@@ -137,6 +148,15 @@ Each entry is a key that identifies a container, not just its current name:
 Compose one-offs (`docker compose run`) and `--rm` containers are never put
 on the list.
 
+A container whose Compose labels are set but are not plain names (letters,
+digits, `_`, `.`, `-`) has no key and is left off the list. The output names
+it by container name and short id, never by the label. Labels are read
+JSON-encoded, so a tab or newline in one cannot add a field or a container.
+
+If `docker info` answers but `docker ps` or `docker inspect` fails three
+times, the list is **not** created (exit `3`), and the next run tries again.
+An empty list written then would later read as "this host runs nothing".
+
 A host that ran version 2 with `usrRequiredContainers` set has those names
 carried onto the new list.
 
@@ -160,14 +180,21 @@ The script removes, when older than `usrPruneOlderThanHours`:
 
 1. **Stopped containers, except protected ones.** A stopped container is kept
    if it is on the expected-containers list, has restart policy `always` or
-   `unless-stopped`, or is labelled `tc.keep`. The output names every kept
-   container and why it was kept.
+   `unless-stopped`, is labelled `tc.keep`, or has Compose labels that are
+   not plain names. The output names every kept container and why it was
+   kept, and names every container with unreadable Compose labels, running
+   or stopped, whether or not the list is reviewed.
 2. **Images no container uses**, except images labelled `tc.keep`. A kept
    stopped container still counts as using its image, so **a protected
    container's image is kept too**.
 3. **Unused networks and build cache.**
 
 **Volumes are never removed.**
+
+**If Docker does not return its container list** (`docker ps` or
+`docker inspect` fails three times), the prune prints `ERROR:`, removes
+nothing at all that run (no container, image, network or build cache), and
+exits 1.
 
 The prune always runs. A stopped container is protected rather than blocking
 the prune, so one container stopped on purpose can't stop the disk from being
@@ -218,7 +245,10 @@ prune that removes what the limits don't cover.
 | [`Docker - Containers Differ From Expected [Lin]`](../../Monitors/docker-containers-differ-from-expected-lin/) | Monitor. Alerts when an expected container is stopped or gone, and reports unlisted ones |
 
 All three share one block of code that turns a container into its key. It is
-marked `tc-docker shared` in each script and must stay identical in all three.
+marked `tc-docker shared`, and there are four copies: this component, the
+prune script it installs, and the other two. All four must stay
+byte-identical; CI's "Shared blocks match" check fails the pull request when
+they are not.
 
 ## Installing it in Datto
 
@@ -294,16 +324,18 @@ What causes exit `3`:
 - `DAEMON WILL NOT START`: `daemon.json` already holds `max-size` or
   `max-file` that this daemon's flags refuse; nothing was written
 
+- the host is not running systemd
+- Docker is the snap package
+- the daemon was unreachable, or answered but did not return its container
+  list, so the list could not be created; the next run retries
+
 Log rotation skipped because the driver does not take these options
 (`journald`, say) or because the daemon has a `--log-opt` flag is a normal
 outcome, not exit `3`.
-- the host is not running systemd
-- Docker is the snap package
-- the daemon was unreachable, so the list could not be created; the next run
-  retries
 
 The prune script on the host exits `0` when it pruned, and `1` on an error,
-such as the daemon being unreachable or a prune step failing.
+such as the daemon being unreachable, its container list not coming back
+(nothing is removed then), or a prune step failing.
 
 ## How to tell it worked
 
@@ -371,6 +403,12 @@ Never a customer first.
 - **Upgrading a version 3 host** leaves its list in place, but marks it
   unreviewed, because no `reviewed` file exists yet. Its container and image
   removal stops until someone runs Confirm reviewed.
+- **A container with unreadable Compose labels is kept for good,** with its
+  image, and named on every prune. Fix its labels (or the image they come
+  from), or remove it by hand.
+- **Docker older than 1.13** has no `AutoRemove` field, so its container list
+  cannot be read: the list is not created (exit `3`) and the prune removes
+  nothing and exits 1. Checked against a Docker 1.10 engine.
 - **systemd only** for the timer. On a host without systemd, the timer part
   exits `3`, and the other parts still run.
 - **Needs `python3`** to merge JSON safely. Without it, the `daemon.json` part

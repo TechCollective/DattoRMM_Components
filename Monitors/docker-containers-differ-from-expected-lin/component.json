@@ -5,7 +5,7 @@
     "description": "Alerts when an expected Docker container is stopped or gone; reports unlisted ones. Read-only. Healthy when there is no Docker or no list yet. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "",
     "hash": "",
-    "version": "2",
+    "version": "3",
     "timeout": "120",
     "securityLevel": "4",
     "installType": "unix"
@@ -27,7 +27,7 @@
       "name": "usrUnlistedAction",
       "type": "map",
       "direction": "false",
-      "description": "What a running container not on the list does: Warn (named in the status only), Alert, or Ignore.",
+      "description": "What a running container not on the list, or any container with unreadable Compose labels, does: Warn (named in the status only), Alert, or Ignore.",
       "defaultVal": "Warn",
       "options": [
         { "name": "Warn", "value": "warn" },
