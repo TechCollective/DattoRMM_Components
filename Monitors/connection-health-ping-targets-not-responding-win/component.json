@@ -2,10 +2,10 @@
   "general": {
     "name": "Connection Health - Ping Targets Not Responding [Win]",
     "category": "monitors",
-    "description": "Alerts when hosts stop answering ping, such as the far side of a site-to-site tunnel. Read-only. Bad input or a failed check also alerts. https://github.com/TechCollective/DattoRMM_Components",
+    "description": "Alerts when ping targets stop replying or WireGuard peers stop handshaking, e.g. across a site-to-site tunnel. Read-only. Bad input or a failed check also alerts. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "3788cc29-f83d-4ead-a9e2-e9fe941ad184",
     "hash": "",
-    "version": "1",
+    "version": "2",
     "timeout": "180",
     "securityLevel": "4",
     "installType": "powershell"
@@ -16,14 +16,14 @@
       "name": "usrTargets",
       "type": "string",
       "direction": "false",
-      "description": "Required. 1-8 IPs or hostnames to ping, space or comma separated. Use hosts that are always on (e.g. the far gateway LAN IP).",
+      "description": "1-8 IPs or hostnames to ping, space or comma separated. Use hosts that are always on (e.g. the far gateway LAN IP). Empty: WireGuard checks only.",
       "defaultVal": ""
     },
     {
       "name": "usrRequire",
       "type": "map",
       "direction": "false",
-      "description": "Any: alert only when no target replies. All: alert when any target does not reply.",
+      "description": "Any: alert only when no target replies / no peer is current. All: alert when any target or peer fails.",
       "defaultVal": "Any",
       "options": [
         {
@@ -49,6 +49,20 @@
       "direction": "false",
       "description": "1-5. Seconds to wait for each reply.",
       "defaultVal": "2"
+    },
+    {
+      "name": "usrWgTunnel",
+      "type": "string",
+      "direction": "false",
+      "description": "Optional. WireGuard for Windows tunnel name to check: service running, and peers handshaked recently. Empty: ping checks only.",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrHandshakeMaxAgeSec",
+      "type": "string",
+      "direction": "false",
+      "description": "150-3600. A peer whose last handshake is older than this counts as stale.",
+      "defaultVal": "300"
     }
   ]
 }
