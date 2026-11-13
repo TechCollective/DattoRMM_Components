@@ -38,6 +38,14 @@ It sits beside `component.json`, which a tested component must have. The
 harness reads the body, the timeout and the input variables' defaults from
 `component.json`, so `test.json` only says what to run and what to check.
 
+Defaults reach the component the way Datto delivers them. A drop-down (`map`)
+variable's `defaultVal` holds the display **name** of one of its options, and
+the script receives that option's **value**. Given `"defaultVal": "If unhealthy"`
+and the option `{"name": "If unhealthy", "value": "ifunhealthy"}`, the
+component sees `ifunhealthy`. The match is exact, including case. A default
+that names none of the options stops the harness with an error before any
+step runs: it is a broken manifest, and Datto would not show it either.
+
 ```json
 {
   "platform": "windows",
@@ -68,7 +76,7 @@ description of what "working" means, and so Tier 2 has a list to pick up.
 |---|---|---|
 | `platforms` | Yes | Which runners to test on: any of `windows`, `macos`, `linux`, e.g. `["macos", "linux"]`. Each gets its own job and its own pass/fail. (`"platform": "windows"` is the same as a one-item list.) |
 | `description` | No | What the test proves, for the reviewer. |
-| `variables` | No | Input variable values for every run, over the defaults in `component.json`. Values are strings, as Datto passes them. |
+| `variables` | No | Input variable values for every run, over the defaults in `component.json`. Values are strings, as Datto passes them, and are passed exactly as written: for a drop-down, write the option's **value** (`ifunhealthy`), not its name. |
 | `runsOn` | No | Override the runner: `{"macos": "macos-15"}`, or one label for every platform. Defaults `windows-latest`, `macos-latest`, `ubuntu-latest`. |
 | `steps` | Yes | The list below. |
 
