@@ -81,7 +81,7 @@
     {
       "type": "command",
       "label": "Failing Docker: a docker shim that fails docker ps",
-      "run": "real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker || exit 1; printf '%s\\n' '#!/bin/sh' '# tc-test shim: Docker answers everything except docker ps' '[ \"$1\" = ps ] && { echo \"Error response from daemon: tc-test simulated failure\" >&2; exit 1; }' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; docker ps; echo \"docker ps exit $?\"; docker info --format 'docker info still answers: {{.ServerVersion}}'",
+      "run": "real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker || exit 1; printf '%s\\n' '#!/bin/sh' '# tc-test shim: Docker answers everything except docker ps' '[ \"$1\" = ps ] && { echo \"Error response from daemon: tc-test simulated failure\" >&2; exit 1; }' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; docker ps; echo \"docker ps exit $?\"; docker info --format 'docker info still answers: {{.ServerVersion}}'",
       "outputContains": [
         "docker ps exit 1",
         "docker info still answers"
