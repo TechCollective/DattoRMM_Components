@@ -11,7 +11,10 @@
 #
 # usrAction:
 #   show            print both lists, the review state, and how they compare with
-#                   the containers on this host (default)
+#                   the containers on this host (default). A stopped container
+#                   the prune would remove is shown as waiting (recorded in
+#                   /var/lib/tc-docker/pending-removal, with the time from which
+#                   the prune can remove it) or not yet recorded
 #   accept-current  replace the expected list with every container present now,
 #                   running or stopped (not ignored, not one-offs or --rm)
 #   confirm-reviewed  record that a person has checked the list. Until this has
@@ -203,6 +206,24 @@ write_list() {
 EXPECTED_HEADER="# Containers expected on this host, one per line.
 #   compose:<project>/<service>  a Docker Compose service
 #   name:<container name>        any other container"
+# What the prune has recorded for removal: "id<TAB>epoch first recorded" for
+# each well-formed line of its pending file (written by tc-docker-prune, version
+# 9 and later). A missing file means nothing is waiting.
+PENDING_FILE="/var/lib/tc-docker/pending-removal"
+pending_records() {
+    { [ -f "$PENDING_FILE" ] && [ ! -L "$PENDING_FILE" ] && [ -r "$PENDING_FILE" ]; } || return 0
+    awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
+        /^#/ { next }
+        NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 { print $1, $2, $4 + 0 }' "$PENDING_FILE"
+}
+# A setting from the prune's settings file, as the component wrote it
+# (NAME=whole number), or $2 when it is missing or not a whole number.
+prune_setting() {
+    local v
+    v="$(sed -n "s/^$1=\([0-9]\{1,5\}\)\$/\1/p" /etc/default/tc-docker-prune 2>/dev/null | tail -n 1)"
+    if [ -n "$v" ]; then printf '%s' "$((10#$v))"; else printf '%s' "$2"; fi
+}
+
 IGNORE_HEADER="# Extended regular expressions, one per line, matched against a
 # container's key (see expected-containers). A match is never
 # reported as unexpected. Example for GitLab CI job containers:
@@ -233,13 +254,26 @@ show() {
         tc_list "$EXPECTED_FILE" | grep -qxF -- "$k" && continue
         if tc_ignored "$k"; then say "  ignored  $k"; else say "  UNLISTED $k"; fi
     done
-    # Stopped containers the list does not protect: the prune removes these once
-    # the list is reviewed (unless a restart policy or tc.keep protects them).
-    printf '%s\n' "$rows" | awk -F'\t' '$4 != "true" && $9 == "n" && $8 == "n" && $5 != "always" && $5 != "unless-stopped" && $2 !~ /^unreadable:/ {print $2}' \
-        | sort -u | while IFS= read -r k; do
+    # Stopped containers the list does not protect (and no restart policy or
+    # tc.keep does): once the list is reviewed the prune records each one that
+    # has been stopped OLDER_THAN_HOURS, and removes it GRACE_HOURS later.
+    local older grace pending id at
+    older="$(prune_setting OLDER_THAN_HOURS 168)"; grace="$(prune_setting GRACE_HOURS 144)"
+    pending="$(pending_records)"
+    printf '%s\n' "$rows" | awk -F'\t' -v OFS='\t' '$4 != "true" && $9 == "n" && $8 == "n" && $5 != "always" && $5 != "unless-stopped" && $2 !~ /^unreadable:/ {print $2, $1}' \
+        | sort -u | while IFS=$'\t' read -r k id; do
         tc_list "$EXPECTED_FILE" | grep -qxF -- "$k" && continue
         printf '%s\n' "$rows" | awk -F'\t' -v k="$k" '$2 == k && $4 == "true" {f=1} END {exit !f}' && continue
-        say "  STOPPED, UNLISTED  $k  - the prune removes it once the list is reviewed; Add it to keep it"
+        if ! tc_reviewed; then
+            say "  STOPPED, UNLISTED  $k  - nothing is removed until the list is reviewed; after that the prune records it, then removes it ${grace}h later; Add it to keep it"
+            continue
+        fi
+        at="$(printf '%s\n' "$pending" | awk -F'\t' -v id="$id" -v k="$k" '$1 == id && $2 == k {print $3; exit}')"
+        if [ -n "$at" ]; then
+            say "  STOPPED, UNLISTED  $k  - WAITING: recorded for removal $(date -d "@$at" '+%Y-%m-%d %H:%M %Z'); the prune can remove it from $(date -d "@$(( at + grace * 3600 ))" '+%Y-%m-%d %H:%M %Z'); Add it to keep it"
+        else
+            say "  STOPPED, UNLISTED  $k  - not yet recorded for removal: the prune records it once it has been stopped ${older}h, then removes it ${grace}h later; Add it to keep it"
+        fi
     done
     # Compose labels that are not plain names: no key, so never listed, and
     # never pruned. Named, not quoted - the label itself is untrusted.

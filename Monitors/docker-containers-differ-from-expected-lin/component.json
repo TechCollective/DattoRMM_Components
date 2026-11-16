@@ -2,10 +2,10 @@
   "general": {
     "name": "Docker - Containers Differ From Expected [Lin]",
     "category": "monitors",
-    "description": "Alerts when an expected Docker container is stopped or gone, or the host's weekly prune is out of date; reports unlisted containers. Read-only. Healthy when there is no Docker or no list yet, unless its prune is out of date. https://github.com/TechCollective/DattoRMM_Components",
+    "description": "Alerts when an expected Docker container is stopped or gone, a stopped container is waiting to be removed by the prune, or the host's prune is out of date; reports unlisted containers. Read-only. Healthy when there is no Docker or no list yet, unless its prune is out of date. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "",
     "hash": "",
-    "version": "4",
+    "version": "5",
     "timeout": "120",
     "securityLevel": "4",
     "installType": "unix"
@@ -47,6 +47,18 @@
       "type": "map",
       "direction": "false",
       "description": "What a host whose installed prune is out of date does (no version stamp, older than this monitor wants, or the version 1 service that runs docker directly): Alert, Warn (named in the status only), or Ignore. The fix is to run Docker - Configure Host Maintenance [Lin] on the host.",
+      "defaultVal": "Alert",
+      "options": [
+        { "name": "Alert", "value": "alert" },
+        { "name": "Warn", "value": "warn" },
+        { "name": "Ignore", "value": "ignore" }
+      ]
+    },
+    {
+      "name": "usrPendingRemovalAction",
+      "type": "map",
+      "direction": "false",
+      "description": "What a stopped container the prune has recorded for removal does: Alert (default), Warn (named in the status only), or Ignore. One whose key matches an ignore pattern is counted but never alerts. Add it to the list to keep it.",
       "defaultVal": "Alert",
       "options": [
         { "name": "Alert", "value": "alert" },

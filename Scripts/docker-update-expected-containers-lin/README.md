@@ -10,6 +10,13 @@ state**. It is the one supported way to change any of them.
 > does not return its container list. Every action, and refusal of bad input,
 > passed the repo's Linux Tier 1 harness against a live Docker 29 daemon in a
 > sandbox. Version 1 ran through a Datto agent; version 3 has not.
+>
+> - **Version 4** (2026-11-16) changes only Show's `STOPPED, UNLISTED` line, to
+>   match the prune in Host Maintenance version 9, which records a stopped
+>   container first and removes it only after a wait: Show now says whether the
+>   container is **waiting** (and from when the prune can remove it) or **not
+>   yet recorded**. Run against a live Docker 29 daemon in a sandbox through
+>   the Tier 1 harness; not yet through a Datto agent.
 
 ## What it does
 
@@ -71,8 +78,21 @@ as "no containers".
 | `MISSING` | An expected entry with no container at all |
 | `UNLISTED` | A running container not on the list |
 | `ignored` | A running container matching an ignore pattern |
-| `STOPPED, UNLISTED` | A stopped container the list doesn't protect. The prune will remove it once the list is reviewed. |
+| `STOPPED, UNLISTED` | A stopped container the list doesn't protect (and no restart policy or `tc.keep` label does). After review the prune records it once it has been stopped `OLDER_THAN_HOURS`, and removes it `GRACE_HOURS` after that; Show says which stage it is at, below. Add it to keep it. |
 | `UNREADABLE` | A container, running or stopped, whose Compose labels are not plain names. Shown as its container name and short id. It cannot be listed, and the prune never removes it. Find out where it came from. |
+
+The `STOPPED, UNLISTED` line reads the prune's record,
+`/var/lib/tc-docker/pending-removal`, and its settings,
+`/etc/default/tc-docker-prune`:
+
+| Line ends with | Meaning |
+|---|---|
+| `nothing is removed until the list is reviewed; ...` | The list is not reviewed, so the prune removes nothing yet. |
+| `WAITING: recorded for removal <time>; the prune can remove it from <time>` | The prune has recorded it. The first run on or after the second time removes it, if it is still stopped and unprotected then. |
+| `not yet recorded for removal: the prune records it once it has been stopped <n>h, then removes it <m>h later` | Reviewed, but the prune has not recorded it yet: it has not been stopped long enough, or no prune has run since. |
+
+A line of the record that is not well formed is not trusted: that container
+shows as not yet recorded. A missing record means nothing is waiting.
 
 If Docker does not return its container list, Show prints the lists and the
 review state, says there is no comparison, and does not change the exit code
@@ -147,6 +167,7 @@ exit `2` and change nothing.
       running  compose:shop/web
       STOPPED  name:legacy
       UNLISTED name:surprise
+      STOPPED, UNLISTED  name:old-report  - WAITING: recorded for removal 2026-11-20 04:09 CST; the prune can remove it from 2026-11-26 04:09 CST; Add it to keep it
     Done.
 
 ## Test order
@@ -172,6 +193,11 @@ Never a customer first.
 - **Show on its own exits 0 when Docker does not return its container list,**
   as it does when the daemon is down. It says there is no comparison; the
   monitor is what alerts on it.
+- **Show reports the prune's record as it was at the last prune.** A
+  container started and stopped again since still shows as waiting; the next
+  prune drops its record and starts its wait again. The times are in the
+  host's time zone, and `GRACE_HOURS` is read from the settings file, so a
+  value the prune refuses still shows a date.
 - **An unreadable container cannot be ignored or listed.** Its key is made
   from its id, which changes when it is recreated. Fix the labels (or the
   image they come from) instead.

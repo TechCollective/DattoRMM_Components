@@ -10,10 +10,21 @@ disk filling up over time:
   expected containers, and their images, alone.
 
 **Nothing of a host's is deleted until a person has reviewed its list.**
-Until then, the prune only clears build cache and unused networks.
+Until then, the prune only clears build cache and unused networks. After
+review, **a stopped container is never removed without warning**: the prune
+first records it as waiting, and removes it only on a run at least
+`usrPruneGraceHours` later. The monitor shows what is waiting.
 
 > **Status: Not Validated.** Written 2026-11-09. Version 3 ran through a Datto
 > agent on one internal Docker host.
+>
+> **Version 9 switches every host to removing untagged ("dangling") images
+> only.** Versions up to 8 removed every image no container used. A host that
+> needs the old behaviour, such as a CI or GitLab runner host whose disk fills
+> with pulled images, **must be run with `usrPruneImages` = `All`**, or its
+> images will pile up again. `All` still keeps images that were built or
+> loaded on the host and so cannot be pulled again. See *Images* below,
+> including what `All` does on a host that uses the containerd image store.
 >
 > - **Version 3** added per-container protection and the expected-containers
 >   list.
@@ -75,6 +86,20 @@ Until then, the prune only clears build cache and unused networks.
 >   a symlinked file, a full disk and an immutable file), and the Tier 1 test
 >   covers them on the CI runner. It has not yet run through a Datto agent,
 >   and the SELinux relabel has not run anywhere (see Known limits).
+> - **Version 9** narrows what the prune removes after review. A stopped
+>   container's age is counted from when it **stopped** (`State.FinishedAt`),
+>   not from when it was created, so one that crashed five minutes before the
+>   prune is no longer removed with its logs. Removal takes **two runs**: the
+>   first records the container in `/var/lib/tc-docker/pending-removal`, a run
+>   at least `usrPruneGraceHours` (default 144) later removes it if it is
+>   still stopped and unprotected. Images are removed by reference and never
+>   forced; the default, `Dangling`, removes untagged images only; `All` also
+>   removes tagged images that can be pulled again, and prints the
+>   `repo@sha256` of each. `TC_PRUNE_VERSION=9`; the monitor's
+>   `PRUNE_MIN_VERSION` is 9, so every host still on an older prune alerts
+>   until this component runs on it. Version 9 was run against a live Docker
+>   29 daemon in a sandbox, on both image stores; the Tier 1 test covers it on
+>   the CI runner. It has not yet run through a Datto agent.
 
 ## What it does
 
@@ -238,7 +263,8 @@ carried onto the new list.
 | File | What it is |
 |---|---|
 | `/usr/local/sbin/tc-docker-prune` | The prune script |
-| `/etc/default/tc-docker-prune` | Its setting: the age limit |
+| `/etc/default/tc-docker-prune` | Its settings: `OLDER_THAN_HOURS`, `GRACE_HOURS`, `PRUNE_IMAGES` |
+| `/var/lib/tc-docker/pending-removal` | Written by the prune: the stopped containers it has recorded and will remove. Directory `0700`, file `0600`, both root |
 | `/etc/systemd/system/tc-docker-prune.service` | Runs the script |
 | `/etc/systemd/system/tc-docker-prune.timer` | Runs the service on `usrPruneSchedule` |
 
@@ -271,24 +297,90 @@ What earlier versions left on a host, which the monitor flags:
 | 3 | Per-container protection | No review gate |
 | 4, 5 | Review gate | A container label can still make it delete a protected container |
 | 6 | The current rules, without a stamp | The monitor cannot tell it from an older one |
-| 7 | Current | |
+| 7, 8 | Removes a stopped container at the first prune after it is old enough, counting from when it was **created**; removes every image no container uses | A container that crashed minutes ago is removed without warning, with its logs; an image built or loaded on the host, which exists nowhere else, is removed |
+| 9 | Current | |
 
-The script removes, when older than `usrPruneOlderThanHours`:
+**Before the list is reviewed:** the prune removes only unused networks and
+build cache older than `usrPruneOlderThanHours`. No container and no image.
+It records nothing, and clears any `pending-removal` file left from an earlier
+review, so a later review starts every wait again.
 
-**Before the list is reviewed:** only unused networks and build cache.
+**After review**, for each **stopped container**, in this order:
 
-**After review:**
+1. **Protected: kept**, with its image, and named with the reason: it is on
+   the expected-containers list, has restart policy `always` or
+   `unless-stopped`, is labelled `tc.keep`, or has Compose labels that are not
+   plain names (named whatever its state, on every run).
+2. **Its age**: from when it stopped (`State.FinishedAt`); a container that
+   never started counts from when it was created. Read for these candidates
+   only. An age that cannot be read means **kept**, and not recorded.
+3. **Not stopped for `usrPruneOlderThanHours` yet: kept**, not recorded.
+4. **Not in `pending-removal`** (or in it under another key or name):
+   **recorded** with the time now, and **kept**. The output lists it under
+   `Stopped containers recorded for removal this run`, with the time from
+   which it can be removed.
+5. **In `pending-removal` for less than `usrPruneGraceHours`: kept**, listed
+   under `Stopped containers waiting to be removed`, with when it was
+   recorded and when it can go.
+6. **In it for `usrPruneGraceHours` or more: removed** (`docker rm`, no
+   force), and its line dropped. Listed under `Stopped containers removed`.
 
-1. **Stopped containers, except protected ones.** A stopped container is kept
-   if it is on the expected-containers list, has restart policy `always` or
-   `unless-stopped`, is labelled `tc.keep`, or has Compose labels that are
-   not plain names. The output names every kept container and why it was
-   kept, and names every container with unreadable Compose labels, running
-   or stopped, whether or not the list is reviewed.
-2. **Images no container uses**, except images labelled `tc.keep`. A kept
-   stopped container still counts as using its image, so **a protected
-   container's image is kept too**.
-3. **Unused networks and build cache.**
+Every line of `pending-removal` whose container is gone, running again, now
+protected, or no longer old enough (it ran and stopped again) is dropped, so
+its wait starts again if it comes back. The file is written before anything is
+removed, as a new file renamed over the old one. **If it cannot be written**
+(a read-only or full filesystem, `/var/lib/tc-docker` not a directory), the
+prune removes **no container** that run, says why, and exits 1; images,
+networks and build cache are still handled. There is no fallback location.
+
+With the weekly timer and the defaults (168 hours, then 144), a container is
+recorded at the first Sunday prune after it has been stopped a week, and
+removed at the next one. The monitor
+[`Docker - Containers Differ From Expected [Lin]`](../../Monitors/docker-containers-differ-from-expected-lin/)
+alerts on each waiting container, with the date it goes, and says how to keep
+it (Add it to the list).
+
+`GRACE_HOURS` and `PRUNE_IMAGES` are checked again by the prune itself. A
+`GRACE_HOURS` that is not 24–8760 means no container is recorded or removed;
+a `PRUNE_IMAGES` that is not `dangling` or `all` means no image is removed;
+either way the run exits 1. A settings file with no `PRUNE_IMAGES` (one written
+by version 8) is `dangling`.
+
+#### Images
+
+After review, for each image, in this order:
+
+1. **Its tags or digests are not plain references: kept**, and named by short
+   id. (They are read JSON-encoded, the same careful way as container labels,
+   so nothing in an image can add an image or a field to the list.)
+2. **Labelled `tc.keep`: kept.**
+3. **Used by any container**, running or stopped: kept. (So a protected
+   container's image is kept too.)
+4. **Built less than `usrPruneOlderThanHours` ago**, or its creation time
+   cannot be read: kept. ("Older than" is the image's build time, not when it
+   was pulled or last used.)
+5. **Untagged: removed**, in both modes, by its id (or by the `repo@sha256`
+   names it still has). If it has a registry digest, that is printed.
+6. **Tagged, and `usrPruneImages` is `Dangling`: kept.** The output counts
+   them.
+7. **Tagged, `All`, and no registry digest** (`RepoDigests` empty: it was
+   built or `docker load`-ed here, so it exists nowhere else): **kept**, and
+   named with that reason.
+8. **Tagged, `All`, and the host uses the containerd image store: kept**,
+   named with the reason. On that store Docker gives every image a
+   `repo@sha256` digest, pulled or not, so a digest does not show the image
+   can be pulled again. See Known limits.
+9. **Tagged, `All`, with a registry digest: removed**, one `docker image rm`
+   per tag, never `--force`, so Docker's own check refuses an image something
+   uses. The output prints each one as
+   `<repo>:<tag> - pull again: <repo>@sha256:<digest>`, which is in the
+   journal, so the image can be pulled back exactly as it was.
+
+**If Docker does not return its image list, or the list of which images
+containers use**, no image is removed and the run exits 1.
+
+**Unused networks and build cache** older than `usrPruneOlderThanHours` are
+removed whether or not the list is reviewed.
 
 **Volumes are never removed.**
 
@@ -300,12 +392,6 @@ exits 1.
 The prune always runs. A stopped container is protected rather than blocking
 the prune, so one container stopped on purpose can't stop the disk from being
 cleaned.
-
-For images, "older than N hours" means the image was **built** that long
-ago, not pulled or last used. Most pulled images are older than a week, so in
-practice **almost every image no container uses is removed**. That includes
-images on a CI host or an AI workstation, which are then downloaded again on
-next use.
 
 ### 4. Optionally prunes once, now
 
@@ -336,14 +422,16 @@ Two TechCollective Docker hosts filled their disks in 2026:
 - **An internal Docker host.** Its root filesystem reached 99%.
 
 This component combines both fixes: limits that stop growth, and a scheduled
-prune that removes what the limits don't cover.
+prune that removes what the limits don't cover. From version 9 a host like the
+GitLab server needs `usrPruneImages` = `All`: the default, `Dangling`, would
+leave its unused tagged images in place.
 
 ## Related components
 
 | Component | Role |
 |---|---|
 | [`Docker - Update Expected Containers [Lin]`](../docker-update-expected-containers-lin/) | The only thing that changes the expected list or the ignore patterns |
-| [`Docker - Containers Differ From Expected [Lin]`](../../Monitors/docker-containers-differ-from-expected-lin/) | Monitor. Alerts when an expected container is stopped or gone, and reports unlisted ones |
+| [`Docker - Containers Differ From Expected [Lin]`](../../Monitors/docker-containers-differ-from-expected-lin/) | Monitor. Alerts when an expected container is stopped or gone, or a stopped container is waiting to be removed by the prune; reports unlisted ones |
 
 All three share one block of code that turns a container into its key. It is
 marked `tc-docker shared`, and there are four copies: this component, the
@@ -363,7 +451,7 @@ re-import creates a second component; see the repo's `tools/README.md`.
 | Field | Value |
 |---|---|
 | Name | `Docker - Configure Host Maintenance [Lin]` |
-| Description | Sets Docker log and build-cache limits, seeds the expected-containers list, and a weekly prune that deletes nothing until the list is reviewed. |
+| Description | Sets Docker log and build-cache limits, seeds the expected-containers list, and a weekly prune that deletes nothing until the list is reviewed, then waits before removing a stopped container. |
 | Category | **Scripts** |
 | Script type | Shell (Unix) |
 | Target OS | Linux |
@@ -382,7 +470,9 @@ re-import creates a second component; see the repo's `tools/README.md`.
 | `usrBuildCacheMax` | String | `100GB` | A number plus `MB`, `GB` or `TB`. Blank leaves build-cache settings alone. Lower it on hosts with small disks. |
 | `usrBuildCacheReserved` | String | `20GB` | Same format. Docker 28 and later only. Should be smaller than the max. |
 | `usrPruneSchedule` | String | `Sun *-*-* 04:00:00` | A systemd `OnCalendar` expression in the host's local time, checked with `systemd-analyze calendar`. Blank leaves the timer alone. |
-| `usrPruneOlderThanHours` | String | `168` | 24–8760. Only unused items older than this are pruned. Saved to `/etc/default/tc-docker-prune`, so the most recent run sets it for the timer. |
+| `usrPruneOlderThanHours` | String | `168` | 24–8760. Only unused items older than this are pruned; a stopped container counts from when it stopped. Saved to `/etc/default/tc-docker-prune`, so the most recent run sets it for the timer. |
+| `usrPruneGraceHours` | String | `144` | 24–8760. How long a stopped container waits in `pending-removal` before the prune may remove it. 144 (6 days) means a weekly timer removes it at the run after the one that recorded it. Saved as `GRACE_HOURS`. |
+| `usrPruneImages` | **Selection** | `Dangling` | `Dangling` removes untagged images only. `All` also removes tagged images no container uses that have a registry digest; images built or loaded on the host are kept. **Use `All` on CI and GitLab runner hosts.** Saved as `PRUNE_IMAGES`. |
 | `usrPruneNow` | **Selection** | `No` | `Yes` also runs the prune once, now. |
 
 No customer-specific value is hardcoded. Different hosts get different values
@@ -436,9 +526,12 @@ Log rotation skipped because the driver does not take these options
 (`journald`, say) or because the daemon has a `--log-opt` flag is a normal
 outcome, not exit `3`.
 
-The prune script on the host exits `0` when it pruned, and `1` on an error,
-such as the daemon being unreachable, its container list not coming back
-(nothing is removed then), or a prune step failing.
+The prune script on the host exits `0` when it pruned, and `1` on an error:
+the daemon unreachable, its container list not coming back (nothing is
+removed then), `pending-removal` not writable (no container removed), its
+image list not coming back (no image removed), a `GRACE_HOURS` or
+`PRUNE_IMAGES` it refuses, a container or image Docker would not remove, or a
+network or build-cache step failing.
 
 ## How to tell it worked
 
@@ -464,19 +557,33 @@ A second run says `KEPT` for each key, `no change`,
 `Expected list: ... exists ... not changed`, and
 `already installed with these settings`.
 
-A prune reports what it kept:
+A prune after review reports what it recorded, what is waiting, what it
+removed and what it kept:
 
-    Stopped containers removed: 2
+    tc-docker-prune version 9
+    Pruning unused items older than 168h. Volumes are never removed.
+    Disk before: 30G free, 29% used
+    Stopped containers recorded for removal this run (removed 144h from now if still stopped and not protected):
+      old-report (name:old-report), can be removed from 2026-11-28 04:12 CST
+    Stopped containers waiting to be removed:
+      scratch (name:scratch), recorded 2026-11-15 04:09 CST, can be removed from 2026-11-21 04:09 CST
+    Stopped containers removed: 1
+      tmp-build (name:tmp-build)
     Stopped containers kept, with their images:
       shop-db-1 (on the expected list)
       legacy (restart policy unless-stopped)
-    Images: 3.1GB reclaimed
+    Images removed (PRUNE_IMAGES=all): 1
+      registry.example.com/team/app:1.4 - pull again: registry.example.com/team/app@sha256:61488c...
+    Images kept that no container uses:
+      local/tool:dev - no registry digest: built or loaded on this host, so it cannot be pulled again
     Networks: nothing to remove
     Build cache: 0B reclaimed
+    Disk after:  30G free, 29% used
 
 On the host itself:
 
     cat /etc/tc-docker/expected-containers
+    cat /var/lib/tc-docker/pending-removal   # what the prune will remove, and since when (seconds since 1970)
     systemctl list-timers tc-docker-prune.timer
     journalctl -u tc-docker-prune.service    # what each prune removed and kept; its first line is "tc-docker-prune version <n>"
     sudo /usr/local/sbin/tc-docker-prune     # run the prune by hand
@@ -504,6 +611,30 @@ Never a customer first.
 - **The version stamp is what this component wrote, not a checksum.** A prune
   edited by hand on the host, with the stamp left on, still reads as current.
   Edits there are overwritten at the next run, and the script says so.
+- **A stopped container takes longer to go:** at least
+  `usrPruneOlderThanHours` after it stopped plus `usrPruneGraceHours`, and in
+  practice until the next timer run after that (two weeks with the defaults).
+  On a host whose disk fills fast, lower both, or remove the container by
+  hand.
+- **The wait is measured on the host's clock.** Setting the clock forward
+  shortens it. A record is tied to the container's id, key and name: a
+  container that is renamed, recreated or restarted and stopped again starts
+  its wait again.
+- **`pending-removal` is trusted as the prune wrote it.** It is root-only;
+  a line that is not well formed is dropped, but a well-formed line edited by
+  hand to an older time shortens that container's wait.
+- **On the containerd image store, `All` removes no tagged image.** Docker
+  gives every image a `repo@sha256` digest there, pulled or built, so the
+  prune cannot tell an image it could pull again from one that exists only on
+  the host, and keeps them all, saying so. Docker 29 uses that store on a
+  fresh install (`docker info` shows `driver-type
+  io.containerd.snapshotter.v1`). Such a host needs its tagged images removed
+  by hand, or a later version that can tell them apart.
+- **A registry digest shows an image came from a registry, not that it is
+  still there.** A tag or image deleted from the registry since cannot be
+  pulled again; the printed `repo@sha256` is the reference to ask for.
+- **An untagged image is removed in both modes**, including one pulled by
+  digest only. Those can be pulled again by their digest, which is printed.
 - **An unreviewed host gets no image cleanup.** That is deliberate. Its disk
   relief waits for the review, so review a new host's list in its first
   week. The monitor reports every unreviewed host.
@@ -566,7 +697,8 @@ Never a customer first.
   journal and `systemctl --failed`. Disk space monitoring is the backstop.
 - **Removing it** is manual: `systemctl disable --now tc-docker-prune.timer`,
   then delete the two unit files, `/usr/local/sbin/tc-docker-prune`,
-  `/etc/default/tc-docker-prune` and `/etc/tc-docker/`, and run
+  `/etc/default/tc-docker-prune`, `/etc/tc-docker/` and `/var/lib/tc-docker/`,
+  and run
   `systemctl daemon-reload`.
 
 ## Open questions

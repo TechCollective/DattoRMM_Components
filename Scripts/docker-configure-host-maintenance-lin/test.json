@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, it removes an old stopped container that nothing protects, and keeps, with their images, stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are read from docker.service and its environment file, and flags it cannot resolve skip log rotation with exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, not even a network; Prune now exits 1; and the list is not created, exit 3. Writing daemon.json: the new file is made in the directory of the real target and renamed into place, so it keeps the mode, owner and group of the file it replaces (a 0600 file holding a fake proxy credential stays 0600 with its non-root group; a new file is 0644 root:root) and a symlinked daemon.json stays a symlink while its target changes and Docker restarts with it; a dangling symlink, or a link to a directory, is refused with exit 3 and nothing is created; after a successful Apply, a failed validation and Report mode, no .daemon.json.tc-* file is left in /etc/docker, and one left by a crashed earlier run is removed; Report mode on a host with no /etc/docker does not create it; seven changes in a row leave the newest five backups; and an immutable daemon.json makes the run exit 1 with the file byte-for-byte unchanged, no staging file and no backup.",
+  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, a stopped container that nothing protects is first recorded in /var/lib/tc-docker/pending-removal (0700 root directory, 0600 file) and left alone; a run inside the grace period leaves it and says until when; a run after it (the record moved back 145 hours) removes it and drops the record. Its age counts from when it stopped: one stopped 29 days ago and one never started, created 30 days ago, are recorded; one created 30 days ago that stopped just now is not (the times are set by stopping Docker and editing config.v2.json). A recorded container added to the list, or started again, loses its record. When the record cannot be written (a read-only bind mount), no container is removed and the exit is 1, through the timer's script and through Prune now; a GRACE_HOURS under 24 written by hand is refused by the prune; and when the review is withdrawn the prune removes nothing and clears the record. Stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep are kept with their images. Images, with a test registry on 127.0.0.1 standing in for a real one: Dangling (and a settings file with no PRUNE_IMAGES) removes the untagged image only; All also removes the tagged image pushed to the registry, printing its repo@sha256 to the journal (and that reference pulls it back), keeps the one built here and says why, and keeps tc.keep; a failing docker image ls removes no image and exits 1. Which store the runner uses decides what All must do: on the classic image store as described; on the containerd image store, where every image has a digest, All keeps every tagged image and says why. The last steps restart Docker on the other store and check All there too, so both stores are covered whichever the runner starts with. The image is pushed to the test registry only on the classic store: on the containerd store it has a repo@sha256 digest without one, and that store's push used HTTPS on Docker 29.4.2 whatever insecure-registries said. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are read from docker.service and its environment file, and flags it cannot resolve skip log rotation with exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, not even a network; Prune now exits 1; and the list is not created, exit 3. Writing daemon.json: the new file is made in the directory of the real target and renamed into place, so it keeps the mode, owner and group of the file it replaces (a 0600 file holding a fake proxy credential stays 0600 with its non-root group; a new file is 0644 root:root) and a symlinked daemon.json stays a symlink while its target changes and Docker restarts with it; a dangling symlink, or a link to a directory, is refused with exit 3 and nothing is created; after a successful Apply, a failed validation and Report mode, no .daemon.json.tc-* file is left in /etc/docker, and one left by a crashed earlier run is removed; Report mode on a host with no /etc/docker does not create it; seven changes in a row leave the newest five backups; and an immutable daemon.json makes the run exit 1 with the file byte-for-byte unchanged, no staging file and no backup.",
   "variables": {},
   "steps": [
     {
@@ -74,15 +74,22 @@
     },
     {
       "type": "file",
-      "label": "Prune script has an age filter and never prunes volumes",
+      "label": "Prune script has an age filter, never prunes volumes and never forces an image",
       "path": "/usr/local/sbin/tc-docker-prune",
       "contains": [
-        "image prune --all --force --filter \"until=${OLDER_THAN_HOURS}h\"",
-        "builder prune --all --force --filter \"until=${OLDER_THAN_HOURS}h\""
+        "builder prune --all --force --filter \"until=${OLDER_THAN_HOURS}h\"",
+        "\"$DOCKER\" image rm \"$ref\"",
+        "GRACE_HOURS=144",
+        "PRUNE_IMAGES=dangling"
       ],
       "notContains": [
         "--volumes",
-        "volume prune"
+        "volume prune",
+        "image prune",
+        "rmi -f",
+        "image rm -f",
+        "image rm --force",
+        "rmi --force"
       ],
       "executable": true
     },
@@ -168,10 +175,12 @@
     },
     {
       "type": "file",
-      "label": "Settings file carries only the age",
+      "label": "Settings file carries the age, the wait and the image mode",
       "path": "/etc/default/tc-docker-prune",
       "contains": [
-        "OLDER_THAN_HOURS=168"
+        "OLDER_THAN_HOURS=168",
+        "GRACE_HOURS=144",
+        "PRUNE_IMAGES=dangling"
       ],
       "notContains": [
         "REQUIRED_CONTAINERS"
@@ -205,12 +214,13 @@
     },
     {
       "type": "command",
-      "label": "Before review: a prune with no age limit removes no container and no image",
-      "run": "sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune && systemctl start tc-docker-prune.service; journalctl -u tc-docker-prune.service -n 40 --no-pager; docker inspect -f '{{.Name}} survived' tc-junk; docker image inspect -f 'junk image survived' tc-test-junk:1",
+      "label": "Before review: a prune with no age limit removes no container and no image, and records nothing",
+      "run": "sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune && systemctl start tc-docker-prune.service; journalctl -u tc-docker-prune.service -n 40 --no-pager; docker inspect -f '{{.Name}} survived' tc-junk; docker image inspect -f 'junk image survived' tc-test-junk:1; test ! -e /var/lib/tc-docker/pending-removal && echo 'no pending-removal file'",
       "outputContains": [
         "List not reviewed yet",
         "/tc-junk survived",
-        "junk image survived"
+        "junk image survived",
+        "no pending-removal file"
       ]
     },
     {
@@ -230,22 +240,56 @@
     },
     {
       "type": "command",
-      "label": "After review: prune with no age limit, run by the timer's service",
-      "run": "docker inspect -f 'before: {{.Name}} present' tc-junk; docker ps -a --format 'before: {{.Names}} {{.Status}}'; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune && systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl -u tc-docker-prune.service -n 40 --no-pager; docker ps -a --format 'after: {{.Names}} {{.Status}}'",
+      "label": "After review: the first prune with no age limit, run by the timer's service, records the unprotected stopped container and removes no container",
+      "run": "docker inspect -f 'before: {{.Name}} present' tc-junk; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; sleep 2; since=$(date '+%Y-%m-%d %H:%M:%S'); sleep 1; systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl --sync >/dev/null 2>&1; journalctl -u tc-docker-prune.service --since \"$since\" --no-pager -o cat; docker ps -a --format 'after: {{.Names}} {{.Status}}'",
       "outputContains": [
         "before: /tc-junk present",
         "success",
-        "Stopped containers removed:",
+        "Stopped containers recorded for removal this run (removed 144h from now if still stopped and not protected):",
+        "tc-junk (name:tc-junk), can be removed from",
+        "Stopped containers removed: 0",
         "tc-listed (on the expected list)",
         "tc-policy (restart policy unless-stopped)",
-        "tc-labelled (labelled tc.keep)"
+        "tc-labelled (labelled tc.keep)",
+        "after: tc-junk"
       ]
     },
     {
       "type": "command",
-      "label": "Protected containers and their images survived; the unprotected ones did not",
-      "run": "for c in tc-listed tc-policy tc-labelled; do docker inspect -f '{{.Name}} kept' $c; done; for i in listed policy labelled; do docker image inspect -f \"image tc-test-$i kept\" tc-test-$i:1; done; docker inspect tc-junk >/dev/null 2>&1 && echo 'tc-junk STILL HERE' || echo 'tc-junk removed'; docker image inspect tc-test-junk:1 >/dev/null 2>&1 && echo 'junk image STILL HERE' || echo 'junk image removed'",
+      "label": "The record: one line, id, key, name and time, for tc-junk only; /var/lib/tc-docker is 0700 root, the file 0600 root",
+      "run": "stat -c '%a %U:%G %n' /var/lib/tc-docker /var/lib/tc-docker/pending-removal; id=$(docker inspect -f '{{.Id}}' tc-junk); echo \"tc-junk lines: $(grep -cE \"^$id\tname:tc-junk\ttc-junk\t[0-9]{10}$\" /var/lib/tc-docker/pending-removal)\"; echo \"lines in all: $(grep -vc '^#' /var/lib/tc-docker/pending-removal)\"; cat /var/lib/tc-docker/pending-removal",
       "outputContains": [
+        "700 root:root /var/lib/tc-docker",
+        "600 root:root /var/lib/tc-docker/pending-removal",
+        "tc-junk lines: 1",
+        "lines in all: 1"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Inside the grace period: the next prune leaves it, says it is waiting and until when, and keeps the time it was first recorded",
+      "run": "before=$(grep 'name:tc-junk' /var/lib/tc-docker/pending-removal | cut -f4); sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; after=$(grep 'name:tc-junk' /var/lib/tc-docker/pending-removal | cut -f4); [ -n \"$before\" ] && [ \"$before\" = \"$after\" ] && echo 'first recorded: unchanged'; docker inspect -f '{{.Name}} still here' tc-junk",
+      "outputContains": [
+        "Stopped containers waiting to be removed:",
+        "tc-junk (name:tc-junk), recorded",
+        ", can be removed from",
+        "Stopped containers removed: 0",
+        "prune exit 0",
+        "first recorded: unchanged",
+        "/tc-junk still here"
+      ],
+      "outputNotContains": [
+        "recorded for removal this run"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "After the grace period (its record moved back 145 hours): the next prune removes it and drops the record; protected containers and their images stay; its unused tagged image stays, as PRUNE_IMAGES is dangling",
+      "run": "sed -i -E \"s/^(.*\tname:tc-junk\ttc-junk\t)[0-9]+$/\\1$(( $(date +%s) - 145 * 3600 ))/\" /var/lib/tc-docker/pending-removal; grep -v '^#' /var/lib/tc-docker/pending-removal; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; for c in tc-listed tc-policy tc-labelled; do docker inspect -f '{{.Name}} kept' $c; done; for i in listed policy labelled; do docker image inspect -f \"image tc-test-$i kept\" tc-test-$i:1; done; docker inspect tc-junk >/dev/null 2>&1 && echo 'tc-junk STILL HERE' || echo 'tc-junk removed'; docker image inspect -f 'junk image kept (tagged)' tc-test-junk:1; grep -q 'name:tc-junk' /var/lib/tc-docker/pending-removal && echo 'tc-junk record STILL THERE' || echo 'tc-junk record dropped'",
+      "outputContains": [
+        "Stopped containers removed: 1",
+        "  tc-junk (name:tc-junk)",
+        "prune exit 0",
         "/tc-listed kept",
         "/tc-policy kept",
         "/tc-labelled kept",
@@ -253,10 +297,292 @@
         "image tc-test-policy kept",
         "image tc-test-labelled kept",
         "tc-junk removed",
-        "junk image removed"
+        "junk image kept (tagged)",
+        "tagged image(s) that no container uses (PRUNE_IMAGES=dangling",
+        "tc-junk record dropped"
       ],
       "outputNotContains": [
-        "STILL HERE"
+        "STILL HERE",
+        "STILL THERE"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Container age: stopped 29 days ago; created 30 days ago and stopped just now; created 30 days ago and never started (Docker stopped and restarted to set the times); OLDER_THAN_HOURS=24",
+      "run": "cat > /usr/local/sbin/tc-test-age <<'EOF'\n#!/bin/bash\n# tc-test-age NAME=CREATED[,FINISHED] ...: stop Docker, set those containers' Created\n# (and State.FinishedAt) in their config.v2.json, start Docker again. Docker sets both\n# times itself and has no way to change them, so this is how a test makes a container old.\nset -e\ndeclare -A ids\nfor a in \"$@\"; do ids[${a%%=*}]=$(docker inspect -f '{{.Id}}' \"${a%%=*}\"); done\nroot=$(docker info --format '{{.DockerRootDir}}')\nif [ -d /run/systemd/system ]; then systemctl stop docker.socket docker.service; else pkill -x dockerd; while pgrep -x dockerd >/dev/null; do sleep 1; done; fi\nfor a in \"$@\"; do\n  n=${a%%=*}; v=${a#*=}; c=${v%%,*}; f=\"$root/containers/${ids[$n]}/config.v2.json\"\n  if [ \"$v\" != \"$c\" ]; then jq --arg c \"$c\" --arg f \"${v#*,}\" '.Created=$c | .State.FinishedAt=$f' \"$f\" > \"$f.tc\"\n  else jq --arg c \"$c\" '.Created=$c' \"$f\" > \"$f.tc\"; fi\n  mv \"$f.tc\" \"$f\"\ndone\nif [ -d /run/systemd/system ]; then systemctl start docker.service; else (setsid dockerd >/var/log/tc-test-dockerd.log 2>&1 </dev/null &); fi\nfor i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done\nfor a in \"$@\"; do docker inspect -f '{{.Name}} created {{.Created}}, finished {{.State.FinishedAt}}' \"${a%%=*}\"; done\nEOF\nchmod 755 /usr/local/sbin/tc-test-age\nset -e\ndocker run --name tc-age-stopped tc-test-listed:1 /bin/true\ndocker create --name tc-age-fresh tc-test-listed:1 /bin/true >/dev/null\ndocker create --name tc-age-never tc-test-listed:1 /bin/sleep 3600 >/dev/null\ntc-test-age tc-age-stopped=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ),$(date -u -d '29 days ago' +%Y-%m-%dT%H:%M:%SZ) tc-age-fresh=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ) tc-age-never=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)\ndocker start tc-age-fresh >/dev/null; sleep 2\ndocker inspect -f '{{.Name}} created {{.Created}}, finished {{.State.FinishedAt}} (stopped just now)' tc-age-fresh\nsed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=24/' /etc/default/tc-docker-prune; grep OLDER_THAN_HOURS /etc/default/tc-docker-prune",
+      "timeoutSeconds": 240,
+      "outputContains": [
+        "/tc-age-stopped created",
+        "finished 0001-01-01",
+        "(stopped just now)",
+        "OLDER_THAN_HOURS=24"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Container age counts from when it stopped: the one stopped 29 days ago and the one never started (created 30 days ago) are recorded; the one created 30 days ago but stopped just now is not",
+      "run": "sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; grep -q 'name:tc-age-fresh' /var/lib/tc-docker/pending-removal && echo 'tc-age-fresh: LISTED IN FILE' || echo 'tc-age-fresh: absent from the file'",
+      "outputContains": [
+        "tc-age-stopped (name:tc-age-stopped), can be removed from",
+        "tc-age-never (name:tc-age-never), can be removed from",
+        "prune exit 0",
+        "tc-age-fresh: absent from the file"
+      ],
+      "outputNotContains": [
+        "tc-age-fresh (name:tc-age-fresh)",
+        "LISTED IN FILE"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Recorded, then added to the list: the next prune keeps it and drops the record",
+      "run": "echo name:tc-age-stopped >> /etc/tc-docker/expected-containers; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; grep -q 'name:tc-age-stopped' /var/lib/tc-docker/pending-removal && echo 'tc-age-stopped record STILL THERE' || echo 'tc-age-stopped record dropped'; docker inspect -f '{{.Name}} kept' tc-age-stopped",
+      "outputContains": [
+        "tc-age-stopped (on the expected list)",
+        "prune exit 0",
+        "tc-age-stopped record dropped",
+        "/tc-age-stopped kept"
+      ],
+      "outputNotContains": [
+        "STILL THERE"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Recorded, then started again: the next prune drops the record; stopped again, it is not recorded, because it stopped just now",
+      "run": "grep -q 'name:tc-age-never' /var/lib/tc-docker/pending-removal && echo 'recorded before: tc-age-never'; docker start tc-age-never >/dev/null; /usr/local/sbin/tc-docker-prune >/dev/null; echo \"prune exit $?\"; grep -q 'name:tc-age-never' /var/lib/tc-docker/pending-removal && echo 'while running: tc-age-never LISTED IN FILE' || echo 'while running: tc-age-never record dropped'; docker stop -t 1 tc-age-never >/dev/null; /usr/local/sbin/tc-docker-prune >/dev/null; grep -q 'name:tc-age-never' /var/lib/tc-docker/pending-removal && echo 'stopped again: tc-age-never LISTED IN FILE' || echo 'stopped again: tc-age-never absent from the file'",
+      "outputContains": [
+        "recorded before: tc-age-never",
+        "prune exit 0",
+        "while running: tc-age-never record dropped",
+        "stopped again: tc-age-never absent from the file"
+      ],
+      "outputNotContains": [
+        "LISTED IN FILE"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Unwritable record: tc-due recorded and its record already due (moved back 145 hours), then /var/lib/tc-docker made read-only (a read-only bind mount of itself)",
+      "run": "set -e; docker create --name tc-due tc-test-listed:1 /bin/true >/dev/null; sleep 2; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; /usr/local/sbin/tc-docker-prune >/dev/null; sed -i -E \"s/\t[0-9]+$/\t$(( $(date +%s) - 145 * 3600 ))/\" /var/lib/tc-docker/pending-removal; grep -q 'name:tc-due' /var/lib/tc-docker/pending-removal && echo 'tc-due recorded, due now'; mount --bind /var/lib/tc-docker /var/lib/tc-docker; mount -o remount,bind,ro /var/lib/tc-docker; touch /var/lib/tc-docker/tc-test 2>/dev/null && echo 'read-only: NO' || echo 'read-only: yes'",
+      "outputContains": [
+        "tc-due recorded, due now",
+        "read-only: yes"
+      ],
+      "outputNotContains": [
+        "read-only: NO"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Unwritable record: the prune removes no container, says why, and exits 1",
+      "run": "sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; docker inspect -f '{{.Name}} survived' tc-due",
+      "outputContains": [
+        "ERROR: could not write /var/lib/tc-docker/pending-removal",
+        "No container was removed this run",
+        "Stopped containers removed: 0",
+        "prune exit 1",
+        "/tc-due survived"
+      ],
+      "outputNotContains": [
+        "  tc-due (name:tc-due)"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unwritable record: Prune now through the component exits 1 and says why",
+      "variables": {
+        "usrPruneNow": "yes"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "ERROR: could not write /var/lib/tc-docker/pending-removal",
+        "No container was removed this run"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Unwritable record: writable again, the same prune removes the containers whose records are due",
+      "run": "umount /var/lib/tc-docker; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; docker inspect tc-due >/dev/null 2>&1 && echo 'tc-due STILL HERE' || echo 'tc-due removed'",
+      "outputContains": [
+        "  tc-due (name:tc-due)",
+        "prune exit 0",
+        "tc-due removed"
+      ],
+      "outputNotContains": [
+        "STILL HERE",
+        "ERROR"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "A GRACE_HOURS under 24 written into the settings file by hand is refused by the prune itself: nothing recorded or removed, exit 1",
+      "run": "docker create --name tc-grace tc-test-listed:1 /bin/true >/dev/null; sed -i 's/^GRACE_HOURS=.*/GRACE_HOURS=1/' /etc/default/tc-docker-prune; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; grep -q 'name:tc-grace' /var/lib/tc-docker/pending-removal && echo 'tc-grace: LISTED IN FILE' || echo 'tc-grace: absent from the file'; docker inspect -f '{{.Name}} survived' tc-grace; sed -i 's/^GRACE_HOURS=.*/GRACE_HOURS=144/' /etc/default/tc-docker-prune; docker rm tc-grace >/dev/null",
+      "outputContains": [
+        "ERROR: GRACE_HOURS in /etc/default/tc-docker-prune must be a whole number of hours, 24-8760 (it is '1')",
+        "No container is recorded or removed this run",
+        "prune exit 1",
+        "tc-grace: absent from the file",
+        "/tc-grace survived"
+      ],
+      "outputNotContains": [
+        "LISTED IN FILE"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Review withdrawn (reviewed file deleted): the prune removes nothing and clears the record, so a later review starts every wait again",
+      "run": "docker create --name tc-withdrawn tc-test-listed:1 /bin/true >/dev/null; sleep 2; /usr/local/sbin/tc-docker-prune >/dev/null; grep -q 'name:tc-withdrawn' /var/lib/tc-docker/pending-removal && echo 'tc-withdrawn recorded while reviewed'; mv /etc/tc-docker/reviewed /tmp/tc-reviewed; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; test ! -e /var/lib/tc-docker/pending-removal && echo 'no pending-removal file now'; docker inspect -f '{{.Name}} left in place' tc-withdrawn; mv /tmp/tc-reviewed /etc/tc-docker/reviewed; docker rm tc-withdrawn >/dev/null",
+      "outputContains": [
+        "tc-withdrawn recorded while reviewed",
+        "List not reviewed yet",
+        "Pending removals cleared",
+        "prune exit 0",
+        "no pending-removal file now",
+        "/tc-withdrawn left in place"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Images: a test registry on 127.0.0.1, trusted over plain HTTP; four images no container uses: untagged; tagged, built here; tagged and pushed to the registry (on the classic store; on containerd every image has a digest anyway); tagged and labelled tc.keep",
+      "run": "cat > /usr/local/sbin/tc-test-registry <<'EOF'\n#!/usr/bin/env python3\n# tc-test-registry PORT DIR: a minimal image registry (the Docker Registry HTTP\n# API v2, enough for docker push and docker pull) on 127.0.0.1, so a test can\n# give an image a real registry digest without pulling from the internet.\nimport hashlib, os, sys, uuid\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nfrom urllib.parse import urlparse, parse_qs\nPORT, DIR = int(sys.argv[1]), sys.argv[2]\nfor sub in (\"blobs\", \"uploads\", \"manifests\"):\n    os.makedirs(os.path.join(DIR, sub), exist_ok=True)\ndef safe(s): return s.replace(\"/\", \"_\").replace(\":\", \"_\")\ndef sha(b): return \"sha256:\" + hashlib.sha256(b).hexdigest()\nclass H(BaseHTTPRequestHandler):\n    protocol_version = \"HTTP/1.1\"\n    def log_message(self, *a): pass\n    def send(self, code, body=b\"\", headers=None):\n        self.send_response(code)\n        for k, v in (headers or {}).items(): self.send_header(k, v)\n        self.send_header(\"Content-Length\", str(len(body)))\n        self.send_header(\"Docker-Distribution-API-Version\", \"registry/2.0\")\n        self.end_headers()\n        if self.command != \"HEAD\": self.wfile.write(body)\n    def body(self):\n        n = int(self.headers.get(\"Content-Length\") or 0)\n        if n: return self.rfile.read(n)\n        if self.headers.get(\"Transfer-Encoding\", \"\").lower() != \"chunked\": return b\"\"\n        out = b\"\"\n        while True:\n            size = int(self.rfile.readline().strip().split(b\";\")[0], 16)\n            if size == 0: self.rfile.readline(); return out\n            out += self.rfile.read(size); self.rfile.readline()\n    def route(self):\n        u = urlparse(self.path); p = u.path; q = parse_qs(u.query)\n        if p in (\"/v2\", \"/v2/\"): return self.send(200, b\"{}\")\n        if \"/blobs/uploads/\" in p:\n            name, rest = p[4:].split(\"/blobs/uploads/\", 1)\n            if self.command == \"POST\":\n                uid = uuid.uuid4().hex\n                open(f\"{DIR}/uploads/{uid}\", \"wb\").close()\n                return self.send(202, headers={\"Location\": f\"/v2/{name}/blobs/uploads/{uid}\", \"Range\": \"0-0\", \"Docker-Upload-UUID\": uid})\n            uid = rest.strip(\"/\"); f = f\"{DIR}/uploads/{uid}\"\n            with open(f, \"ab\") as fh: fh.write(self.body())\n            if self.command == \"PATCH\":\n                return self.send(202, headers={\"Location\": f\"/v2/{name}/blobs/uploads/{uid}\", \"Range\": f\"0-{max(os.path.getsize(f) - 1, 0)}\", \"Docker-Upload-UUID\": uid})\n            d = q[\"digest\"][0]\n            if sha(open(f, \"rb\").read()) != d: return self.send(400, b'{\"errors\":[{\"code\":\"DIGEST_INVALID\"}]}')\n            os.replace(f, f\"{DIR}/blobs/{safe(d)}\")\n            return self.send(201, headers={\"Location\": f\"/v2/{name}/blobs/{d}\", \"Docker-Content-Digest\": d})\n        if \"/blobs/\" in p:\n            d = p.rsplit(\"/blobs/\", 1)[1]; f = f\"{DIR}/blobs/{safe(d)}\"\n            if not os.path.exists(f): return self.send(404, b'{\"errors\":[{\"code\":\"BLOB_UNKNOWN\"}]}')\n            return self.send(200, open(f, \"rb\").read(), {\"Docker-Content-Digest\": d, \"Content-Type\": \"application/octet-stream\"})\n        if \"/manifests/\" in p:\n            name, ref = p[4:].rsplit(\"/manifests/\", 1)\n            if self.command == \"PUT\":\n                data = self.body(); d = sha(data)\n                for r in (ref, d):\n                    open(f\"{DIR}/manifests/{safe(name)}@{safe(r)}\", \"wb\").write(data)\n                    open(f\"{DIR}/manifests/{safe(name)}@{safe(r)}.type\", \"w\").write(self.headers.get(\"Content-Type\", \"\"))\n                return self.send(201, headers={\"Location\": f\"/v2/{name}/manifests/{d}\", \"Docker-Content-Digest\": d})\n            f = f\"{DIR}/manifests/{safe(name)}@{safe(ref)}\"\n            if not os.path.exists(f): return self.send(404, b'{\"errors\":[{\"code\":\"MANIFEST_UNKNOWN\"}]}')\n            data = open(f, \"rb\").read()\n            return self.send(200, data, {\"Docker-Content-Digest\": sha(data), \"Content-Type\": open(f + \".type\").read()})\n        return self.send(404)\n    do_GET = do_HEAD = do_POST = do_PATCH = do_PUT = route\nThreadingHTTPServer((\"127.0.0.1\", PORT), H).serve_forever()\nEOF\nchmod 755 /usr/local/sbin/tc-test-registry\nsetsid nohup python3 /usr/local/sbin/tc-test-registry 5055 /tmp/tc-test-registry >/tmp/tc-test-registry.log 2>&1 </dev/null &\necho $! > /tmp/tc-test-registry.pid\nfor i in $(seq 20); do curl -fsS http://127.0.0.1:5055/v2/ >/dev/null 2>&1 && break; sleep 1; done\ncurl -fsS http://127.0.0.1:5055/v2/ >/dev/null && echo 'test registry answers on 127.0.0.1:5055'\ncp -p /etc/docker/daemon.json /tmp/tc-images-daemon.json 2>/dev/null || true\npython3 -c \"import json, os; p='/etc/docker/daemon.json'; d=json.load(open(p)) if os.path.exists(p) and os.path.getsize(p) else {}; d['insecure-registries'] = ['localhost:5055']; json.dump(d, open(p, 'w'), indent=2)\"; systemctl restart docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; \nset -e\nstore=$(case \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo containerd ;; *) echo classic ;; esac); echo \"image store: $store\"; \nr=$(mktemp -d); mkdir -p $r/bin; cp /bin/true $r/bin/; for l in $(ldd /bin/true | grep -oE '/[^ ]+'); do mkdir -p $r$(dirname $l); cp $l $r$l; done\ntar -C $r -c . | docker import --change 'LABEL tc.test=untagged' - > /tmp/tc-untagged-id\ntar -C $r -c . | docker import --change 'LABEL tc.test=localonly' - tc-test-localonly:1 >/dev/null\ntar -C $r -c . | docker import --change 'LABEL tc.test=pulled' - localhost:5055/tc-test-pulled:1 >/dev/null\nif [ \"$store\" = classic ]; then docker push -q localhost:5055/tc-test-pulled:1; else echo 'not pushed: the containerd store gives this image a repo@sha256 digest without a registry (and its push ignores insecure-registries on Docker 29.4)'; fi\ntar -C $r -c . | docker import --change 'LABEL tc.keep=true' - tc-test-keepimg:1 >/dev/null\necho \"untagged image: $(cut -c8-19 /tmp/tc-untagged-id)\"\nfor i in tc-test-localonly:1 localhost:5055/tc-test-pulled:1 tc-test-keepimg:1; do docker image inspect -f \"$i RepoDigests {{json .RepoDigests}}\" $i; done\nloc=$(docker image inspect -f '{{json .RepoDigests}}' tc-test-localonly:1)\nif [ \"$store\" = classic ] && [ \"$loc\" = '[]' ]; then echo 'built here: no digest, as on the classic store'; elif [ \"$store\" = containerd ] && [ \"$loc\" != '[]' ]; then echo 'built here: a digest all the same, as on the containerd store'; fi\ndocker image ls --digests",
+      "timeoutSeconds": 240,
+      "outputContains": [
+        "test registry answers on 127.0.0.1:5055",
+        "image store:",
+        "built here:",
+        "localhost:5055/tc-test-pulled:1 RepoDigests [\"localhost:5055/tc-test-pulled@sha256:"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Images, PRUNE_IMAGES=dangling: the untagged image goes and is named; every tagged one stays",
+      "run": "sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; grep PRUNE_IMAGES /etc/default/tc-docker-prune; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; docker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'untagged image STILL HERE' || echo 'untagged image removed'; printf '%s\\n' \"$out\" | grep -qF \"untagged $(cut -c8-19 /tmp/tc-untagged-id)\" && echo 'untagged image named in the output'; for i in tc-test-localonly:1 localhost:5055/tc-test-pulled:1 tc-test-keepimg:1; do docker image inspect -f \"$i kept\" $i 2>/dev/null || echo \"$i GONE\"; done",
+      "outputContains": [
+        "PRUNE_IMAGES=dangling",
+        "Images removed (PRUNE_IMAGES=dangling):",
+        "prune exit 0",
+        "untagged image removed",
+        "untagged image named in the output",
+        "tc-test-localonly:1 kept",
+        "localhost:5055/tc-test-pulled:1 kept",
+        "tc-test-keepimg:1 kept",
+        "tagged image(s) that no container uses (PRUNE_IMAGES=dangling removes untagged images only)"
+      ],
+      "outputNotContains": [
+        "STILL HERE",
+        "GONE",
+        "pull again"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Images: a settings file with no PRUNE_IMAGES line (a host set up by version 8) behaves as dangling",
+      "run": "r=$(mktemp -d); mkdir -p $r/bin; cp /bin/true $r/bin/; tar -C $r -c . | docker import --change 'LABEL tc.test=untagged2' - > /tmp/tc-untagged-id; sed -i '/^PRUNE_IMAGES=/d' /etc/default/tc-docker-prune; echo \"PRUNE_IMAGES lines in the settings file: $(grep -c '^PRUNE_IMAGES=' /etc/default/tc-docker-prune)\"; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; docker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'untagged image STILL HERE' || echo 'untagged image removed'; printf '%s\\n' \"$out\" | grep -qF \"untagged $(cut -c8-19 /tmp/tc-untagged-id)\" && echo 'untagged image named in the output'; for i in tc-test-localonly:1 localhost:5055/tc-test-pulled:1 tc-test-keepimg:1; do docker image inspect -f \"$i kept\" $i 2>/dev/null || echo \"$i GONE\"; done",
+      "outputContains": [
+        "PRUNE_IMAGES lines in the settings file: 0",
+        "Images removed (PRUNE_IMAGES=dangling):",
+        "prune exit 0",
+        "untagged image removed",
+        "tc-test-localonly:1 kept",
+        "localhost:5055/tc-test-pulled:1 kept",
+        "tc-test-keepimg:1 kept"
+      ],
+      "outputNotContains": [
+        "STILL HERE",
+        "GONE",
+        "pull again"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "usrPruneImages All is saved to the settings file",
+      "variables": {
+        "usrPruneImages": "all"
+      },
+      "outputContains": [
+        "Prune timer: installed",
+        "images: all"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "Settings file: PRUNE_IMAGES=all, with the age and the wait",
+      "path": "/etc/default/tc-docker-prune",
+      "contains": [
+        "OLDER_THAN_HOURS=168",
+        "GRACE_HOURS=144",
+        "PRUNE_IMAGES=all"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Images, PRUNE_IMAGES=all, run by the timer's service: on the classic store the tagged image with a registry digest goes and its repo@sha256 is in the journal, and the one built here stays, named with the reason; on the containerd store both stay, named with that reason; the tc.keep one stays",
+      "run": "sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; sleep 2; since=$(date '+%Y-%m-%d %H:%M:%S'); sleep 1; systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl --sync >/dev/null 2>&1; journalctl -u tc-docker-prune.service --since \"$since\" --no-pager -o cat > /tmp/tc-all.out; cat /tmp/tc-all.out; store=$(case \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo containerd ;; *) echo classic ;; esac); echo \"image store: $store\"; if [ \"$store\" = classic ]; then grep -qF 'localhost:5055/tc-test-pulled:1 - pull again: localhost:5055/tc-test-pulled@sha256:' /tmp/tc-all.out && grep -qF 'tc-test-localonly:1 - no registry digest: built or loaded on this host, so it cannot be pulled again' /tmp/tc-all.out && ! docker image inspect localhost:5055/tc-test-pulled:1 >/dev/null 2>&1 && docker image inspect tc-test-localonly:1 >/dev/null && echo 'All mode as expected for the classic store: the pushed image removed with its repo@sha256, the one built here kept'; else grep -qF 'localhost:5055/tc-test-pulled:1 - this host uses the containerd image store, which gives every image a digest' /tmp/tc-all.out && grep -qF 'tc-test-localonly:1 - this host uses the containerd image store' /tmp/tc-all.out && ! grep -q 'pull again: localhost:5055' /tmp/tc-all.out && docker image inspect localhost:5055/tc-test-pulled:1 >/dev/null && docker image inspect tc-test-localonly:1 >/dev/null && echo 'All mode as expected for the containerd store: every tagged image kept, with the reason'; fi; docker image inspect -f 'tc-test-keepimg:1 kept' tc-test-keepimg:1",
+      "outputContains": [
+        "success",
+        "Images removed (PRUNE_IMAGES=all):",
+        "Images kept that no container uses:",
+        "All mode as expected for the",
+        "tc-test-keepimg:1 kept"
+      ],
+      "outputNotContains": [
+        "tc-test-keepimg:1 -",
+        "ERROR"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Images: on the classic store, the repo@sha256 the prune printed pulls the image back",
+      "run": "store=$(case \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo containerd ;; *) echo classic ;; esac); echo \"image store: $store\"; if [ \"$store\" = classic ]; then ref=$(grep -oE 'localhost:5055/tc-test-pulled@sha256:[0-9a-f]{64}' /tmp/tc-all.out | tail -n 1); echo \"printed: $ref\"; docker pull -q \"$ref\" && docker image inspect -f 'pulled back: {{json .RepoDigests}}' \"$ref\"; else echo 'pulled back: not needed, nothing was removed on the containerd store'; fi",
+      "outputContains": [
+        "pulled back:"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Images: when docker image ls fails (a docker shim on PATH), the prune removes no image, says so and exits 1",
+      "run": "r=$(mktemp -d); mkdir -p $r/bin; cp /bin/true $r/bin/; tar -C $r -c . | docker import --change 'LABEL tc.test=untagged3' - > /tmp/tc-untagged-id; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker || exit 1; printf '%s\\n' '#!/bin/sh' '# tc-test shim: Docker answers everything except docker image ls' '[ \"$1\" = image ] && [ \"$2\" = ls ] && { echo \"Error response from daemon: tc-test simulated failure\" >&2; exit 1; }' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; docker image inspect -f 'untagged image survived' $(cat /tmp/tc-untagged-id); rm -f /usr/local/sbin/docker; hash -r",
+      "outputContains": [
+        "ERROR: Docker did not return its image list",
+        "No image was removed",
+        "Stopped containers removed:",
+        "prune exit 1",
+        "untagged image survived"
+      ],
+      "outputNotContains": [
+        "Images removed"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a grace period under 24 hours",
+      "variables": {
+        "usrPruneGraceHours": "12"
+      },
+      "expectExitCode": 2,
+      "outputContains": [
+        "usrPruneGraceHours must be 24-8760"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses an image mode that is not Dangling or All",
+      "variables": {
+        "usrPruneImages": "everything"
+      },
+      "expectExitCode": 2,
+      "outputContains": [
+        "usrPruneImages must be dangling or all"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Images tests: clean up - test containers, images and registry gone, the image setting back",
+      "run": "kill $(cat /tmp/tc-test-registry.pid); if [ -f /tmp/tc-images-daemon.json ]; then cp -p /tmp/tc-images-daemon.json /etc/docker/daemon.json; else rm -f /etc/docker/daemon.json; fi; rm -f /tmp/tc-images-daemon.json /tmp/tc-all.out; systemctl restart docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; docker rm -f tc-age-stopped tc-age-fresh tc-age-never >/dev/null; docker rmi tc-test-localonly:1 tc-test-keepimg:1 localhost:5055/tc-test-pulled:1 >/dev/null; docker image prune -f >/dev/null; sed -i '/^name:tc-age-stopped$/d' /etc/tc-docker/expected-containers; rm -rf /tmp/tc-test-registry /tmp/tc-test-registry.pid /tmp/tc-untagged-id; sed -i 's/^PRUNE_IMAGES=.*/PRUNE_IMAGES=dangling/' /etc/default/tc-docker-prune; docker ps -a --format '{{.Names}}' | grep -c tc-age || echo 'no tc-age containers'",
+      "timeoutSeconds": 180,
+      "outputContains": [
+        "no tc-age containers"
       ]
     },
     {
@@ -399,11 +725,12 @@
     },
     {
       "type": "command",
-      "label": "Working Docker again: the same prune removes the stopped container and network it left alone; clean up",
-      "run": "mv -f /tmp/tc-ec-hm /etc/tc-docker/expected-containers; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; /usr/local/sbin/tc-docker-prune >/dev/null; echo \"prune exit $?\"; docker inspect tc-shim-junk >/dev/null 2>&1 && echo 'tc-shim-junk STILL HERE' || echo 'tc-shim-junk removed'; docker network inspect tc-shim-net >/dev/null 2>&1 && echo 'tc-shim-net STILL HERE' || echo 'tc-shim-net removed'; docker inspect -f '{{.Name}} kept' stopped-old; docker rm -f innocent odd-stopped stopped-old >/dev/null; sed -i '/^name:stopped-old$/d' /etc/tc-docker/expected-containers",
+      "label": "Working Docker again: the same prune records the stopped container it left alone, removes the network; clean up",
+      "run": "mv -f /tmp/tc-ec-hm /etc/tc-docker/expected-containers; sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; /usr/local/sbin/tc-docker-prune >/dev/null; echo \"prune exit $?\"; docker inspect -f '{{.Name}} left in place' tc-shim-junk; grep -q 'name:tc-shim-junk' /var/lib/tc-docker/pending-removal && echo 'tc-shim-junk recorded for removal'; docker network inspect tc-shim-net >/dev/null 2>&1 && echo 'tc-shim-net STILL HERE' || echo 'tc-shim-net removed'; docker inspect -f '{{.Name}} kept' stopped-old; docker rm -f innocent odd-stopped stopped-old tc-shim-junk >/dev/null; sed -i '/^name:stopped-old$/d' /etc/tc-docker/expected-containers",
       "outputContains": [
         "prune exit 0",
-        "tc-shim-junk removed",
+        "/tc-shim-junk left in place",
+        "tc-shim-junk recorded for removal",
         "tc-shim-net removed",
         "/stopped-old kept"
       ],
@@ -955,6 +1282,37 @@
       "run": "chattr -i /etc/docker/daemon.json 2>/dev/null; rm -rf /opt/tc-test-managed /usr/local/sbin/tc-test-run-component /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-* /tmp/tc-bak-names /tmp/tc-run.out /tmp/tc-imm.* /tmp/tc-badval.sha /tmp/tc-report.sha; cp /tmp/tc-before.json /etc/docker/daemon.json && systemctl reset-failed docker.service docker.socket 2>/dev/null; systemctl restart docker.service && docker info --format 'docker up, LoggingDriver={{.LoggingDriver}}'",
       "outputContains": [
         "docker up, LoggingDriver=json-file"
+      ]
+    },
+    {
+      "type": "command",
+      "timeoutSeconds": 240,
+      "label": "The other image store (last, as it changes the image store): Docker restarted on whichever store it is not using, the test registry trusted over plain HTTP; an image built here, and one pushed to the registry",
+      "run": "set -e\nsetsid nohup python3 /usr/local/sbin/tc-test-registry 5055 /tmp/tc-test-registry >/tmp/tc-test-registry.log 2>&1 </dev/null &\necho $! > /tmp/tc-test-registry.pid\nfor i in $(seq 20); do curl -fsS http://127.0.0.1:5055/v2/ >/dev/null 2>&1 && break; sleep 1; done\ncp -p /etc/docker/daemon.json /tmp/tc-store-daemon.json\nbefore=$(case \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo containerd ;; *) echo classic ;; esac)\nif [ \"$before\" = containerd ]; then on=False; want=classic; else on=True; want=containerd; fi\npython3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d.setdefault('features', {})['containerd-snapshotter'] = $on; d['insecure-registries'] = ['localhost:5055']; json.dump(d, open(p, 'w'), indent=2)\"\nsystemctl restart docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done\nstore=$(case \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo containerd ;; *) echo classic ;; esac); echo \"image store: $store\"; \n[ \"$store\" = \"$want\" ] && echo \"switched from the $before store to the $store store\"\nr=$(mktemp -d); mkdir -p $r/bin; cp /bin/true $r/bin/; for l in $(ldd /bin/true | grep -oE '/[^ ]+'); do mkdir -p $r$(dirname $l); cp $l $r$l; done\ntar -C $r -c . | docker import --change 'LABEL tc.test=other-local' - tc-test-other-local:1 >/dev/null\ntar -C $r -c . | docker import --change 'LABEL tc.test=other-pulled' - localhost:5055/tc-test-other-pulled:1 >/dev/null\nif [ \"$store\" = classic ]; then docker push -q localhost:5055/tc-test-other-pulled:1; else echo 'not pushed: the containerd store gives this image a repo@sha256 digest without a registry (and its push ignores insecure-registries on Docker 29.4)'; fi\nfor i in tc-test-other-local:1 localhost:5055/tc-test-other-pulled:1; do docker image inspect -f \"$i RepoDigests {{json .RepoDigests}}\" $i; done",
+      "outputContains": [
+        "switched from the",
+        "localhost:5055/tc-test-other-pulled:1 RepoDigests [\"localhost:5055/tc-test-other-pulled@sha256:"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The other image store, PRUNE_IMAGES=all: the same rules for that store",
+      "run": "sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/; s/^PRUNE_IMAGES=.*/PRUNE_IMAGES=all/' /etc/default/tc-docker-prune; grep PRUNE_IMAGES /etc/default/tc-docker-prune; sleep 2; /usr/local/sbin/tc-docker-prune > /tmp/tc-all.out 2>&1; rc=$?; cat /tmp/tc-all.out; echo \"prune exit $rc\"; store=$(case \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo containerd ;; *) echo classic ;; esac); echo \"image store: $store\"; if [ \"$store\" = classic ]; then grep -qF 'localhost:5055/tc-test-other-pulled:1 - pull again: localhost:5055/tc-test-other-pulled@sha256:' /tmp/tc-all.out && grep -qF 'tc-test-other-local:1 - no registry digest: built or loaded on this host, so it cannot be pulled again' /tmp/tc-all.out && ! docker image inspect localhost:5055/tc-test-other-pulled:1 >/dev/null 2>&1 && docker image inspect tc-test-other-local:1 >/dev/null && echo 'All mode as expected for the classic store: the pushed image removed with its repo@sha256, the one built here kept'; else grep -qF 'localhost:5055/tc-test-other-pulled:1 - this host uses the containerd image store, which gives every image a digest' /tmp/tc-all.out && grep -qF 'tc-test-other-local:1 - this host uses the containerd image store' /tmp/tc-all.out && ! grep -q 'pull again: localhost:5055' /tmp/tc-all.out && docker image inspect localhost:5055/tc-test-other-pulled:1 >/dev/null && docker image inspect tc-test-other-local:1 >/dev/null && echo 'All mode as expected for the containerd store: every tagged image kept, with the reason'; fi; rm -f /tmp/tc-all.out",
+      "outputContains": [
+        "PRUNE_IMAGES=all",
+        "prune exit 0",
+        "All mode as expected for the"
+      ],
+      "outputNotContains": [
+        "ERROR"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The other image store: clean up - daemon.json as it was, Docker restarted, the registry stopped",
+      "run": "cp -p /tmp/tc-store-daemon.json /etc/docker/daemon.json; rm -f /tmp/tc-store-daemon.json; kill $(cat /tmp/tc-test-registry.pid) 2>/dev/null; rm -rf /tmp/tc-test-registry /tmp/tc-test-registry.pid; systemctl restart docker.service && docker info --format 'docker up again: {{.ServerVersion}}'",
+      "outputContains": [
+        "docker up again"
       ]
     },
     {

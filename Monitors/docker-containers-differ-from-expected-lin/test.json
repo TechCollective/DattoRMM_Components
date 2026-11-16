@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. A host without Docker is Tier 2.",
+  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 9: a prune stamped 8 is stale. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. A host without Docker is Tier 2.",
   "variables": {},
   "steps": [
     {
@@ -115,8 +115,8 @@
     },
     {
       "type": "command",
-      "label": "Stale prune: the list is reviewed and a current prune (version 7) is installed",
-      "run": "rm -f /usr/local/sbin/tc-docker-prune /etc/systemd/system/tc-docker-prune.service && mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=7' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && cat /etc/tc-docker/expected-containers | tail -n 1 && test -s /etc/tc-docker/reviewed"
+      "label": "Stale prune: the list is reviewed and a current prune (version 9) is installed",
+      "run": "rm -f /usr/local/sbin/tc-docker-prune /etc/systemd/system/tc-docker-prune.service && mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=9' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && cat /etc/tc-docker/expected-containers | tail -n 1 && test -s /etc/tc-docker/reviewed"
     },
     {
       "type": "runComponent",
@@ -134,8 +134,8 @@
     },
     {
       "type": "command",
-      "label": "Stale prune: a newer prune than the minimum (version 8, and 09 written with a leading zero)",
-      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' '# TC_PRUNE_VERSION=3 in a comment is not the stamp' 'TC_PRUNE_VERSION=09' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
+      "label": "Stale prune: a newer prune than the minimum (version 10, written 010 with a leading zero)",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' '# TC_PRUNE_VERSION=3 in a comment is not the stamp' 'TC_PRUNE_VERSION=010' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
     },
     {
       "type": "runComponent",
@@ -149,6 +149,154 @@
         "STALE PRUNE",
         "older than",
         "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Pending removals: two stopped containers not on the list, tc-pend-a and tc-pend-b; GRACE_HOURS=144 in the prune settings; no pending-removal file",
+      "run": "set -e; docker create --name tc-pend-a tc-test-sleep:1 /bin/sleep 1 >/dev/null; docker create --name tc-pend-b tc-test-sleep:1 /bin/sleep 1 >/dev/null; mkdir -p /etc/default /var/lib/tc-docker; chmod 700 /var/lib/tc-docker; printf '%s\\n' 'OLDER_THAN_HOURS=168' 'GRACE_HOURS=144' 'PRUNE_IMAGES=dangling' > /etc/default/tc-docker-prune; rm -f /var/lib/tc-docker/pending-removal; test ! -e /var/lib/tc-docker/pending-removal && echo 'no pending-removal file'",
+      "outputContains": [
+        "no pending-removal file"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Nothing pending (no file): the status is as before",
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 with unreadable Compose labels"
+      ],
+      "outputNotContains": [
+        "will be removed",
+        "pending",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Pending removals: the prune has recorded tc-pend-a (2026-11-20 12:00 UTC) and tc-pend-b (2026-11-21 12:00 UTC), and tc-plain, which is running again",
+      "run": "set -e; printf '%s\\n' '# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.' > /var/lib/tc-docker/pending-removal; printf '%s\\tname:tc-pend-a\\ttc-pend-a\\t1795176000\\n' $(docker inspect -f '{{.Id}}' tc-pend-a) >> /var/lib/tc-docker/pending-removal; printf '%s\\tname:tc-pend-b\\ttc-pend-b\\t1795262400\\n' $(docker inspect -f '{{.Id}}' tc-pend-b) >> /var/lib/tc-docker/pending-removal; printf '%s\\tname:tc-plain\\ttc-plain\\t1795176000\\n' $(docker inspect -f '{{.Id}}' tc-plain) >> /var/lib/tc-docker/pending-removal; grep -vc '^#' /var/lib/tc-docker/pending-removal",
+      "outputContains": [
+        "3"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Two pending, usrPendingRemovalAction Alert (default): both in the status with the date from which they go, alert, and the diagnostic says how to keep one or let it go; the running one is not shown",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=2 stopped containers will be removed by the prune (name:tc-pend-a from 2026-11-26, name:tc-pend-b from 2026-11-27); 1 expected: 1 running; 1 with unreadable Compose labels",
+        "PENDING   name:tc-pend-a  - stopped container tc-pend-a, recorded 2026-11-20",
+        "the prune removes it from 2026-11-26",
+        "To keep it: Docker - Update Expected Containers [Lin], usrAction Add, usrItems name:tc-pend-a",
+        "To let it go: do nothing"
+      ],
+      "outputNotContains": [
+        "name:tc-plain from"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Two pending, usrPendingRemovalAction Warn: in the status, no alert",
+      "variables": {
+        "usrPendingRemovalAction": "warn"
+      },
+      "outputContains": [
+        "STATUS=2 stopped containers will be removed by the prune (name:tc-pend-a from 2026-11-26, name:tc-pend-b from 2026-11-27); 1 expected"
+      ],
+      "outputNotContains": [
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Two pending, usrPendingRemovalAction Ignore: not in the status, no alert",
+      "variables": {
+        "usrPendingRemovalAction": "ignore"
+      },
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 with unreadable Compose labels"
+      ],
+      "outputNotContains": [
+        "will be removed",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A bad usrPendingRemovalAction is refused",
+      "variables": {
+        "usrPendingRemovalAction": "sometimes"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "Check could not run: usrPendingRemovalAction must be alert, warn or ignore"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Pending removals: only tc-pend-b is pending, and an ignore pattern matches it",
+      "run": "set -e; printf '%s\\n' '# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.' > /var/lib/tc-docker/pending-removal; printf '%s\\tname:tc-pend-b\\ttc-pend-b\\t1795262400\\n' $(docker inspect -f '{{.Id}}' tc-pend-b) >> /var/lib/tc-docker/pending-removal; echo '^name:tc-pend-b' > /etc/tc-docker/ignore; cat /etc/tc-docker/ignore",
+      "outputContains": [
+        "^name:tc-pend-b"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "One pending that matches an ignore pattern, Alert: counted in the status, never alerts",
+      "outputContains": [
+        "STATUS=1 stopped container will be removed by the prune (name:tc-pend-b from 2026-11-27 (ignored)); 1 expected"
+      ],
+      "outputNotContains": [
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Pending removals: a file with one good line and three that are not well formed, one of them carrying text that must not be shown",
+      "run": "set -e; rm -f /etc/tc-docker/ignore; printf '%s\\n' '# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.' > /var/lib/tc-docker/pending-removal; printf '%s\\tname:tc-pend-a\\ttc-pend-a\\t1795176000\\n' $(docker inspect -f '{{.Id}}' tc-pend-a) >> /var/lib/tc-docker/pending-removal; printf '%s\\n' 'tc-evil-text name:tc-evil 1795176000' >> /var/lib/tc-docker/pending-removal; printf '%s\\tname:tc-pend-b\\ttc-pend-b\\tsoon\\n' $(docker inspect -f '{{.Id}}' tc-pend-b) >> /var/lib/tc-docker/pending-removal; printf '%s\\tname:tc evil\\ttc-pend-b\\t1795176000\\n' $(docker inspect -f '{{.Id}}' tc-pend-b) >> /var/lib/tc-docker/pending-removal; grep -c . /var/lib/tc-docker/pending-removal",
+      "outputContains": [
+        "5"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Lines not well formed are counted and alert, but are not shown or trusted; the good line is shown",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=1 stopped container will be removed by the prune (name:tc-pend-a from 2026-11-26); pending-removal file has 3 unreadable line(s); 1 expected",
+        "BAD PENDING  /var/lib/tc-docker/pending-removal: line(s) 3, 4, 5 not id<TAB>key<TAB>name<TAB>time"
+      ],
+      "outputNotContains": [
+        "tc-evil",
+        "soon",
+        "name:tc-pend-b"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Pending removals: the list is no longer reviewed",
+      "run": "mv /etc/tc-docker/reviewed /tmp/tc-reviewed && echo moved",
+      "outputContains": [
+        "moved"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Not reviewed: the prune removes nothing, so nothing is reported as pending",
+      "outputContains": [
+        "list NOT REVIEWED"
+      ],
+      "outputNotContains": [
+        "will be removed",
+        "pending-removal"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Pending removals: clean up",
+      "run": "mv /tmp/tc-reviewed /etc/tc-docker/reviewed; rm -f /var/lib/tc-docker/pending-removal /etc/default/tc-docker-prune; docker rm tc-pend-a tc-pend-b >/dev/null && echo cleaned",
+      "outputContains": [
+        "cleaned"
       ]
     },
     {
@@ -178,7 +326,7 @@
       "label": "Stamped below the minimum: stale, names both numbers, alert",
       "expectExitCode": 1,
       "outputContains": [
-        "STATUS=prune on this host is version 3, older than 7; 1 expected: 1 running; 1 with unreadable Compose labels",
+        "STATUS=prune on this host is version 3, older than 9; 1 expected: 1 running; 1 with unreadable Compose labels",
         "<-Start Diagnostic->",
         "STALE PRUNE",
         "Run Docker - Configure Host Maintenance [Lin] on this host",
@@ -187,15 +335,33 @@
     },
     {
       "type": "command",
-      "label": "Stale prune: stamped 06 (a leading zero is not octal, and 6 is below 7)",
+      "label": "Stale prune: stamped 06 (a leading zero is not octal, and 6 is below 9)",
       "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=06' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
     },
     {
       "type": "runComponent",
-      "label": "Stamped 06: version 6, older than 7",
+      "label": "Stamped 06: version 6, older than 9",
       "expectExitCode": 1,
       "outputContains": [
-        "STATUS=prune on this host is version 6, older than 7; 1 expected: 1 running; 1 with unreadable Compose labels"
+        "STATUS=prune on this host is version 6, older than 9; 1 expected: 1 running; 1 with unreadable Compose labels"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stale prune: stamped 8 (Host Maintenance 8, before the grace period)",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=8' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 2 /usr/local/sbin/tc-docker-prune",
+      "outputContains": [
+        "TC_PRUNE_VERSION=8"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Stamped 8: stale, version 8 older than 9, alert",
+      "expectExitCode": 1,
+      "outputContains": [
+        "prune on this host is version 8, older than 9",
+        "STALE PRUNE",
+        "wants 9 or newer"
       ]
     },
     {
@@ -225,7 +391,7 @@
       "label": "Stale prune and an unreviewed list: both are in the status, the stale prune first, and it alerts",
       "expectExitCode": 1,
       "outputContains": [
-        "STATUS=prune on this host is version 3, older than 7; 1 expected: 1 running",
+        "STATUS=prune on this host is version 3, older than 9; 1 expected: 1 running",
         "list NOT REVIEWED",
         "STALE PRUNE"
       ]
@@ -242,7 +408,7 @@
         "usrStalePruneAction": "Warn"
       },
       "outputContains": [
-        "STATUS=prune on this host is version 3, older than 7; 1 expected: 1 running; 1 with unreadable Compose labels"
+        "STATUS=prune on this host is version 3, older than 9; 1 expected: 1 running; 1 with unreadable Compose labels"
       ],
       "outputNotContains": [
         "Diagnostic",
@@ -367,8 +533,8 @@
     },
     {
       "type": "command",
-      "label": "Current layout: version 7 script, the right unit, and no list",
-      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=7' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && mkdir -p /etc/systemd/system && printf '%s\\n' '[Unit]' 'Description=tc-test prune' '[Service]' 'Type=oneshot' 'ExecStart=/usr/local/sbin/tc-docker-prune' > /etc/systemd/system/tc-docker-prune.service && cat /etc/systemd/system/tc-docker-prune.service"
+      "label": "Current layout: version 9 script, the right unit, and no list",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=9' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && mkdir -p /etc/systemd/system && printf '%s\\n' '[Unit]' 'Description=tc-test prune' '[Service]' 'Type=oneshot' 'ExecStart=/usr/local/sbin/tc-docker-prune' > /etc/systemd/system/tc-docker-prune.service && cat /etc/systemd/system/tc-docker-prune.service"
     },
     {
       "type": "runComponent",

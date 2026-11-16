@@ -3,9 +3,11 @@
 A Datto RMM custom monitor for Linux Docker hosts. It compares the containers
 on a host with that host's expected-containers list. It alerts when an
 expected container is stopped or gone, and reports containers that run but
-aren't on the list. It also reports a host whose installed weekly prune is out
-of date, because the prune is only replaced when Host Maintenance is run on
-that host again.
+aren't on the list. It reports the stopped containers the prune has recorded
+and will remove, with the date each one goes, so nobody is surprised when it
+is gone. It also reports a host whose installed weekly prune is out of date,
+because the prune is only replaced when Host Maintenance is run on that host
+again.
 
 > **Status: Not Validated.** Written 2026-11-09; version 2 adds review state
 > on 2026-11-10; version 3 (2026-11-13) reports containers with unreadable
@@ -17,10 +19,20 @@ that host again.
 > not yet run through a Datto agent. Run its
 > script once as a **Scripts** component first; see
 > [Test order](#test-order).
+>
+> **Version 5** (2026-11-16) raises `PRUNE_MIN_VERSION` to **9**, so every host
+> whose prune is older than Host Maintenance version 9 alerts (by default)
+> until Host Maintenance runs on it, and reads the prune's
+> `/var/lib/tc-docker/pending-removal`: a stopped container waiting to be
+> removed alerts by default (`usrPendingRemovalAction`). Exercised through the
+> Tier 1 harness against a live Docker 29 daemon in a sandbox, with
+> pending-removal files written by the test; not yet through a Datto agent.
+> **Expect a wave of stale-prune alerts when version 5 goes out;** consider
+> `usrStalePruneAction` = Warn until Host Maintenance 9 has reached every host.
 
 ## What it does
 
-**Read-only.** It reads `docker info`, `docker ps`, `docker inspect` and four
+**Read-only.** It reads `docker info`, `docker ps`, `docker inspect` and six
 files, and changes nothing. It makes no network calls.
 
 The two list files:
@@ -43,7 +55,37 @@ matches.
 | A container, running or stopped, has **Compose labels that are not plain names** | **Unreadable.** Counted in the status (`1 with unreadable Compose labels`) whatever `usrUnlistedAction` says; alerts only if `usrUnlistedAction` is Alert, and then named by container name and short id in the diagnostic. Not age-gated and not matched against the ignore file. |
 | A list line is neither key form | Counted as unreadable list lines in the status |
 | The host's **prune is stale** (see below) | **Stale prune.** Named first in the status; alerts, set by `usrStalePruneAction` (default Alert). Checked **before** the "no list yet" exit, with or without a list. |
+| A stopped container is **waiting to be removed** by the prune (see below) | Named first after a stale prune, with the date it goes: `2 stopped containers will be removed by the prune (name:a from 2026-11-22, name:b from 2026-11-23)`. Alerts, set by `usrPendingRemovalAction` (default Alert). One whose key matches the ignore file is counted, marked `(ignored)`, and never alerts. |
 | The list has **not been reviewed** (no `/etc/tc-docker/reviewed`) | Named in the status; alerts only if `usrUnreviewedAction` is Alert. **Until review, stopped or missing containers are reported but never alert**, so onboarding a host raises one item, not one per container. |
+
+### Containers waiting to be removed
+
+From Host Maintenance version 9, the prune does not remove a stopped
+container the first time it finds one old enough. It records it in
+`/var/lib/tc-docker/pending-removal` (id, key, name, the time it was first
+recorded) and removes it on a run at least `GRACE_HOURS` later (from
+`/etc/default/tc-docker-prune`, default 144). This monitor reads that file
+and reports each container in it that is:
+
+- still there, still stopped, with the same key and name, and
+- still unprotected: not on the list, no `always` or `unless-stopped` restart
+  policy, no `tc.keep` label.
+
+The others are left out: the prune drops their lines on its next run. The
+date shown is the recorded time plus `GRACE_HOURS`, in the host's time zone;
+the prune removes the container at its first run on or after it. Nothing is
+reported while the list is not reviewed: the prune removes nothing then, and
+clears the file. A missing file means nothing is waiting.
+
+On an alert the diagnostic has one `PENDING` line per container, with when it
+was recorded and when it goes, and says how to keep it (**Add** it to the list
+with Docker - Update Expected Containers [Lin]) or let it go (do nothing).
+Five are named in the status at most, then `and <n> more`.
+
+**A line that is not well formed is not trusted.** It is never shown; the
+status counts it (`pending-removal file has 2 unreadable line(s)`), it alerts
+under Alert, and the diagnostic gives its line numbers only. The same holds
+for a pending-removal path that is not a regular file.
 
 ### The prune check
 
@@ -68,13 +110,13 @@ when any of these is true:
 - the script exists with no `TC_PRUNE_VERSION=` line (every version before 7),
   or one whose value is not a whole number;
 - the script's `TC_PRUNE_VERSION` is lower than `PRUNE_MIN_VERSION`, a constant
-  near the top of the script (7 now).
+  near the top of the script (9 now).
 
 A host with neither file has no prune installed, which is not stale. A
 leading zero in the stamp is read as decimal.
 
 The status names what was found, for example `prune on this host is version 3,
-older than 7`, `prune on this host has no version (installed before version
+older than 9`, `prune on this host has no version (installed before version
 7)`, or `prune service on this host does not run
 /usr/local/sbin/tc-docker-prune (version 1 layout)`. It goes first in the
 status, because the status is cut at 400 characters. On an alert the
@@ -116,7 +158,7 @@ from the latest release.
 | Field | Value |
 |---|---|
 | Name | `Docker - Containers Differ From Expected [Lin]` |
-| Description | Alerts when an expected Docker container is stopped or gone, or the host's weekly prune is out of date; reports unlisted containers. Read-only. Healthy when there is no Docker or no list yet, unless its prune is out of date. |
+| Description | Alerts when an expected Docker container is stopped or gone, a stopped container is waiting to be removed by the prune, or the host's prune is out of date; reports unlisted containers. Read-only. Healthy when there is no Docker or no list yet, unless its prune is out of date. |
 | Category | **Monitors** |
 | Script type | Shell (Unix) |
 | Target OS | Linux |
@@ -132,6 +174,7 @@ from the latest release.
 | `usrMissingAction` | **Selection** | `Alert` | `Alert` / `Warn`. Warn names stopped and missing containers in the status without alerting. |
 | `usrUnlistedAction` | **Selection** | `Warn` | `Warn` / `Alert` / `Ignore`. Starts at Warn on purpose; see Open questions. |
 | `usrStalePruneAction` | **Selection** | `Alert` | `Alert` / `Warn` / `Ignore`. What a stale prune does. Warn names it in the status without alerting; Ignore turns the prune check off. Starts at Alert on purpose: a host on an old prune can still delete containers a reviewed list would protect. |
+| `usrPendingRemovalAction` | **Selection** | `Alert` | `Alert` / `Warn` / `Ignore`. What a stopped container the prune has recorded for removal does. Warn names it in the status without alerting; Ignore leaves it out. A container whose key matches an ignore pattern is counted but never alerts. |
 | `usrUnreviewedAction` | **Selection** | `Warn` | `Warn` / `Alert` / `Ignore`. What an unreviewed list does. Alert turns every unreviewed host into a ticket, which suits onboarding a single client, but not turning the monitor on across the whole fleet. |
 | `usrUnlistedAfterHours` | String | `24` | 0–8760. A new container only counts as unlisted once it has run this long, which keeps upgrades and short tests quiet. |
 
@@ -150,6 +193,10 @@ No customer-specific value is hardcoded. An invalid value makes it report
 | Daemon unreachable | **Exit 1**: "Check could not run: cannot talk to the Docker daemon", quoting Docker's error in the diagnostic |
 | Daemon answers `docker info`, but `docker ps` or `docker inspect` fails 3 times | **Exit 1**: "Check could not run: Docker did not return its container list". Never read as "no containers". |
 | Every expected container running, nothing unlisted | **Exit 0**: e.g. `3 expected: 3 running` |
+| Stopped container waiting to be removed, `usrPendingRemovalAction` Alert | **Exit 1**, `N stopped container(s) will be removed by the prune (...)` in the status and a `PENDING` line for each in the diagnostic; exit 0 when every one matches an ignore pattern |
+| Stopped container waiting to be removed, `usrPendingRemovalAction` Warn | **Exit 0**, named in the status |
+| Stopped container waiting to be removed, `usrPendingRemovalAction` Ignore | **Exit 0**, not named |
+| `pending-removal` has lines that are not well formed | Counted in the status, never shown; **exit 1** under Alert, with `BAD PENDING` and the line numbers in the diagnostic |
 | List not reviewed, `usrUnreviewedAction` Warn | **Exit 0**, with `list NOT REVIEWED` in the status, even when stopped containers are listed |
 | List not reviewed, `usrUnreviewedAction` Alert | **Exit 1** |
 | Reviewed list, expected container stopped or missing, `usrMissingAction` Alert | **Exit 1**, naming them, with a diagnostic saying what to do |
@@ -176,6 +223,13 @@ Alerting:
     <-Start Diagnostic->
     STOPPED   name:legacy  - start it, or remove it from the list if it was retired
     UNLISTED  name:surprise  - add it to the list, add an ignore pattern, or remove the container
+    ...
+
+A container waiting to be removed:
+
+    STATUS=1 stopped container will be removed by the prune (name:old-report from 2026-11-26); 4 expected: 4 running
+    <-Start Diagnostic->
+    PENDING   name:old-report  - stopped container old-report, recorded 2026-11-20 04:09; the prune removes it from 2026-11-26 04:09. To keep it: Docker - Update Expected Containers [Lin], usrAction Add, usrItems name:old-report. To let it go: do nothing.
     ...
 
 Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
@@ -206,6 +260,13 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
   delete, and an unreachable daemon alerts anyway.
 - `PRUNE_MIN_VERSION` is a constant in the script, not an input variable, so a
   change to it is a reviewed change to the script.
+- **Pending removals are what the prune recorded at its last run.** A
+  container started since is left out (it is running); one started and
+  stopped again since is still shown with its old date until the next prune
+  drops it. The date assumes the `GRACE_HOURS` in the settings file; when the
+  prune refuses that value it removes nothing, and the date shown is wrong.
+- **The pending-removal file is trusted as the prune wrote it.** It is
+  root-only. A well-formed line edited by hand is believed.
 - **Docker only.** Podman is not handled.
 - It only knows what the list says. A list created while a service was down
   never expects that service. Check the list after the first Host Maintenance
