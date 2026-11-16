@@ -2,10 +2,10 @@
   "general": {
     "name": "Docker - Configure Host Maintenance [Lin]",
     "category": "scripts",
-    "description": "Sets Docker log and build-cache limits, seeds the expected-containers list, and a weekly prune that deletes nothing until the list is reviewed. https://github.com/TechCollective/DattoRMM_Components",
+    "description": "Sets Docker log and build-cache limits, seeds the expected-containers list, and a weekly prune that deletes nothing until the list is reviewed, then waits before removing a stopped container. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "3f5aab29-1ae2-4a8d-9956-7037cb7c1ed8",
     "hash": "",
-    "version": "8",
+    "version": "9",
     "timeout": "900",
     "securityLevel": "5",
     "installType": "unix"
@@ -62,8 +62,26 @@
       "name": "usrPruneOlderThanHours",
       "type": "string",
       "direction": "false",
-      "description": "24-8760. Only unused items older than this are pruned. 168 = 7 days.",
+      "description": "24-8760. Only unused items older than this are pruned; a stopped container counts from when it stopped. 168 = 7 days.",
       "defaultVal": "168"
+    },
+    {
+      "name": "usrPruneGraceHours",
+      "type": "string",
+      "direction": "false",
+      "description": "24-8760. After review, a stopped container the prune would remove is first recorded, and only removed by a run this many hours later, if still stopped and unprotected. 144 = 6 days, so a weekly timer removes it on its next run.",
+      "defaultVal": "144"
+    },
+    {
+      "name": "usrPruneImages",
+      "type": "map",
+      "direction": "false",
+      "description": "After review: Dangling removes untagged images only. All also removes tagged images no container uses, except ones with no registry digest (built or loaded on the host). Use All on CI or GitLab runner hosts.",
+      "defaultVal": "Dangling",
+      "options": [
+        { "name": "Dangling", "value": "dangling" },
+        { "name": "All", "value": "all" }
+      ]
     },
     {
       "name": "usrPruneNow",

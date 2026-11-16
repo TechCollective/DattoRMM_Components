@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the containers present as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written. Confirm reviewed records the review with a note, refuses when no list exists, and Show reports the review state and stopped containers the list does not protect. A container whose Compose project label carries a forged row is shown as UNREADABLE by name and short id, left off by Accept current and refused by Add; the label never reaches the output or the list. When docker ps fails but docker info answers (a shim on PATH), Accept current and Add by bare name exit 3 and the list is unchanged, and Show says there is no comparison without changing the exit code. Accept current with no containers will not empty a non-empty list.",
+  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the containers present as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written. Confirm reviewed records the review with a note, refuses when no list exists, and Show reports the review state and stopped containers the list does not protect. A container whose Compose project label carries a forged row is shown as UNREADABLE by name and short id, left off by Accept current and refused by Add; the label never reaches the output or the list. When docker ps fails but docker info answers (a shim on PATH), Accept current and Add by bare name exit 3 and the list is unchanged, and Show says there is no comparison without changing the exit code. Accept current with no containers will not empty a non-empty list. Show's STOPPED, UNLISTED line follows the prune: before review it says nothing is removed until then; after review a container the prune has recorded in /var/lib/tc-docker/pending-removal is WAITING, with when it was recorded and from when it can be removed (GRACE_HOURS from the prune's settings), and one it has not is not yet recorded; a line of that file that is not well formed is not trusted.",
   "variables": {},
   "steps": [
     {
@@ -122,7 +122,7 @@
         "STOPPED  name:tc-a",
         "MISSING  compose:other/svc",
         "running  compose:tcshop/web",
-        "STOPPED, UNLISTED  name:tc-old"
+        "STOPPED, UNLISTED  name:tc-old  - nothing is removed until the list is reviewed; after that the prune records it, then removes it 144h later; Add it to keep it"
       ]
     },
     {
@@ -156,6 +156,34 @@
       "path": "/etc/tc-docker/reviewed",
       "contains": [
         "entries, tc-test reviewer"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Show after review: tc-old recorded by the prune (2026-11-20 12:00 UTC, in a pending-removal file written here), tc-old2 stopped and not recorded (its line in the file is not well formed), GRACE_HOURS=144 in the prune settings",
+      "run": "set -e; docker create --name tc-old2 tc-test-sleep:1 /bin/sleep 1 >/dev/null; mkdir -p /etc/default /var/lib/tc-docker; chmod 700 /var/lib/tc-docker; printf '%s\\n' 'OLDER_THAN_HOURS=168' 'GRACE_HOURS=144' 'PRUNE_IMAGES=dangling' > /etc/default/tc-docker-prune; printf '%s\\n' '# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.' > /var/lib/tc-docker/pending-removal; printf '%s\\tname:tc-old\\ttc-old\\t1795176000\\n' $(docker inspect -f '{{.Id}}' tc-old) >> /var/lib/tc-docker/pending-removal; printf '%s\\tname:tc-old2\\ttc-old2\\tsoon\\n' $(docker inspect -f '{{.Id}}' tc-old2) >> /var/lib/tc-docker/pending-removal; grep -c . /var/lib/tc-docker/pending-removal",
+      "outputContains": [
+        "3"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Show after review: tc-old is waiting, with when it was recorded and from when the prune can remove it; tc-old2 is not yet recorded",
+      "outputContains": [
+        "STOPPED, UNLISTED  name:tc-old  - WAITING: recorded for removal 2026-11-20 12:00 UTC; the prune can remove it from 2026-11-26 12:00 UTC; Add it to keep it",
+        "STOPPED, UNLISTED  name:tc-old2  - not yet recorded for removal: the prune records it once it has been stopped 168h, then removes it 144h later; Add it to keep it"
+      ],
+      "outputNotContains": [
+        "soon",
+        "nothing is removed until the list is reviewed"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Show after review: clean up the pending-removal file, the settings and tc-old2",
+      "run": "rm -f /var/lib/tc-docker/pending-removal /etc/default/tc-docker-prune && docker rm tc-old2 >/dev/null && echo cleaned",
+      "outputContains": [
+        "cleaned"
       ]
     },
     {

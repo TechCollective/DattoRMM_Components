@@ -23,11 +23,19 @@
 # 3. Installs a systemd timer that runs /usr/local/sbin/tc-docker-prune.
 #    Until a person confirms the list (Update Expected Containers, Confirm
 #    reviewed), the prune touches only unused networks and build cache:
-#    no container and no image is removed. After review it also removes
-#    stopped containers and unused images older than N hours, except a
-#    stopped container on the list, with an always/unless-stopped restart
-#    policy, or labelled tc.keep -- those are kept, with their images.
-#    A container whose Compose labels are not plain names is never removed.
+#    no container and no image is removed. After review:
+#    - a stopped container on the list, with an always/unless-stopped restart
+#      policy, labelled tc.keep, or whose Compose labels are not plain names is
+#      kept, with its image. Any other that has been stopped for
+#      usrPruneOlderThanHours is first recorded in
+#      /var/lib/tc-docker/pending-removal, and removed by a later run once it has
+#      waited usrPruneGraceHours and is still stopped and unprotected. The
+#      monitor reports what is waiting. If that file cannot be written, no
+#      container is removed;
+#    - images, by usrPruneImages: Dangling (the default) removes untagged images
+#      only; All also removes tagged images no container uses, except those with
+#      no registry digest (built or loaded on the host). Never forced; each
+#      tagged image removed is printed with its repo@sha256 digest.
 #    If Docker does not return its container list, nothing at all is removed.
 #    Never volumes.
 #    The installed prune carries its version (TC_PRUNE_VERSION=<the component's
@@ -98,15 +106,17 @@ usrBuildCacheReserved="${usrBuildCacheReserved-20GB}"
 usrBuildCacheMax="${usrBuildCacheMax-100GB}"
 usrPruneSchedule="${usrPruneSchedule-Sun *-*-* 04:00:00}"
 usrPruneOlderThanHours="${usrPruneOlderThanHours-168}"
+usrPruneGraceHours="${usrPruneGraceHours-144}"
+usrPruneImages="${usrPruneImages:-dangling}"
 usrPruneNow="${usrPruneNow:-no}"
 
 # Trim surrounding whitespace a pasted value tends to carry.
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 for v in usrMode usrLogMaxSize usrLogMaxFile usrBuildCacheReserved usrBuildCacheMax \
-         usrPruneSchedule usrPruneOlderThanHours usrPruneNow; do
+         usrPruneSchedule usrPruneOlderThanHours usrPruneGraceHours usrPruneImages usrPruneNow; do
     printf -v "$v" '%s' "$(trim "${!v}")"
 done
-usrMode="${usrMode,,}"; usrPruneNow="${usrPruneNow,,}"
+usrMode="${usrMode,,}"; usrPruneNow="${usrPruneNow,,}"; usrPruneImages="${usrPruneImages,,}"
 usrLogMaxSize="${usrLogMaxSize,,}"; usrBuildCacheReserved="${usrBuildCacheReserved^^}"
 usrBuildCacheMax="${usrBuildCacheMax^^}"
 
@@ -142,6 +152,15 @@ fi
 if [ "$usrPruneNow" = "yes" ]; then
     [[ "$usrPruneOlderThanHours" =~ ^[0-9]+$ ]] && [ "$usrPruneOlderThanHours" -ge 24 ] \
         || fail 2 "usrPruneNow=yes needs usrPruneOlderThanHours of 24 or more (got '$usrPruneOlderThanHours')."
+fi
+# Written to the prune's settings whenever the prune is installed (a schedule or
+# Prune now), and checked again by the prune itself.
+if [ -n "$usrPruneSchedule" ] || [ "$usrPruneNow" = "yes" ]; then
+    [[ "$usrPruneGraceHours" =~ ^[0-9]{1,5}$ ]] && [ $((10#$usrPruneGraceHours)) -ge 24 ] \
+        && [ $((10#$usrPruneGraceHours)) -le 8760 ] \
+        || fail 2 "usrPruneGraceHours must be 24-8760 (got '$usrPruneGraceHours')."
+    usrPruneGraceHours=$((10#$usrPruneGraceHours))
+    case "$usrPruneImages" in dangling|all) ;; *) fail 2 "usrPruneImages must be dangling or all (got '$usrPruneImages')." ;; esac
 fi
 # ---------------------------------------------------------------- is Docker here?
 
@@ -818,7 +837,7 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # tc-docker-prune -- installed by the Datto RMM component
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune.
-TC_PRUNE_VERSION=8
+TC_PRUNE_VERSION=9
 # The line above is the version of the component that installed this script,
 # and the first thing a run prints is that version, so the journal shows which
 # prune ran. "Docker - Containers Differ From Expected [Lin]" reads it to flag
@@ -826,20 +845,35 @@ TC_PRUNE_VERSION=8
 # only line starting TC_PRUNE_VERSION=, equal to "version" in component.json.
 #
 # Always removes, when older than OLDER_THAN_HOURS: unused networks and build
-# cache. Once /etc/tc-docker/reviewed exists (a person confirmed the list),
-# it also removes:
-#   - stopped containers, EXCEPT any that is on /etc/tc-docker/expected-containers,
-#     has restart policy always or unless-stopped, or is labelled tc.keep.
-#     Those are kept, so their images stay "in use" and are kept too;
-#   - images no container uses (tc.keep-labelled images are kept).
-# Before review, no container and no image is touched. A container whose
-# Compose labels are not plain names is never removed. If Docker does not
-# return its container list, nothing at all is removed and the exit is 1.
-# Never volumes. Exit: 0 done, 1 error.
+# cache. Before /etc/tc-docker/reviewed exists (a person confirmed the list) it
+# removes no container and no image. After review:
+#   - A stopped container is protected, and kept with its image, when it is on
+#     /etc/tc-docker/expected-containers, has restart policy always or
+#     unless-stopped, is labelled tc.keep, or its Compose labels are not plain
+#     names. Any other stopped container that has been stopped for
+#     OLDER_THAN_HOURS (State.FinishedAt; Created if it never ran) is first
+#     RECORDED in /var/lib/tc-docker/pending-removal and left alone. A later run
+#     removes it once it has been recorded for GRACE_HOURS and is still stopped,
+#     unprotected and old enough; an entry for anything else is dropped. If the
+#     file cannot be written, no container is removed and the exit is 1.
+#   - Images, by PRUNE_IMAGES: "dangling" (the default) removes untagged images
+#     only; "all" also removes tagged images, except a tagged image with no
+#     registry digest (built or loaded here, so it cannot be pulled again).
+#     Never an image a container uses, one labelled tc.keep, or one younger than
+#     OLDER_THAN_HOURS. Removed by reference, never forced, so Docker's own
+#     in-use check is a second guard. Each tagged image removed is printed with
+#     its repo@sha256 digest, so it can be pulled again.
+# If Docker does not return its container list, nothing at all is removed and
+# the exit is 1. If the image list or the second container list cannot be read,
+# no image is removed and the exit is 1. Never volumes. Exit: 0 done, 1 error.
 set -u
 echo "tc-docker-prune version $TC_PRUNE_VERSION"
 OLDER_THAN_HOURS=168
+GRACE_HOURS=144
+PRUNE_IMAGES=dangling
 [ -r /etc/default/tc-docker-prune ] && . /etc/default/tc-docker-prune
+PENDING_DIR=/var/lib/tc-docker
+PENDING_FILE="$PENDING_DIR/pending-removal"
 
 DOCKER="$(command -v docker)" || { echo "ERROR: docker not found"; exit 1; }
 "$DOCKER" info >/dev/null 2>&1 || { echo "ERROR: the Docker daemon is not reachable"; exit 1; }
@@ -916,8 +950,33 @@ tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 
 root="$("$DOCKER" info --format '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/}"
 free() { df -h --output=avail,pcent "$root" 2>/dev/null | tail -n1 | awk '{print $1" free, "$2" used"}'; }
-cutoff=$(( $(date +%s) - OLDER_THAN_HOURS * 3600 ))
+NOW="$(date +%s)"
+cutoff=$(( NOW - OLDER_THAN_HOURS * 3600 ))
 expected=" $(tc_list "$EXPECTED_FILE" | tr '\n' ' ') "
+errors=0
+NL=$'\n'
+when() { date -d "@$1" '+%Y-%m-%d %H:%M %Z'; }
+# Seconds since the epoch for a time Docker printed, or status 1 when it is not
+# one (an age that cannot be read means keep).
+tc_epoch() {
+    [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$ ]] || return 1
+    date -d "$1" +%s 2>/dev/null
+}
+# Printable, short: for echoing a setting that failed its check.
+shown() { printf '%s' "$1" | tr -cd 'a-zA-Z0-9._ -' | cut -c1-20; }
+
+# The settings file is written by the component, but it is checked again here:
+# a hand edit must not shorten the wait or widen which images are removed.
+GRACE_OK=1
+if [[ "$GRACE_HOURS" =~ ^[0-9]{1,5}$ ]] && [ $((10#$GRACE_HOURS)) -ge 24 ] && [ $((10#$GRACE_HOURS)) -le 8760 ]; then
+    GRACE_HOURS=$((10#$GRACE_HOURS))
+else
+    GRACE_OK=0
+fi
+IMAGES_OK=1
+PRUNE_IMAGES="$(printf '%s' "${PRUNE_IMAGES:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+[ -n "$PRUNE_IMAGES" ] || PRUNE_IMAGES=dangling
+case "$PRUNE_IMAGES" in dangling|all) ;; *) IMAGES_OK=0 ;; esac
 
 # Read the containers before anything is removed. If Docker does not answer,
 # nothing is removed at all: an empty answer would look like "no containers".
@@ -929,11 +988,19 @@ fi
 echo "Pruning unused items older than ${OLDER_THAN_HOURS}h. Volumes are never removed."
 echo "Disk before: $(free)"
 
-removed=0; kept=(); errors=0
 REVIEWED=0; tc_reviewed && REVIEWED=1
 if [ "$REVIEWED" -eq 0 ]; then
     echo "List not reviewed yet: no containers and no images are removed on this host."
     echo "Review $EXPECTED_FILE, then run Docker - Update Expected Containers [Lin] with Confirm reviewed."
+    # A record made while the list was reviewed must not count towards the wait
+    # after a later review: the wait starts again then.
+    if [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; then
+        if rm -f -- "$PENDING_FILE" 2>/dev/null; then
+            echo "Pending removals cleared: the list is not reviewed, so no container is waiting to be removed."
+        else
+            echo "ERROR: could not clear $PENDING_FILE."; errors=$((errors + 1))
+        fi
+    fi
 fi
 # A container whose Compose labels could not be read is never removed, and is
 # named whatever its state, so someone looks at where it came from.
@@ -942,26 +1009,301 @@ if [ -n "$unreadable" ]; then
     echo "WARNING: containers whose Compose labels are not plain names; they are never removed here:"
     printf '%s\n' "$unreadable"
 fi
-while [ "$REVIEWED" -eq 1 ] && IFS=$'\t' read -r id key name running policy created _started keep _transient; do
-    [ -n "$id" ] || continue
-    [ "$running" = "true" ] && continue
-    why=""
-    case "$key" in unreadable:*) why="Compose labels unreadable, never removed" ;; esac
-    case "$expected" in *" $key "*) why="${why:-on the expected list}" ;; esac
-    case "$policy" in always|unless-stopped) why="${why:-restart policy $policy}" ;; esac
-    [ "$keep" = "y" ] && why="${why:-labelled tc.keep}"
-    if [ -n "$why" ]; then kept+=("$name ($why)"); continue; fi
-    c="$(date -d "$created" +%s 2>/dev/null)" || continue     # age unknown: leave it
-    [ "$c" -lt "$cutoff" ] || continue
-    if "$DOCKER" rm "$id" >/dev/null 2>&1; then removed=$((removed + 1))
-    else echo "WARNING: could not remove stopped container $name"; errors=$((errors + 1)); fi
-done <<<"$ROWS"
 
-[ "$REVIEWED" -eq 1 ] && echo "Stopped containers removed: $removed"
+# ---- stopped containers: recorded first, removed GRACE_HOURS later
+
+# The well-formed lines of the pending file (id, key, name, epoch first
+# recorded; tab separated), then one "BAD<tab>n" line if n lines were not.
+pending_lines() {
+    { [ -f "$PENDING_FILE" ] && [ ! -L "$PENDING_FILE" ] && [ -r "$PENDING_FILE" ]; } || return 0
+    awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
+        /^#/ || /^[ \t]*$/ { next }
+        NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 { print; next }
+        { bad++ }
+        END { if (bad) print "BAD", bad }' "$PENDING_FILE"
+}
+
+# Replaces the pending file with a header and $1 (lines ending in newlines):
+# a new file in the same root-only directory, checked, then renamed over the
+# old one. Returns 1, with PENDING_WHY set, when it cannot.
+PENDING_WHY=""
+pending_write() {
+    local tmp body
+    body="# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.
+# id<TAB>key<TAB>name<TAB>first recorded (seconds since 1970). The prune removes a
+# container GRACE_HOURS after it first recorded it, if it is still stopped and
+# unprotected then; otherwise the line is dropped. To keep one, add it to the
+# expected list with Docker - Update Expected Containers [Lin] (Add).
+$1"
+    if [ -L "$PENDING_DIR" ] || { [ -e "$PENDING_DIR" ] && [ ! -d "$PENDING_DIR" ]; }; then
+        PENDING_WHY="$PENDING_DIR is not a directory"; return 1
+    fi
+    if [ -L "$PENDING_FILE" ] || { [ -e "$PENDING_FILE" ] && [ ! -f "$PENDING_FILE" ]; }; then
+        PENDING_WHY="$PENDING_FILE is not a regular file"; return 1
+    fi
+    local err
+    if ! err="$(mkdir -p -- "$PENDING_DIR" 2>&1)"; then
+        PENDING_WHY="${err:-mkdir failed}"; return 1
+    fi
+    if ! err="$( { chown 0:0 -- "$PENDING_DIR" && chmod 700 -- "$PENDING_DIR"; } 2>&1)"; then
+        PENDING_WHY="$PENDING_DIR cannot be made root-only (0700): ${err:-failed}"; return 1
+    fi
+    if ! err="$(mktemp "$PENDING_DIR/.pending-removal.XXXXXX" 2>&1)"; then
+        PENDING_WHY="${err:-no file can be created in $PENDING_DIR}"; return 1
+    fi
+    tmp="$err"
+    # Compared after writing: a full disk can leave a short file.
+    if ! printf '%s' "$body" >"$tmp" 2>/dev/null || [ "$(cat -- "$tmp")" != "$(printf '%s' "$body")" ] \
+       || ! chmod 600 -- "$tmp" 2>/dev/null; then
+        rm -f -- "$tmp"; PENDING_WHY="writing it failed (is the disk full?)"; return 1
+    fi
+    if ! mv -fT -- "$tmp" "$PENDING_FILE" 2>/dev/null; then
+        rm -f -- "$tmp"; PENDING_WHY="the new file could not be renamed into place"; return 1
+    fi
+    return 0
+}
+
+kept=(); recorded=(); waiting=(); due=(); removed=(); removed_ids=()
+CONTAINERS=0
+if [ "$REVIEWED" -eq 1 ]; then
+    if [ "$GRACE_OK" -eq 1 ]; then
+        CONTAINERS=1
+    else
+        echo "ERROR: GRACE_HOURS in /etc/default/tc-docker-prune must be a whole number of hours, 24-8760 (it is '$(shown "$GRACE_HOURS")'). No container is recorded or removed this run."
+        errors=$((errors + 1))
+    fi
+fi
+if [ "$CONTAINERS" -eq 1 ]; then
+    declare -A PEND_AT=() PEND_KEY=() PEND_NAME=()
+    pend="$(pending_lines)"
+    pend_bad=0
+    while IFS=$'\t' read -r pid pkey pname pat; do
+        if [ "$pid" = "BAD" ]; then pend_bad="$pkey"; continue; fi
+        [ "${#pid}" -eq 64 ] || continue
+        [ -z "${PEND_AT[$pid]:-}" ] || continue        # the first line for an id wins
+        PEND_AT[$pid]=$((10#$pat)); PEND_KEY[$pid]="$pkey"; PEND_NAME[$pid]="$pname"
+    done <<<"$pend"
+    [ "$pend_bad" = 0 ] || echo "WARNING: $PENDING_FILE had $pend_bad unreadable line(s); they are not trusted and are dropped."
+
+    grace=$(( GRACE_HOURS * 3600 ))
+    new_pending=""
+    while IFS=$'\t' read -r id key name running policy created _started keep _transient; do
+        [ -n "$id" ] || continue
+        [ "$running" = "true" ] && continue
+        why=""
+        case "$key" in unreadable:*) why="Compose labels unreadable, never removed" ;; esac
+        case "$expected" in *" $key "*) why="${why:-on the expected list}" ;; esac
+        case "$policy" in always|unless-stopped) why="${why:-restart policy $policy}" ;; esac
+        [ "$keep" = "y" ] && why="${why:-labelled tc.keep}"
+        if [ -n "$why" ]; then kept+=("$name ($why)"); continue; fi
+        # Its age is from when it stopped; one that never ran counts from when
+        # it was created. Read here, for candidates only. Unreadable: keep.
+        fin="$("$DOCKER" container inspect -f '{{.State.FinishedAt}}' "$id" 2>/dev/null)" || continue
+        case "$fin" in 0001-01-01T00:00:00*) fin="$created" ;; esac
+        t="$(tc_epoch "$fin")" || continue
+        [ "$t" -lt "$cutoff" ] || continue
+        if [ -n "${PEND_AT[$id]:-}" ] && [ "${PEND_KEY[$id]}" = "$key" ] && [ "${PEND_NAME[$id]}" = "$name" ]; then
+            at="${PEND_AT[$id]}"
+            if [ $(( NOW - at )) -ge "$grace" ]; then
+                due+=("$id"$'\t'"$name"$'\t'"$key")
+            else
+                waiting+=("$name ($key), recorded $(when "$at"), can be removed from $(when $(( at + grace )))")
+            fi
+        else
+            at="$NOW"
+            recorded+=("$name ($key), can be removed from $(when $(( at + grace )))")
+        fi
+        new_pending="${new_pending}${id}"$'\t'"${key}"$'\t'"${name}"$'\t'"${at}"$'\n'
+    done <<<"$ROWS"
+
+    # The record comes first. Without it nothing is removed: a removal nobody
+    # could see coming is what the wait exists to prevent.
+    if ! pending_write "$new_pending"; then
+        echo "ERROR: could not write $PENDING_FILE: $PENDING_WHY. No container was removed this run."
+        errors=$((errors + 1))
+        [ "${#recorded[@]}" -eq 0 ] || echo "Not recorded, so not waiting yet: ${#recorded[@]} stopped container(s)."
+        recorded=(); waiting=(); due=()
+    fi
+    for d in ${due[@]+"${due[@]}"}; do
+        IFS=$'\t' read -r id name key <<<"$d"
+        if "$DOCKER" rm "$id" >/dev/null 2>&1; then
+            removed+=("$name ($key)"); removed_ids+=("$id")
+        else
+            echo "WARNING: could not remove stopped container $name"; errors=$((errors + 1))
+        fi
+    done
+    if [ "${#removed_ids[@]}" -gt 0 ]; then
+        rest="$(printf '%s' "$new_pending" | grep -vF -f <(printf '%s\n' "${removed_ids[@]}"))"
+        if ! pending_write "${rest:+$rest$NL}"; then
+            echo "ERROR: could not update $PENDING_FILE after removing containers: $PENDING_WHY. The next run drops the lines of containers that are gone."
+            errors=$((errors + 1))
+        fi
+    fi
+
+    if [ "${#recorded[@]}" -gt 0 ]; then
+        echo "Stopped containers recorded for removal this run (removed ${GRACE_HOURS}h from now if still stopped and not protected):"
+        printf '  %s\n' "${recorded[@]}"
+    fi
+    if [ "${#waiting[@]}" -gt 0 ]; then
+        echo "Stopped containers waiting to be removed:"
+        printf '  %s\n' "${waiting[@]}"
+    fi
+    echo "Stopped containers removed: ${#removed[@]}"
+    [ "${#removed[@]}" -eq 0 ] || printf '  %s\n' "${removed[@]}"
+fi
 if [ "${#kept[@]}" -gt 0 ]; then
     echo "Stopped containers kept, with their images:"
     printf '  %s\n' "${kept[@]}"
 fi
+
+# ---- images
+
+# One line per image, tab separated, every field non-empty ("-" for none):
+#   id  tags  names  digests  created  tc.keep(y/n)  readable(y/n)
+# tags are its repo:tag names; names every name it has (the tags, plus any
+# repo@sha256 name the containerd image store keeps), which is what removing it
+# takes; digests its repo@sha256 references. All three are space separated.
+# They are read JSON-encoded, so nothing in an image can add a row or a field,
+# and each must look like a reference; when any does not, readable is n and all
+# three are "-". Returns 1 when docker image ls or docker image inspect fails
+# three times.
+image_rows() {
+    local try ids dangling out
+    for try in 1 2 3; do
+        [ "$try" -gt 1 ] && sleep 1
+        # Top-level images, plus the untagged ones a newer docker image ls hides.
+        # Not -a: that adds the classic builder's intermediate layers, which are
+        # untagged but belong to an image that is still there.
+        ids="$("$DOCKER" image ls -q --no-trunc 2>/dev/null)" || continue
+        dangling="$("$DOCKER" image ls -q --no-trunc --filter dangling=true 2>/dev/null)" || continue
+        ids="$(printf '%s\n%s\n' "$ids" "$dangling" | sort -u | grep -v '^$')"
+        [ -n "$ids" ] || return 0
+        out="$(printf '%s\n' "$ids" | xargs "$DOCKER" image inspect -f \
+'{{.Id}}{{"\t"}}{{json .RepoTags}}{{"\t"}}{{json .RepoDigests}}{{"\t"}}{{.Created}}{{"\t"}}{{with .Config}}{{range $k, $v := .Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}{{end}}' 2>/dev/null)" || continue
+        printf '%s\n' "$out" | awk -F'\t' -v OFS='\t' '
+            function digest_ok(r,   p, h) {
+                p = index(r, "@sha256:"); if (p < 2) return 0
+                h = substr(r, p + 8)
+                return length(h) == 64 && h !~ /[^0-9a-f]/ && substr(r, 1, p - 1) !~ /@/
+            }
+            function add(l, r) { return l (l == "" ? "" : " ") r }
+            function has(l, r) { return index(" " l " ", " " r " ") > 0 }
+            function dash(l)   { return l == "" ? "-" : l }
+            # Adds the references in JSON array v (RepoTags when from_tags) to
+            # T, N and D. Returns 0 when any of them is not a plain reference.
+            function take(v, from_tags,   s, n, a, i) {
+                if (v == "null" || v == "[]") return 1
+                if (v !~ /^\[".*"\]$/) return 0
+                s = substr(v, 3, length(v) - 4); n = split(s, a, "\",\"")
+                for (i = 1; i <= n; i++) {
+                    if (a[i] !~ /^[a-zA-Z0-9][a-zA-Z0-9._\/:@-]*$/) return 0
+                    if (a[i] ~ /@/) {
+                        if (!digest_ok(a[i])) return 0
+                        if (!has(D, a[i])) D = add(D, a[i])
+                        if (from_tags) N = add(N, a[i])
+                    } else {
+                        if (!from_tags || a[i] !~ /:/) return 0
+                        T = add(T, a[i]); N = add(N, a[i])
+                    }
+                }
+                return 1
+            }
+            NF != 5 || length($1) != 71 || substr($1, 1, 7) != "sha256:" || substr($1, 8) ~ /[^0-9a-f]/ { next }
+            {
+                T = ""; N = ""; D = ""
+                ok = take($2, 1) && take($3, 0)
+                if (!ok) { T = ""; N = ""; D = "" }
+                print $1, dash(T), dash(N), dash(D), dash($4), ($5 == "y" ? "y" : "n"), (ok ? "y" : "n")
+            }'
+        return 0
+    done
+    return 1
+}
+
+# The image ids every container uses, running or stopped, one per line.
+# Returns 1 when the list cannot be read.
+used_images() {
+    local try ids out
+    for try in 1 2 3; do
+        [ "$try" -gt 1 ] && sleep 1
+        ids="$("$DOCKER" ps -aq --no-trunc 2>/dev/null)" || continue
+        [ -n "$ids" ] || return 0
+        out="$(printf '%s\n' "$ids" | xargs "$DOCKER" container inspect -f '{{.Image}}' 2>/dev/null)" || continue
+        printf '%s\n' "$out" | awk 'length($0) == 71 && substr($0, 1, 7) == "sha256:" && substr($0, 8) !~ /[^0-9a-f]/ { print; next } { bad = 1 } END { exit bad }' || return 1
+        return 0
+    done
+    return 1
+}
+
+image_section() {
+    local used rows id tags names digs created keep readable short t ref ok n_tagged=0 store
+    local -a img_removed=() img_kept=()
+    # The containerd image store gives every image a repo@sha256 digest, pulled
+    # or not, so there a digest does not show that an image can be pulled again.
+    # Unknown counts as containerd: tagged images are then kept.
+    store="$("$DOCKER" info --format '{{json .DriverStatus}}' 2>/dev/null)" || store="unknown"
+    case "$store" in *io.containerd.snapshotter*|unknown) store="containerd" ;; *) store="classic" ;; esac
+    if [ "$IMAGES_OK" -eq 0 ]; then
+        echo "ERROR: PRUNE_IMAGES in /etc/default/tc-docker-prune must be dangling or all (it is '$(shown "$PRUNE_IMAGES")'). No image was removed."
+        errors=$((errors + 1)); return
+    fi
+    # After the containers above were removed, so an image they used can go.
+    if ! used="$(used_images)"; then
+        echo "ERROR: Docker did not return its container list for the image check. No image was removed."
+        errors=$((errors + 1)); return
+    fi
+    if ! rows="$(image_rows)"; then
+        echo "ERROR: Docker did not return its image list (docker image ls or docker image inspect failed 3 times). No image was removed."
+        errors=$((errors + 1)); return
+    fi
+    while IFS=$'\t' read -r id tags names digs created keep readable; do
+        [ -n "$id" ] || continue
+        short="${id#sha256:}"; short="${short:0:12}"
+        if [ "$readable" != "y" ]; then
+            img_kept+=("$short - its tags or digests are not plain references, so it is never removed here"); continue
+        fi
+        [ "$keep" = "y" ] && continue                                 # labelled tc.keep
+        case $'\n'"$used"$'\n' in *$'\n'"$id"$'\n'*) continue ;; esac  # a container uses it
+        t="$(tc_epoch "$created")" || continue                        # age unknown: keep
+        [ "$t" -lt "$cutoff" ] || continue                            # too new
+        if [ "$tags" = "-" ]; then
+            # Untagged: by its id, or by the repo@sha256 names it still has.
+            # Never --force, so Docker refuses if anything uses it.
+            ok=1
+            [ "$names" != "-" ] || names="$id"
+            for ref in $names; do
+                "$DOCKER" image rm "$ref" >/dev/null 2>&1 || { ok=0; echo "WARNING: could not remove untagged image $short"; errors=$((errors + 1)); break; }
+            done
+            if [ "$ok" -eq 1 ]; then
+                if [ "$digs" = "-" ]; then img_removed+=("untagged $short")
+                else img_removed+=("untagged $short - pull again: $digs"); fi
+            fi
+            continue
+        fi
+        if [ "$PRUNE_IMAGES" = "dangling" ]; then n_tagged=$((n_tagged + 1)); continue; fi
+        if [ "$digs" = "-" ]; then
+            img_kept+=("$tags - no registry digest: built or loaded on this host, so it cannot be pulled again"); continue
+        fi
+        if [ "$store" = "containerd" ]; then
+            img_kept+=("$tags - this host uses the containerd image store, which gives every image a digest, so whether it can be pulled again cannot be told"); continue
+        fi
+        # Each name in turn, without --force; the last one removes the image.
+        ok=1
+        for ref in $names; do
+            "$DOCKER" image rm "$ref" >/dev/null 2>&1 || { ok=0; echo "WARNING: could not remove image $ref"; errors=$((errors + 1)); break; }
+        done
+        [ "$ok" -eq 1 ] && img_removed+=("$tags - pull again: $digs")
+    done <<<"$rows"
+
+    echo "Images removed (PRUNE_IMAGES=$PRUNE_IMAGES): ${#img_removed[@]}"
+    [ "${#img_removed[@]}" -eq 0 ] || printf '  %s\n' "${img_removed[@]}"
+    if [ "${#img_kept[@]}" -gt 0 ]; then
+        echo "Images kept that no container uses:"
+        printf '  %s\n' "${img_kept[@]}"
+    fi
+    [ "$n_tagged" -eq 0 ] || echo "Images kept: $n_tagged tagged image(s) that no container uses (PRUNE_IMAGES=dangling removes untagged images only)."
+}
+[ "$REVIEWED" -eq 1 ] && image_section
 
 step() {  # label, then the prune command
     local label="$1" out; shift
@@ -976,7 +1318,6 @@ step() {  # label, then the prune command
         echo "ERROR: $label failed: $(printf '%s\n' "$out" | tail -n1)"; errors=$((errors + 1))
     fi
 }
-[ "$REVIEWED" -eq 1 ] && step "Images" "$DOCKER" image prune --all --force --filter "until=${OLDER_THAN_HOURS}h" --filter "label!=tc.keep"
 step "Networks"    "$DOCKER" network prune --force --filter "until=${OLDER_THAN_HOURS}h"
 step "Build cache" "$DOCKER" builder prune --all --force --filter "until=${OLDER_THAN_HOURS}h"
 
@@ -1003,7 +1344,9 @@ install_prune_script() {
     local conf
     conf="# Written by the Datto RMM component \"Docker - Configure Host Maintenance [Lin]\".
 # Re-run the component to change these; edits here are overwritten.
-OLDER_THAN_HOURS=$usrPruneOlderThanHours"
+OLDER_THAN_HOURS=$usrPruneOlderThanHours
+GRACE_HOURS=$usrPruneGraceHours
+PRUNE_IMAGES=$usrPruneImages"
     put_file "$PRUNE_BIN"  "$PRUNE_SCRIPT" 755 || return 1
     put_file "$PRUNE_CONF" "$conf"         644 || return 1
 }
@@ -1123,7 +1466,7 @@ WantedBy=timers.target"
     put_file "$UNIT_DIR/$UNIT_NAME.timer"   "$timer" 644 || return 1
     local changed=$WROTE
 
-    local guard="keeps stopped containers on the expected list"
+    local guard="keeps stopped containers on the expected list, removes other stopped ones ${usrPruneGraceHours}h after recording them, images: $usrPruneImages"
 
     if [ "$usrMode" = "report" ]; then
         if [ $changed -eq 1 ]; then

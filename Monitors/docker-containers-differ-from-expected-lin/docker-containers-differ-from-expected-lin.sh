@@ -17,6 +17,13 @@
 #   - a container whose Compose labels are not plain names  -> usrUnlistedAction
 #     (it has no key, so it can never be listed; the label is never printed)
 #
+#   - a stopped container the prune has recorded for removal  -> usrPendingRemovalAction
+#     (/var/lib/tc-docker/pending-removal, written by the prune from version 9;
+#     shown with the date from which the prune removes it. Only while the list
+#     is reviewed, and only containers still stopped and unprotected. One whose
+#     key matches an ignore pattern is counted but never alerts. Lines of the
+#     file that are not well formed are counted, never shown or trusted.)
+#
 #   - a prune installed by an older version of Host Maintenance  -> usrStalePruneAction
 #     (/usr/local/sbin/tc-docker-prune older than PRUNE_MIN_VERSION, with no
 #     version stamp, or the version 1 layout where the systemd service runs
@@ -64,21 +71,25 @@ diag() { DIAG="${DIAG}${1}"$'\n'; }
 # TC_PRUNE_VERSION=<its own version> at the top of the script). Raise this when a
 # safety fix to the prune ships, and every host still on an older prune is
 # flagged on its next run.
-PRUNE_MIN_VERSION=7
+PRUNE_MIN_VERSION=9
 PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
 PRUNE_UNIT="/etc/systemd/system/tc-docker-prune.service"
+PRUNE_CONF="/etc/default/tc-docker-prune"
+PENDING_FILE="/var/lib/tc-docker/pending-removal"
 
 usrUnlistedAfterHours="${usrUnlistedAfterHours:-24}"
 usrUnlistedAction="$(printf '%s' "${usrUnlistedAction:-warn}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 usrMissingAction="$(printf '%s' "${usrMissingAction:-alert}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 usrUnreviewedAction="$(printf '%s' "${usrUnreviewedAction:-warn}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 usrStalePruneAction="$(printf '%s' "${usrStalePruneAction:-alert}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+usrPendingRemovalAction="$(printf '%s' "${usrPendingRemovalAction:-alert}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 [[ "$usrUnlistedAfterHours" =~ ^[0-9]+$ ]] && [ "$usrUnlistedAfterHours" -le 8760 ] \
     || emit 1 "Check could not run: usrUnlistedAfterHours must be 0-8760 (got '$usrUnlistedAfterHours')"
 case "$usrUnlistedAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrUnlistedAction must be alert, warn or ignore (got '$usrUnlistedAction')" ;; esac
 case "$usrMissingAction"  in alert|warn) ;;        *) emit 1 "Check could not run: usrMissingAction must be alert or warn (got '$usrMissingAction')" ;; esac
 case "$usrUnreviewedAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrUnreviewedAction must be alert, warn or ignore (got '$usrUnreviewedAction')" ;; esac
 case "$usrStalePruneAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrStalePruneAction must be alert, warn or ignore (got '$usrStalePruneAction')" ;; esac
+case "$usrPendingRemovalAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrPendingRemovalAction must be alert, warn or ignore (got '$usrPendingRemovalAction')" ;; esac
 for t in awk grep sed date xargs; do
     command -v "$t" >/dev/null 2>&1 || emit 1 "Check could not run: required tool '$t' is missing"
 done
@@ -277,6 +288,61 @@ UNREVIEWED=0; tc_reviewed || UNREVIEWED=1
 if [ "$UNREVIEWED" -eq 1 ] && [ "$usrUnreviewedAction" != "ignore" ]; then
     SUMMARY="$SUMMARY; list NOT REVIEWED, so no containers or images are pruned"
 fi
+
+# Stopped containers the prune has recorded and will remove. Read only while
+# the list is reviewed (before that the prune removes nothing and clears the
+# file), and only those still stopped and unprotected: the prune drops the
+# others on its next run. A line that is not well formed is counted, not shown.
+PENDING=(); PENDING_DIAG=(); PENDING_ALERTABLE=0; PENDING_BAD=0; PENDING_BAD_LINES=""
+if [ "$usrPendingRemovalAction" != "ignore" ] && [ "$UNREVIEWED" -eq 0 ] \
+   && { [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; }; then
+    if [ -f "$PENDING_FILE" ] && [ ! -L "$PENDING_FILE" ] && [ -r "$PENDING_FILE" ]; then
+        PLINES="$(awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
+            /^#/ || /^[ \t]*$/ { next }
+            NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 { print $1, $2, $3, $4 + 0; next }
+            { print "BAD", NR }' "$PENDING_FILE")"
+    else
+        PLINES=""; PENDING_BAD=1; PENDING_BAD_LINES="it is not a regular file this monitor can read"
+    fi
+    GRACE="$(sed -n 's/^GRACE_HOURS=\([0-9]\{1,5\}\)$/\1/p' "$PRUNE_CONF" 2>/dev/null | tail -n 1)"
+    GRACE=$(( 10#${GRACE:-144} ))
+    declare -A PSEEN=()
+    while IFS=$'\t' read -r pid pkey pname pat; do
+        [ -n "$pid" ] || continue
+        if [ "$pid" = "BAD" ]; then
+            PENDING_BAD=$((PENDING_BAD + 1)); PENDING_BAD_LINES="${PENDING_BAD_LINES:-line(s) }${PENDING_BAD_LINES:+, }$pkey"; continue
+        fi
+        [ -z "${PSEEN[$pid]:-}" ] || continue
+        PSEEN[$pid]=1
+        # Still there, stopped, with the same key and name, and not protected.
+        row="$(printf '%s\n' "$ROWS" | awk -F'\t' -v id="$pid" '$1 == id {print; exit}')"
+        IFS=$'\t' read -r _id rkey rname rrunning rpolicy _c _s rkeep _t <<<"$row"
+        [ -n "$row" ] && [ "$rrunning" = "false" ] && [ "$rkey" = "$pkey" ] && [ "$rname" = "$pname" ] || continue
+        printf '%s\n' ${EXPECTED[@]+"${EXPECTED[@]}"} | grep -qxF -- "$pkey" && continue
+        case "$rpolicy" in always|unless-stopped) continue ;; esac
+        [ "$rkeep" = "y" ] && continue
+        from=$(( pat + GRACE * 3600 ))
+        if tc_ignored "$pkey"; then
+            PENDING+=("$pkey from $(date -d "@$from" '+%Y-%m-%d') (ignored)")
+            PENDING_DIAG+=("PENDING   $pkey  - stopped container $pname, recorded $(date -d "@$pat" '+%Y-%m-%d %H:%M'); the prune removes it from $(date -d "@$from" '+%Y-%m-%d %H:%M'). It matches an ignore pattern, so it does not alert.")
+        else
+            PENDING+=("$pkey from $(date -d "@$from" '+%Y-%m-%d')")
+            PENDING_ALERTABLE=$((PENDING_ALERTABLE + 1))
+            PENDING_DIAG+=("PENDING   $pkey  - stopped container $pname, recorded $(date -d "@$pat" '+%Y-%m-%d %H:%M'); the prune removes it from $(date -d "@$from" '+%Y-%m-%d %H:%M'). To keep it: Docker - Update Expected Containers [Lin], usrAction Add, usrItems $pkey. To let it go: do nothing.")
+        fi
+    done <<<"$PLINES"
+fi
+PENDING_STATUS=""
+if [ "${#PENDING[@]}" -gt 0 ]; then
+    if [ "${#PENDING[@]}" -eq 1 ]; then PENDING_STATUS="1 stopped container will be removed by the prune"
+    else PENDING_STATUS="${#PENDING[@]} stopped containers will be removed by the prune"; fi
+    shown=("${PENDING[@]:0:5}")
+    PENDING_STATUS="$PENDING_STATUS ($(join "${shown[@]}")$([ "${#PENDING[@]}" -gt 5 ] && echo " and $(( ${#PENDING[@]} - 5 )) more"))"
+fi
+if [ "$PENDING_BAD" -gt 0 ]; then
+    PENDING_STATUS="${PENDING_STATUS:+$PENDING_STATUS; }pending-removal file has $PENDING_BAD unreadable line(s)"
+fi
+[ -n "$PENDING_STATUS" ] && SUMMARY="$PENDING_STATUS; $SUMMARY"
 # A stale prune goes first: it is what the old prune may delete that matters
 # most here, and emit cuts the status at 400 characters.
 [ -n "$STALE_STATUS" ] && SUMMARY="$STALE_STATUS; $SUMMARY"
@@ -289,10 +355,15 @@ if [ "${#UNLISTED[@]}" -gt 0 ] && [ "$usrUnlistedAction" = "alert" ]; then ALERT
 if [ "${#UNREADABLE[@]}" -gt 0 ] && [ "$usrUnlistedAction" = "alert" ]; then ALERT=1; fi
 if [ "$UNREVIEWED" -eq 1 ] && [ "$usrUnreviewedAction" = "alert" ]; then ALERT=1; fi
 if [ -n "$STALE_STATUS" ] && [ "$usrStalePruneAction" = "alert" ]; then ALERT=1; fi
+if [ $(( PENDING_ALERTABLE + PENDING_BAD )) -gt 0 ] && [ "$usrPendingRemovalAction" = "alert" ]; then ALERT=1; fi
 
 if [ "$ALERT" -eq 1 ]; then
     if [ -n "$STALE_STATUS" ] && [ "$usrStalePruneAction" = "alert" ]; then
         for k in "${STALE_DIAG[@]}"; do diag "$k"; done
+    fi
+    if [ "$usrPendingRemovalAction" = "alert" ]; then
+        for k in ${PENDING_DIAG[@]+"${PENDING_DIAG[@]}"}; do diag "$k"; done
+        [ "$PENDING_BAD" -eq 0 ] || diag "BAD PENDING  $PENDING_FILE: $PENDING_BAD_LINES not id<TAB>key<TAB>name<TAB>time, so not shown or trusted. The prune drops such lines on its next run."
     fi
     for k in ${STOPPED[@]+"${STOPPED[@]}"}; do diag "STOPPED   $k  - start it, or remove it from the list if it was retired"; done
     for k in ${MISSING[@]+"${MISSING[@]}"}; do diag "MISSING   $k  - no container with this key exists; redeploy it, or remove it from the list"; done
