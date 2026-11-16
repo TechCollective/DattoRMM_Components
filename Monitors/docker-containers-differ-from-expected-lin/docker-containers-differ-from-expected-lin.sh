@@ -17,9 +17,16 @@
 #   - a container whose Compose labels are not plain names  -> usrUnlistedAction
 #     (it has no key, so it can never be listed; the label is never printed)
 #
+#   - a prune installed by an older version of Host Maintenance  -> usrStalePruneAction
+#     (/usr/local/sbin/tc-docker-prune older than PRUNE_MIN_VERSION, with no
+#     version stamp, or the version 1 layout where the systemd service runs
+#     docker directly; until the component is run on the host again the OLD
+#     prune's rules apply). Read from two files only; checked before the
+#     "no list yet" exit, because hosts on versions 1 and 2 have no list.
+#
 # Compose one-offs, --rm containers and anything matching /etc/tc-docker/ignore
 # are never "unlisted". A host without Docker, or without a list yet, is healthy
-# and says so. A daemon that cannot be reached, or that does not return its
+# and says so (unless its prune is stale). A daemon that cannot be reached, or that does not return its
 # container list, is an alert: not knowing is the failure this monitor exists
 # to catch.
 
@@ -52,15 +59,26 @@ trap on_exit EXIT
 DIAG=""
 diag() { DIAG="${DIAG}${1}"$'\n'; }
 
+# The oldest prune this monitor accepts: the version of "Docker - Configure Host
+# Maintenance [Lin]" that installed /usr/local/sbin/tc-docker-prune (it stamps
+# TC_PRUNE_VERSION=<its own version> at the top of the script). Raise this when a
+# safety fix to the prune ships, and every host still on an older prune is
+# flagged on its next run.
+PRUNE_MIN_VERSION=7
+PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
+PRUNE_UNIT="/etc/systemd/system/tc-docker-prune.service"
+
 usrUnlistedAfterHours="${usrUnlistedAfterHours:-24}"
 usrUnlistedAction="$(printf '%s' "${usrUnlistedAction:-warn}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 usrMissingAction="$(printf '%s' "${usrMissingAction:-alert}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 usrUnreviewedAction="$(printf '%s' "${usrUnreviewedAction:-warn}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+usrStalePruneAction="$(printf '%s' "${usrStalePruneAction:-alert}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 [[ "$usrUnlistedAfterHours" =~ ^[0-9]+$ ]] && [ "$usrUnlistedAfterHours" -le 8760 ] \
     || emit 1 "Check could not run: usrUnlistedAfterHours must be 0-8760 (got '$usrUnlistedAfterHours')"
 case "$usrUnlistedAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrUnlistedAction must be alert, warn or ignore (got '$usrUnlistedAction')" ;; esac
 case "$usrMissingAction"  in alert|warn) ;;        *) emit 1 "Check could not run: usrMissingAction must be alert or warn (got '$usrMissingAction')" ;; esac
 case "$usrUnreviewedAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrUnreviewedAction must be alert, warn or ignore (got '$usrUnreviewedAction')" ;; esac
+case "$usrStalePruneAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrStalePruneAction must be alert, warn or ignore (got '$usrStalePruneAction')" ;; esac
 for t in awk grep sed date xargs; do
     command -v "$t" >/dev/null 2>&1 || emit 1 "Check could not run: required tool '$t' is missing"
 done
@@ -142,7 +160,70 @@ tc_ignored() {
 tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # <<< tc-docker shared
 
-[ -e "$EXPECTED_FILE" ] || emit 0 "No expected-containers list on this host yet; Docker - Configure Host Maintenance [Lin] creates it"
+# A prune installed by an older Host Maintenance. Reads two files and nothing
+# else. STALE_STATUS is the status text ("" when nothing is stale or the action
+# is ignore); STALE_DIAG the diagnostic lines for an alert.
+STALE_STATUS=""
+STALE_DIAG=()
+stale_prune_check() {
+    local found=() v n line bad="" val
+    # The version 1 layout: the service runs docker itself, not the script.
+    if [ -e "$PRUNE_UNIT" ] || [ -L "$PRUNE_UNIT" ]; then
+        local seen=0
+        while IFS= read -r line; do
+            seen=1
+            val="${line#"${line%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"
+            [ "$val" = "$PRUNE_BIN" ] || bad="${bad:-${val:-(empty)}}"
+        done < <(sed -n 's/^[[:space:]]*ExecStart=//p' "$PRUNE_UNIT" 2>/dev/null)
+        [ "$seen" -eq 1 ] || bad="(no ExecStart line)"
+        if [ -n "$bad" ]; then
+            found+=("prune service on this host does not run $PRUNE_BIN (version 1 layout)")
+            STALE_DIAG+=("STALE PRUNE  $PRUNE_UNIT has ExecStart: $(printf '%s' "$bad" | tr -cd '[:print:]' | cut -c1-200)")
+        fi
+    fi
+    # The script: a readable TC_PRUNE_VERSION whole number, at least PRUNE_MIN_VERSION.
+    # The stamp was introduced in version 7, so a script without one is older than 7
+    # whatever PRUNE_MIN_VERSION is by now.
+    if [ -e "$PRUNE_BIN" ] || [ -L "$PRUNE_BIN" ]; then
+        line="$(grep -a -m 1 '^TC_PRUNE_VERSION=' "$PRUNE_BIN" 2>/dev/null)" || line=""
+        if [ -z "$line" ]; then
+            found+=("prune on this host has no version (installed before version 7)")
+            STALE_DIAG+=("STALE PRUNE  $PRUNE_BIN has no TC_PRUNE_VERSION line, so it was installed before version 7 of Docker - Configure Host Maintenance [Lin]")
+        else
+            v="${line#TC_PRUNE_VERSION=}"; v="${v%"${v##*[![:space:]]}"}"
+            if [[ ! "$v" =~ ^[0-9]+$ ]]; then
+                found+=("prune on this host has an unreadable version (not a whole number)")
+                STALE_DIAG+=("STALE PRUNE  $PRUNE_BIN has a TC_PRUNE_VERSION line that is not a whole number")
+            else
+                n="${v#"${v%%[!0]*}"}"; n="${n:-0}"      # no leading zeros: never octal
+                # More than 9 digits is a number far above any minimum; skip the arithmetic.
+                if [ "${#n}" -le 9 ] && [ "$n" -lt "$PRUNE_MIN_VERSION" ]; then
+                    found+=("prune on this host is version $n, older than $PRUNE_MIN_VERSION")
+                    STALE_DIAG+=("STALE PRUNE  $PRUNE_BIN is version $n; this monitor wants $PRUNE_MIN_VERSION or newer")
+                fi
+            fi
+        fi
+    fi
+    [ "${#found[@]}" -gt 0 ] || return 0
+    local f
+    for f in "${found[@]}"; do STALE_STATUS="${STALE_STATUS:+$STALE_STATUS; }$f"; done
+    STALE_DIAG+=("             Run Docker - Configure Host Maintenance [Lin] on this host to install the current prune. Until then the old prune's rules apply.")
+}
+[ "$usrStalePruneAction" = "ignore" ] || stale_prune_check
+
+# Before the "no list" exit: hosts on versions 1 and 2 have no list, and they are
+# the ones this check exists to find.
+if [ ! -e "$EXPECTED_FILE" ]; then
+    NO_LIST="No expected-containers list on this host yet; Docker - Configure Host Maintenance [Lin] creates it"
+    if [ -n "$STALE_STATUS" ]; then
+        if [ "$usrStalePruneAction" = "alert" ]; then
+            for line in "${STALE_DIAG[@]}"; do diag "$line"; done
+            emit 1 "$STALE_STATUS; ${NO_LIST,}"
+        fi
+        emit 0 "$STALE_STATUS; ${NO_LIST,}"
+    fi
+    emit 0 "$NO_LIST"
+fi
 
 mapfile -t EXPECTED < <(tc_list "$EXPECTED_FILE")
 BAD=()
@@ -196,6 +277,9 @@ UNREVIEWED=0; tc_reviewed || UNREVIEWED=1
 if [ "$UNREVIEWED" -eq 1 ] && [ "$usrUnreviewedAction" != "ignore" ]; then
     SUMMARY="$SUMMARY; list NOT REVIEWED, so no containers or images are pruned"
 fi
+# A stale prune goes first: it is what the old prune may delete that matters
+# most here, and emit cuts the status at 400 characters.
+[ -n "$STALE_STATUS" ] && SUMMARY="$STALE_STATUS; $SUMMARY"
 
 ALERT=0
 # Before review, stopped or missing containers are part of the review, not
@@ -204,8 +288,12 @@ if [ $(( ${#STOPPED[@]} + ${#MISSING[@]} )) -gt 0 ] && [ "$usrMissingAction" = "
 if [ "${#UNLISTED[@]}" -gt 0 ] && [ "$usrUnlistedAction" = "alert" ]; then ALERT=1; fi
 if [ "${#UNREADABLE[@]}" -gt 0 ] && [ "$usrUnlistedAction" = "alert" ]; then ALERT=1; fi
 if [ "$UNREVIEWED" -eq 1 ] && [ "$usrUnreviewedAction" = "alert" ]; then ALERT=1; fi
+if [ -n "$STALE_STATUS" ] && [ "$usrStalePruneAction" = "alert" ]; then ALERT=1; fi
 
 if [ "$ALERT" -eq 1 ]; then
+    if [ -n "$STALE_STATUS" ] && [ "$usrStalePruneAction" = "alert" ]; then
+        for k in "${STALE_DIAG[@]}"; do diag "$k"; done
+    fi
     for k in ${STOPPED[@]+"${STOPPED[@]}"}; do diag "STOPPED   $k  - start it, or remove it from the list if it was retired"; done
     for k in ${MISSING[@]+"${MISSING[@]}"}; do diag "MISSING   $k  - no container with this key exists; redeploy it, or remove it from the list"; done
     for k in ${UNLISTED[@]+"${UNLISTED[@]}"}; do diag "UNLISTED  $k  - add it to the list, add an ignore pattern, or remove the container"; done

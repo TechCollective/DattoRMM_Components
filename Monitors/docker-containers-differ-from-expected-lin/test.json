@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A host without Docker is Tier 2.",
+  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. A host without Docker is Tier 2.",
   "variables": {},
   "steps": [
     {
@@ -111,6 +111,285 @@
       "label": "Docker answers again: back to the status with the unreadable count",
       "outputContains": [
         "1 with unreadable Compose labels"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stale prune: the list is reviewed and a current prune (version 7) is installed",
+      "run": "rm -f /usr/local/sbin/tc-docker-prune /etc/systemd/system/tc-docker-prune.service && mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=7' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && cat /etc/tc-docker/expected-containers | tail -n 1 && test -s /etc/tc-docker/reviewed"
+    },
+    {
+      "type": "runComponent",
+      "label": "Current prune: no stale text, same status and exit as before",
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 with unreadable Compose labels"
+      ],
+      "outputNotContains": [
+        "prune on this host",
+        "prune service on this host",
+        "STALE PRUNE",
+        "older than",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stale prune: a newer prune than the minimum (version 8, and 09 written with a leading zero)",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' '# TC_PRUNE_VERSION=3 in a comment is not the stamp' 'TC_PRUNE_VERSION=09' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
+    },
+    {
+      "type": "runComponent",
+      "label": "A newer prune is not stale, and a leading zero is not read as octal",
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 with unreadable Compose labels"
+      ],
+      "outputNotContains": [
+        "prune on this host",
+        "prune service on this host",
+        "STALE PRUNE",
+        "older than",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stale prune: the prune script has no version line (a version 2 or 3 to 6 prune), only a comment that mentions it",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' '# TC_PRUNE_VERSION=7 appears here only in a comment' 'REQUIRED_CONTAINERS=\"\"' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
+    },
+    {
+      "type": "runComponent",
+      "label": "No version line, usrStalePruneAction Alert (default): stale, alert, the diagnostic says what to run",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=prune on this host has no version (installed before version 7); 1 expected: 1 running; 1 with unreadable Compose labels",
+        "<-Start Diagnostic->",
+        "STALE PRUNE",
+        "Run Docker - Configure Host Maintenance [Lin] on this host",
+        "old prune's rules apply"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stale prune: stamped version 3",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=3' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
+    },
+    {
+      "type": "runComponent",
+      "label": "Stamped below the minimum: stale, names both numbers, alert",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=prune on this host is version 3, older than 7; 1 expected: 1 running; 1 with unreadable Compose labels",
+        "<-Start Diagnostic->",
+        "STALE PRUNE",
+        "Run Docker - Configure Host Maintenance [Lin] on this host",
+        "old prune's rules apply"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stale prune: stamped 06 (a leading zero is not octal, and 6 is below 7)",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=06' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
+    },
+    {
+      "type": "runComponent",
+      "label": "Stamped 06: version 6, older than 7",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=prune on this host is version 6, older than 7; 1 expected: 1 running; 1 with unreadable Compose labels"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stale prune: a version line that is not a whole number",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=seven' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
+    },
+    {
+      "type": "runComponent",
+      "label": "A stamp that is not a whole number is stale, and the text is not printed",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=prune on this host has an unreadable version (not a whole number); 1 expected: 1 running; 1 with unreadable Compose labels",
+        "STALE PRUNE"
+      ],
+      "outputNotContains": [
+        "seven"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stale prune: version 3 prune, and the list exists but is not reviewed",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=3' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && rm -f /etc/tc-docker/reviewed"
+    },
+    {
+      "type": "runComponent",
+      "label": "Stale prune and an unreviewed list: both are in the status, the stale prune first, and it alerts",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=prune on this host is version 3, older than 7; 1 expected: 1 running",
+        "list NOT REVIEWED",
+        "STALE PRUNE"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stale prune: review the list again",
+      "run": "echo 'tc-test review' > /etc/tc-docker/reviewed && test -s /etc/tc-docker/reviewed"
+    },
+    {
+      "type": "runComponent",
+      "label": "Stale prune, usrStalePruneAction Warn: named in the status, exit 0, no diagnostic",
+      "variables": {
+        "usrStalePruneAction": "Warn"
+      },
+      "outputContains": [
+        "STATUS=prune on this host is version 3, older than 7; 1 expected: 1 running; 1 with unreadable Compose labels"
+      ],
+      "outputNotContains": [
+        "Diagnostic",
+        "STALE PRUNE"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Stale prune, usrStalePruneAction Ignore: not named, exit 0",
+      "variables": {
+        "usrStalePruneAction": "Ignore"
+      },
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 with unreadable Compose labels"
+      ],
+      "outputNotContains": [
+        "prune on this host",
+        "prune service on this host",
+        "STALE PRUNE",
+        "older than",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A bad usrStalePruneAction is refused",
+      "variables": {
+        "usrStalePruneAction": "sometimes"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: usrStalePruneAction must be alert, warn or ignore"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "No list yet and no prune installed (a host Host Maintenance has never run on)",
+      "run": "rm -f /usr/local/sbin/tc-docker-prune /etc/systemd/system/tc-docker-prune.service && rm -f /etc/tc-docker/expected-containers /etc/tc-docker/reviewed && test ! -e /etc/tc-docker/expected-containers && test ! -e /usr/local/sbin/tc-docker-prune && test ! -e /etc/systemd/system/tc-docker-prune.service && echo 'no list, no prune, no unit'",
+      "outputContains": [
+        "no list, no prune, no unit"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "No prune installed and no list: healthy, as before",
+      "outputContains": [
+        "STATUS=No expected-containers list on this host yet; Docker - Configure Host Maintenance [Lin] creates it"
+      ],
+      "outputNotContains": [
+        "prune on this host",
+        "prune service on this host",
+        "STALE PRUNE",
+        "older than",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Version 1 layout: the service runs docker system prune itself; no script, no list",
+      "run": "mkdir -p /etc/systemd/system && printf '%s\\n' '[Unit]' 'Description=tc-test prune' '[Service]' 'Type=oneshot' 'ExecStart=/usr/bin/docker system prune --all --force --filter until=168h' > /etc/systemd/system/tc-docker-prune.service && cat /etc/systemd/system/tc-docker-prune.service && test ! -e /usr/local/sbin/tc-docker-prune && test ! -e /etc/tc-docker/expected-containers"
+    },
+    {
+      "type": "runComponent",
+      "label": "Version 1 layout, no list, usrStalePruneAction Alert (default): stale and alert, before the no-list exit",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=prune service on this host does not run /usr/local/sbin/tc-docker-prune (version 1 layout); no expected-containers list on this host yet",
+        "<-Start Diagnostic->",
+        "STALE PRUNE",
+        "ExecStart: /usr/bin/docker system prune --all",
+        "Run Docker - Configure Host Maintenance [Lin] on this host",
+        "old prune's rules apply"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Version 1 layout, usrStalePruneAction Warn: named in the status, exit 0",
+      "variables": {
+        "usrStalePruneAction": "Warn"
+      },
+      "outputContains": [
+        "STATUS=prune service on this host does not run /usr/local/sbin/tc-docker-prune (version 1 layout); no expected-containers list"
+      ],
+      "outputNotContains": [
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Version 1 layout, usrStalePruneAction Ignore: not named, the no-list status as before",
+      "variables": {
+        "usrStalePruneAction": "Ignore"
+      },
+      "outputContains": [
+        "STATUS=No expected-containers list on this host yet; Docker - Configure Host Maintenance [Lin] creates it"
+      ],
+      "outputNotContains": [
+        "prune on this host",
+        "prune service on this host",
+        "STALE PRUNE",
+        "older than",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Version 2 layout: a script with no version line, the right unit, and no list",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'REQUIRED_CONTAINERS=\"\"' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && mkdir -p /etc/systemd/system && printf '%s\\n' '[Unit]' 'Description=tc-test prune' '[Service]' 'Type=oneshot' 'ExecStart=/usr/local/sbin/tc-docker-prune' > /etc/systemd/system/tc-docker-prune.service && cat /etc/systemd/system/tc-docker-prune.service"
+    },
+    {
+      "type": "runComponent",
+      "label": "Version 2 layout, no list: stale (no version), alert",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=prune on this host has no version (installed before version 7); no expected-containers list on this host yet",
+        "STALE PRUNE",
+        "Run Docker - Configure Host Maintenance [Lin] on this host"
+      ],
+      "outputNotContains": [
+        "prune service on this host"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Current layout: version 7 script, the right unit, and no list",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=7' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && mkdir -p /etc/systemd/system && printf '%s\\n' '[Unit]' 'Description=tc-test prune' '[Service]' 'Type=oneshot' 'ExecStart=/usr/local/sbin/tc-docker-prune' > /etc/systemd/system/tc-docker-prune.service && cat /etc/systemd/system/tc-docker-prune.service"
+    },
+    {
+      "type": "runComponent",
+      "label": "Current prune and unit, no list: healthy, as before",
+      "outputContains": [
+        "STATUS=No expected-containers list on this host yet; Docker - Configure Host Maintenance [Lin] creates it"
+      ],
+      "outputNotContains": [
+        "prune on this host",
+        "prune service on this host",
+        "STALE PRUNE",
+        "older than",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stale prune tests: clean up",
+      "run": "rm -f /usr/local/sbin/tc-docker-prune /etc/systemd/system/tc-docker-prune.service && echo cleaned",
+      "outputContains": [
+        "cleaned"
       ]
     },
     {
