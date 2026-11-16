@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, it removes an old stopped container that nothing protects, and keeps, with their images, stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are read from docker.service and its environment file, and flags it cannot resolve skip log rotation with exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, not even a network; Prune now exits 1; and the list is not created, exit 3.",
+  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, it removes an old stopped container that nothing protects, and keeps, with their images, stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are read from docker.service and its environment file, and flags it cannot resolve skip log rotation with exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, not even a network; Prune now exits 1; and the list is not created, exit 3. Writing daemon.json: the new file is made in the directory of the real target and renamed into place, so it keeps the mode, owner and group of the file it replaces (a 0600 file holding a fake proxy credential stays 0600 with its non-root group; a new file is 0644 root:root) and a symlinked daemon.json stays a symlink while its target changes and Docker restarts with it; a dangling symlink, or a link to a directory, is refused with exit 3 and nothing is created; after a successful Apply, a failed validation and Report mode, no .daemon.json.tc-* file is left in /etc/docker, and one left by a crashed earlier run is removed; Report mode on a host with no /etc/docker does not create it; seven changes in a row leave the newest five backups; and an immutable daemon.json makes the run exit 1 with the file byte-for-byte unchanged, no staging file and no backup.",
   "variables": {},
   "steps": [
     {
@@ -639,6 +639,320 @@
       "type": "command",
       "label": "Daemon flags: clean up - original daemon.json, no drop-in, Docker running",
       "run": "rm -f /etc/systemd/system/docker.service.d/tc-test.conf /etc/default/tc-test-docker && cp /tmp/tc-before.json /etc/docker/daemon.json && systemctl daemon-reload && systemctl reset-failed docker.service docker.socket; systemctl restart docker.service && docker info --format \"docker up, LoggingDriver={{.LoggingDriver}}\"",
+      "outputContains": [
+        "docker up, LoggingDriver=json-file"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: install a helper that runs the component several times inside one step",
+      "run": "cat > /usr/local/sbin/tc-test-run-component <<EOF\n#!/bin/bash\n# tc-test-run-component [VAR=value ...]: run the component body the way the harness does (root, clean environment, the script's own defaults), for a step that needs several runs. usrPruneSchedule is blank, so the timer is left alone: these steps are about daemon.json.\nexec env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root usrPruneSchedule= \"\\$@\" /bin/bash \"$(pwd)/Scripts/docker-configure-host-maintenance-lin/docker-configure-host-maintenance-lin.sh\"\nEOF\nchmod 755 /usr/local/sbin/tc-test-run-component; echo \"helper runs: $(grep -c exec /usr/local/sbin/tc-test-run-component) exec line\"",
+      "outputContains": [
+        "helper runs: 1 exec line"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: an existing daemon.json, 0600 with a non-root owner and group, holding a fake proxy credential",
+      "run": "getent group tc-test-grp >/dev/null || groupadd tc-test-grp; rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; printf '%s\\n' '{\"proxies\": {\"http-proxy\": \"http://tc-test-user:tc-test-not-a-password@proxy.invalid:3128\"}}' > /etc/docker/daemon.json; chown nobody:tc-test-grp /etc/docker/daemon.json; chmod 600 /etc/docker/daemon.json; echo \"before: $(stat -c '%a %U %G' /etc/docker/daemon.json)\"",
+      "outputContains": [
+        "before: 600 nobody tc-test-grp"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Apply on that file",
+      "variables": {
+        "usrPruneSchedule": ""
+      },
+      "outputContains": [
+        "daemon.json: previous file saved as /etc/docker/daemon.json.tc-bak-",
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: same mode, owner and group; new keys added; the proxy kept; the backup has the same mode and group; no staging file",
+      "run": "echo \"after: $(stat -c '%a %U %G' /etc/docker/daemon.json)\"; b=$(LC_ALL=C ls /etc/docker/daemon.json.tc-bak-* | tail -n 1); echo \"backup: $(stat -c '%a %U %G' $b)\"; python3 -c \"import json; d=json.load(open('/etc/docker/daemon.json')); ok = d['log-opts']['max-size'] == '10m' and 'gc' in d['builder'] and d['proxies']['http-proxy'].startswith('http://tc-test-user:'); print('keys: ' + ('new keys added, proxy kept' if ok else 'WRONG'))\"; echo \"staging files left in /etc/docker: $(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; ls -la /etc/docker",
+      "outputContains": [
+        "after: 600 nobody tc-test-grp",
+        "backup: 600 nobody tc-test-grp",
+        "keys: new keys added, proxy kept",
+        "staging files left in /etc/docker: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: no daemon.json at all",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; ls -A /etc/docker | wc -l; test ! -e /etc/docker/daemon.json && echo 'no daemon.json before'",
+      "outputContains": [
+        "no daemon.json before"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Apply creates it",
+      "variables": {
+        "usrPruneSchedule": ""
+      },
+      "outputContains": [
+        "daemon.json: written"
+      ],
+      "outputNotContains": [
+        "previous file saved"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: a new daemon.json is 0644 root:root, with the limits, and nothing else is left in /etc/docker",
+      "run": "echo \"after: $(stat -c '%a %U %G' /etc/docker/daemon.json)\"; grep -c '\"max-size\": \"10m\"' /etc/docker/daemon.json; echo \"staging files left in /etc/docker: $(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; ls -la /etc/docker",
+      "outputContains": [
+        "after: 644 root root",
+        "staging files left in /etc/docker: 0"
+      ],
+      "outputNotContains": [
+        "tc-bak"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: daemon.json is a symlink to a 0640 file elsewhere",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; mkdir -p /opt/tc-test-managed; printf '{\"debug\": false}\\n' > /opt/tc-test-managed/daemon.json; chgrp tc-test-grp /opt/tc-test-managed/daemon.json; chmod 640 /opt/tc-test-managed/daemon.json; ln -s /opt/tc-test-managed/daemon.json /etc/docker/daemon.json; ls -l /etc/docker/daemon.json /opt/tc-test-managed/daemon.json",
+      "outputContains": [
+        "/etc/docker/daemon.json -> /opt/tc-test-managed/daemon.json"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Apply through the symlink",
+      "variables": {
+        "usrPruneSchedule": ""
+      },
+      "outputContains": [
+        "is a symbolic link to /opt/tc-test-managed/daemon.json; changes go to that file and the link stays",
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: still a symlink; the target has the new keys, its old key and its mode and group; the backup is a regular file; no staging file in either directory",
+      "run": "test -L /etc/docker/daemon.json && echo \"still a symlink: $(readlink /etc/docker/daemon.json)\"; echo \"target: $(stat -c '%a %U %G' /opt/tc-test-managed/daemon.json)\"; python3 -c \"import json; d=json.load(open('/opt/tc-test-managed/daemon.json')); print('target keys: ' + ('new keys added, debug kept' if d['log-opts']['max-size'] == '10m' and d['debug'] is False else 'WRONG'))\"; b=$(LC_ALL=C ls /etc/docker/daemon.json.tc-bak-* | tail -n 1); if [ -f \"$b\" ] && [ ! -L \"$b\" ]; then echo 'backup is a regular file'; fi; echo \"staging files left: $(ls -A /etc/docker /opt/tc-test-managed | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; ls -l /etc/docker /opt/tc-test-managed",
+      "outputContains": [
+        "still a symlink: /opt/tc-test-managed/daemon.json",
+        "target: 640 root tc-test-grp",
+        "target keys: new keys added, debug kept",
+        "backup is a regular file",
+        "staging files left: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: Docker restarts cleanly with the symlinked file, and a new container rotates its log at 10m",
+      "run": "dockerd --validate --config-file /etc/docker/daemon.json; systemctl reset-failed docker.service docker.socket 2>/dev/null; systemctl restart docker.service && for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; docker info --format 'docker up through the link, LoggingDriver={{.LoggingDriver}}' && docker run -d --name tc-logtest-link tc-test-listed:1 /bin/sleep 5 >/dev/null && docker inspect -f 'tc-logtest-link LogConfig {{json .HostConfig.LogConfig}}' tc-logtest-link; docker rm -f tc-logtest-link >/dev/null",
+      "outputContains": [
+        "configuration OK",
+        "docker up through the link, LoggingDriver=json-file",
+        "\"max-size\":\"10m\""
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: daemon.json is a dangling symlink",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; mkdir -p /opt/tc-test-managed; ln -s /opt/tc-test-managed/missing.json /etc/docker/daemon.json; ls -l /etc/docker/daemon.json",
+      "outputContains": [
+        "/etc/docker/daemon.json -> /opt/tc-test-managed/missing.json"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: a dangling symlink is refused with exit 3",
+      "variables": {
+        "usrPruneSchedule": ""
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "is a symbolic link to /opt/tc-test-managed/missing.json, which does not exist; not touched"
+      ],
+      "outputNotContains": [
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: the dangling link is still there, its target was not created, and nothing else was made",
+      "run": "test -L /etc/docker/daemon.json && echo \"link kept: $(readlink /etc/docker/daemon.json)\"; test ! -e /opt/tc-test-managed/missing.json && echo 'target not created'; echo \"left in /etc/docker: $(ls -A /etc/docker | tr '\\n' ' ')\"; echo \"left in /opt/tc-test-managed: $(ls -A /opt/tc-test-managed | wc -l) files\"",
+      "outputContains": [
+        "link kept: /opt/tc-test-managed/missing.json",
+        "target not created",
+        "left in /etc/docker: daemon.json ",
+        "left in /opt/tc-test-managed: 0 files"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: daemon.json is a symlink to a directory",
+      "run": "rm -f /etc/docker/daemon.json; ln -s /opt/tc-test-managed /etc/docker/daemon.json; ls -l /etc/docker/daemon.json",
+      "outputContains": [
+        "/etc/docker/daemon.json -> /opt/tc-test-managed"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: a symlink to a directory is refused with exit 3",
+      "variables": {
+        "usrPruneSchedule": ""
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "which is not a regular file; not touched"
+      ],
+      "outputNotContains": [
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: a 0600 daemon.json that already has a setting dockerd --validate rejects (mtu -5)",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; printf '{\"mtu\": -5}\\n' > /etc/docker/daemon.json; chmod 600 /etc/docker/daemon.json; sha256sum /etc/docker/daemon.json | tee /tmp/tc-badval.sha",
+      "outputContains": [
+        "daemon.json"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: a failed validation writes nothing and exits 3",
+      "variables": {
+        "usrPruneSchedule": ""
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "the merged file failed dockerd --validate; not written"
+      ],
+      "outputNotContains": [
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: after the failed validation: the file is unchanged and nothing is left in /etc/docker",
+      "run": "sha256sum -c /tmp/tc-badval.sha; echo \"staging files left in /etc/docker: $(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; echo \"backups: $(ls /etc/docker/daemon.json.tc-bak-* 2>/dev/null | wc -l)\"; ls -la /etc/docker",
+      "outputContains": [
+        "daemon.json: OK",
+        "staging files left in /etc/docker: 0",
+        "backups: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: a valid daemon.json to run Report mode against",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; printf '{\"debug\": false}\\n' > /etc/docker/daemon.json; sha256sum /etc/docker/daemon.json | tee /tmp/tc-report.sha",
+      "outputContains": [
+        "daemon.json"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Report mode",
+      "variables": {
+        "usrMode": "report",
+        "usrPruneSchedule": ""
+      },
+      "outputContains": [
+        "daemon.json: REPORT MODE, would write the change above"
+      ],
+      "outputNotContains": [
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: after Report mode: file unchanged, no staging file, no backup",
+      "run": "sha256sum -c /tmp/tc-report.sha; echo \"staging files left in /etc/docker: $(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; echo \"backups: $(ls /etc/docker/daemon.json.tc-bak-* 2>/dev/null | wc -l)\"; ls -la /etc/docker",
+      "outputContains": [
+        "daemon.json: OK",
+        "staging files left in /etc/docker: 0",
+        "backups: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: move /etc/docker away, so the host has no such directory",
+      "run": "rm -rf /etc/docker.tc-away; mv /etc/docker /etc/docker.tc-away && test ! -e /etc/docker && echo 'no /etc/docker'",
+      "outputContains": [
+        "no /etc/docker"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Report mode on a host with no /etc/docker",
+      "variables": {
+        "usrMode": "report",
+        "usrPruneSchedule": ""
+      },
+      "outputContains": [
+        "daemon.json: REPORT MODE, would write the change above"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: the directory still does not exist; put /etc/docker back",
+      "run": "if [ -e /etc/docker ]; then echo 'WRONG: /etc/docker was created'; ls -la /etc/docker; exit 1; fi; echo '/etc/docker still does not exist'; mv /etc/docker.tc-away /etc/docker && echo '/etc/docker restored'",
+      "outputContains": [
+        "/etc/docker still does not exist",
+        "/etc/docker restored"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: a staging file left by an earlier run that crashed, beside a daemon.json with a change pending",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; printf '{\"debug\": false}\\n' > /etc/docker/daemon.json; printf 'half a file' > /etc/docker/.daemon.json.tc-OLD123; chmod 600 /etc/docker/.daemon.json.tc-OLD123; ls -A /etc/docker",
+      "outputContains": [
+        ".daemon.json.tc-OLD123"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Apply removes the earlier run's staging file",
+      "variables": {
+        "usrPruneSchedule": ""
+      },
+      "outputContains": [
+        "daemon.json: removed /etc/docker/.daemon.json.tc-OLD123, left by an earlier run that did not finish",
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: no staging file is left after a successful Apply",
+      "run": "echo \"staging files left in /etc/docker: $(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; ls -la /etc/docker",
+      "outputContains": [
+        "staging files left in /etc/docker: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: seven changes in a row, each made by a run of the component",
+      "run": "set -u\nrm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker\nprintf '{\"debug\": false}\\n' > /etc/docker/daemon.json\n: > /tmp/tc-bak-names\nfor i in 1 2 3 4 5 6 7; do\n  python3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d.pop('log-opts', None); d.pop('builder', None); json.dump(d, open(p, 'w'))\"\n  tc-test-run-component > /tmp/tc-run.out 2>&1 || { echo \"change $i failed\"; cat /tmp/tc-run.out; exit 1; }\n  grep -q 'daemon.json: written' /tmp/tc-run.out || { echo \"change $i wrote nothing\"; cat /tmp/tc-run.out; exit 1; }\n  LC_ALL=C ls /etc/docker/daemon.json.tc-bak-* | tail -n 1 >> /tmp/tc-bak-names\ndone\necho \"newest backup after each change:\"; sed 's|^/etc/docker/||' /tmp/tc-bak-names\necho \"backups after seven changes: $(ls /etc/docker/daemon.json.tc-bak-* | wc -l)\"\necho \"distinct backup names made: $(sort -u /tmp/tc-bak-names | wc -l)\"\ndiff <(LC_ALL=C ls /etc/docker/daemon.json.tc-bak-*) <(LC_ALL=C sort /tmp/tc-bak-names | tail -n 5) && echo \"the five left are the newest five\"\nls -la /etc/docker",
+      "timeoutSeconds": 300,
+      "outputContains": [
+        "backups after seven changes: 5",
+        "distinct backup names made: 7",
+        "the five left are the newest five"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: an immutable daemon.json (chattr +i; skipped where the filesystem cannot): exit 1, file unchanged, no staging file, no backup",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker\np=/etc/docker/.tc-immutable-probe; : > $p\nif ! chattr +i $p 2>/dev/null || ! lsattr $p 2>/dev/null | awk '{print $1}' | grep -q i; then\n  chattr -i $p 2>/dev/null; rm -f $p\n  echo \"SKIPPED: this filesystem does not support chattr +i, so the immutable-file check did not run\"; exit 0\nfi\nchattr -i $p; rm -f $p\nf=/etc/docker/daemon.json\nprintf '%s\\n' '{\"proxies\": {\"http-proxy\": \"http://tc-test-user:tc-test-not-a-password@proxy.invalid:3128\"}}' > $f; chmod 600 $f; chattr +i $f\nsha256sum $f > /tmp/tc-imm.before\ntc-test-run-component > /tmp/tc-imm.out 2>&1; rc=$?\nchattr -i $f\ncat /tmp/tc-imm.out\necho \"component exit: $rc\"\nok=0\n[ \"$rc\" = 1 ] || { echo \"WRONG: expected exit 1\"; ok=1; }\ngrep -q \"could not replace $f\" /tmp/tc-imm.out || { echo \"WRONG: the output does not say what failed\"; ok=1; }\nsha256sum -c /tmp/tc-imm.before || { echo \"WRONG: daemon.json changed\"; ok=1; }\nn=$(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true); echo \"staging files left in /etc/docker: $n\"; [ \"$n\" = 0 ] || ok=1\nb=$(ls /etc/docker/daemon.json.tc-bak-* 2>/dev/null | wc -l); echo \"backups left by the failed run: $b\"; [ \"$b\" = 0 ] || ok=1\nls -la /etc/docker\nexit $ok",
+      "timeoutSeconds": 300,
+      "outputNotContains": [
+        "WRONG"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: clean up: original daemon.json, no test files, Docker restarted",
+      "run": "chattr -i /etc/docker/daemon.json 2>/dev/null; rm -rf /opt/tc-test-managed /usr/local/sbin/tc-test-run-component /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-* /tmp/tc-bak-names /tmp/tc-run.out /tmp/tc-imm.* /tmp/tc-badval.sha /tmp/tc-report.sha; cp /tmp/tc-before.json /etc/docker/daemon.json && systemctl reset-failed docker.service docker.socket 2>/dev/null; systemctl restart docker.service && docker info --format 'docker up, LoggingDriver={{.LoggingDriver}}'",
       "outputContains": [
         "docker up, LoggingDriver=json-file"
       ]

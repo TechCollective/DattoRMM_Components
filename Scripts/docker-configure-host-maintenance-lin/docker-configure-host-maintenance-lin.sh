@@ -12,6 +12,10 @@
 #    its flags cannot be determined. Nothing is written when the daemon reads a
 #    --config-file other than /etc/docker/daemon.json, or when the file already
 #    holds log-opts that will stop Docker starting ("DAEMON WILL NOT START").
+#    The write is a same-directory rename, so Docker never reads a half-written
+#    file; the file keeps its mode, owner and group (a new one is 0644
+#    root:root); a symlinked daemon.json stays a symlink and its target is what
+#    changes; and only the newest 5 daemon.json.tc-bak-* backups are kept.
 # 2. Creates the host's expected-containers list, /etc/tc-docker/expected-containers,
 #    from every container present now, running or stopped -- only if the list
 #    does not exist yet. After that it never changes the list; "Docker -
@@ -37,11 +41,13 @@
 #
 # Exit codes:
 #   0  done, or nothing to do (including: Docker is not installed)
-#   1  unexpected failure
+#   1  unexpected failure (including daemon.json could not be replaced, for
+#      example because it is immutable; the old file is then unchanged)
 #   2  an input variable is invalid; nothing was changed
 #   3  could not apply safely (no JSON tool, config failed validation,
 #      Docker's start flags unknown, a --config-file elsewhere, daemon.json
-#      already stops Docker starting, no systemd, snap-packaged Docker, daemon
+#      already stops Docker starting, daemon.json is a symlink that does not
+#      end at a regular file, no systemd, snap-packaged Docker, daemon
 #      unreachable for the list or a prune-now, or the daemon answered but did
 #      not return its container list, so the list was not created); nothing
 #      was changed for that part
@@ -56,9 +62,22 @@ PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
 PRUNE_CONF="/etc/default/tc-docker-prune"
 RESULT=1
 CHANGED_DAEMON=0
+# The file that is renamed into place as daemon.json, while it exists. Removed
+# on every way out of the daemon.json part, and by finish() if the run is
+# stopped part-way.
+DAEMON_STAGE=""
+# The file a daemon.json write replaces: daemon.json, or the file it links to.
+DAEMON_REAL="$DAEMON_JSON"
+
+drop_daemon_stage() {
+    if [ -n "$DAEMON_STAGE" ]; then rm -f -- "$DAEMON_STAGE"; fi
+    DAEMON_STAGE=""
+    return 0
+}
 
 finish() {
     local rc=$?
+    drop_daemon_stage
     if [ "$RESULT" -ne 0 ] && [ "$rc" -eq 0 ]; then rc=$RESULT; fi
     if [ "$rc" -ne 0 ]; then
         echo "Finished with exit code $rc."
@@ -559,7 +578,141 @@ sys.stdout.write("\n")
 PY
 }
 
+# Works out which file a write to daemon.json replaces, and sets DAEMON_REAL to
+# it: daemon.json itself, or the regular file it is a symlink to (the link stays
+# where it is). Returns 3, saying why and changing nothing, when daemon.json is
+# a symlink that does not end at a regular file.
+resolve_daemon_json() {
+    DAEMON_REAL="$DAEMON_JSON"
+    [ -L "$DAEMON_JSON" ] || return 0
+    local real
+    real="$(readlink -f -- "$DAEMON_JSON" 2>/dev/null)"
+    if [ -z "$real" ]; then
+        say "daemon.json: $DAEMON_JSON is a symbolic link that cannot be followed to an end (a loop, say); not touched."
+        return 3
+    fi
+    if [ ! -e "$real" ]; then
+        say "daemon.json: $DAEMON_JSON is a symbolic link to $real, which does not exist; not touched."
+        return 3
+    fi
+    if [ ! -f "$real" ]; then
+        say "daemon.json: $DAEMON_JSON is a symbolic link to $real, which is not a regular file; not touched."
+        return 3
+    fi
+    DAEMON_REAL="$real"
+    say "daemon.json: $DAEMON_JSON is a symbolic link to $real; changes go to that file and the link stays."
+    return 0
+}
+
+# Removes the staging files a run that did not finish (a crash, a power cut)
+# left beside daemon.json. One is 0600 and can hold the same proxy password as
+# daemon.json itself. Looks in daemon.json's directory and the real file's.
+sweep_daemon_stage() {
+    local d f dirs=("$(dirname "$DAEMON_JSON")")
+    [ "$(dirname "$DAEMON_REAL")" = "${dirs[0]}" ] || dirs+=("$(dirname "$DAEMON_REAL")")
+    for d in "${dirs[@]}"; do
+        for f in "$d"/.daemon.json.tc-*; do
+            { [ -f "$f" ] && [ ! -L "$f" ]; } || continue
+            if rm -f -- "$f"; then
+                say "daemon.json: removed $f, left by an earlier run that did not finish."
+            fi
+        done
+    done
+    return 0
+}
+
+# Keeps the newest 5 daemon.json.tc-bak-<14 digits>[-n] files and removes the
+# rest. The name sorts by time (a same-second backup gets -n added), which is
+# why it is sorted by name: cp -p gives a backup its source's mtime, not its
+# own. A file that does not have that name, such as one saved by hand, is
+# never counted or removed.
+prune_daemon_backups() {
+    local keep=5 f n=0 i=0 removed=0 re='\.tc-bak-[0-9]{14}(-[0-9]+)?$' sorted
+    local -a all=()
+    for f in "$DAEMON_JSON".tc-bak-*; do
+        { [ -f "$f" ] && [ ! -L "$f" ] && [[ "$f" =~ $re ]]; } || continue
+        all+=("$f"); n=$((n + 1))
+    done
+    [ "$n" -gt "$keep" ] || return 0
+    sorted="$(printf '%s\n' "${all[@]}" | LC_ALL=C sort)"
+    while IFS= read -r f; do
+        i=$((i + 1))
+        [ "$i" -le $((n - keep)) ] || break
+        if rm -f -- "$f"; then removed=$((removed + 1)); else say "daemon.json: could not remove old backup $f."; fi
+    done <<<"$sorted"
+    say "daemon.json: kept the newest $keep backups, removed $removed older."
+    return 0
+}
+
+# Replaces DAEMON_REAL with $1, the merged and validated JSON, so that Docker
+# reads the old file or the new one and never a part-written one. The new file
+# is made inside the directory of the real target (a rename there is one
+# filesystem, so it is atomic), is 0600 until it holds the content, and then
+# takes the mode, owner and group of the file it replaces (0644 root:root when
+# there was none). Returns 0 when written, 1 when not, saying why; on 1 the
+# existing file is exactly as it was. The staging file is DAEMON_STAGE and is
+# removed by the caller on every way out.
+write_daemon_json() {
+    local src="$1" real="$DAEMON_REAL" dir st mode=644 uid=0 gid=0 base bak="" n=0 err
+    dir="$(dirname "$real")"
+    if ! mkdir -p -- "$dir"; then
+        say "daemon.json: could not create $dir; not written."
+        return 1
+    fi
+    if [ -f "$real" ]; then
+        if ! st="$(stat -c '%a %u %g' -- "$real")" || ! read -r mode uid gid <<<"$st" \
+           || ! [[ "$mode" =~ ^[0-7]+$ && "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]]; then
+            say "daemon.json: could not read the mode and owner of $real; not written, the existing file is unchanged."
+            return 1
+        fi
+    fi
+
+    DAEMON_STAGE="$(mktemp "$dir/.daemon.json.tc-XXXXXX")" || {
+        DAEMON_STAGE=""
+        say "daemon.json: could not create a temporary file in $dir; not written, the existing file is unchanged."
+        return 1
+    }
+    # Compared after the copy: a full disk can leave a short file and an exit 0.
+    if ! cat -- "$src" >"$DAEMON_STAGE" || ! cmp -s -- "$src" "$DAEMON_STAGE"; then
+        say "daemon.json: could not write the new file in $dir (is the disk full?); not written, the existing file is unchanged."
+        return 1
+    fi
+    if ! chown -- "$uid:$gid" "$DAEMON_STAGE" || ! chmod -- "$mode" "$DAEMON_STAGE"; then
+        say "daemon.json: could not give the new file the mode and owner of $real; not written, the existing file is unchanged."
+        return 1
+    fi
+    # Data to disk before the rename makes the new name visible. coreutils 8.24
+    # and later take a file; older ones sync everything. Best effort.
+    sync "$DAEMON_STAGE" >/dev/null 2>&1 || true
+
+    if [ -f "$real" ]; then
+        base="$DAEMON_JSON.tc-bak-$(date +%Y%m%d%H%M%S)"; bak="$base"
+        while [ -e "$bak" ] || [ -L "$bak" ]; do n=$((n + 1)); bak="$base-$n"; done
+        if ! cp -p -- "$real" "$bak"; then
+            rm -f -- "$bak"
+            say "daemon.json: could not save a backup of $real; not written, the existing file is unchanged."
+            return 1
+        fi
+    fi
+    if ! err="$(mv -f -- "$DAEMON_STAGE" "$real" 2>&1)"; then
+        [ -z "$bak" ] || rm -f -- "$bak"      # nothing changed, so no backup is needed
+        say "daemon.json: could not replace $real: ${err:-mv failed}. The existing file is unchanged."
+        return 1
+    fi
+    DAEMON_STAGE=""
+    if command -v restorecon >/dev/null 2>&1; then restorecon "$real" >/dev/null 2>&1 || true; fi
+    [ -z "$bak" ] || say "daemon.json: previous file saved as $bak"
+    return 0
+}
+
 daemon_section() {
+    local rc
+    daemon_section_run; rc=$?
+    drop_daemon_stage
+    return $rc
+}
+
+daemon_section_run() {
     if [ -z "$usrLogMaxSize" ] && [ -z "$usrBuildCacheMax" ]; then
         say "daemon.json: log rotation and build-cache limits both left blank; not touched."
         return 0
@@ -568,6 +721,8 @@ daemon_section() {
         say "daemon.json: python3 is not available, so the file cannot be merged safely; not touched."
         return 3
     fi
+    resolve_daemon_json || return $?
+    [ "$usrMode" = "report" ] || sweep_daemon_stage
 
     local tmp notes det vfile rc section_rc=0 a
     local -a vargs=()
@@ -642,18 +797,15 @@ PY
         rm -f "$tmp" "$notes"; return $section_rc
     fi
 
-    mkdir -p "$(dirname "$DAEMON_JSON")"
-    if [ -f "$DAEMON_JSON" ]; then
-        local bak
-        bak="$DAEMON_JSON.tc-bak-$(date +%Y%m%d%H%M%S)"
-        cp -p "$DAEMON_JSON" "$bak" || { rm -f "$tmp" "$notes"; return 1; }
-        say "daemon.json: previous file saved as $bak"
+    # Not in report mode: that returned above, so nothing here has been made
+    # in /etc/docker yet. $tmp, in $TMPDIR, is only where the merge was checked.
+    if ! write_daemon_json "$tmp"; then
+        rm -f "$tmp" "$notes"; return 1
     fi
-    chmod 644 "$tmp"
-    mv -f "$tmp" "$DAEMON_JSON" || { rm -f "$notes"; return 1; }
-    rm -f "$notes"
+    rm -f "$tmp" "$notes"
     CHANGED_DAEMON=1
     say "daemon.json: written."
+    prune_daemon_backups
     return $section_rc
 }
 
@@ -666,7 +818,7 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # tc-docker-prune -- installed by the Datto RMM component
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune.
-TC_PRUNE_VERSION=7
+TC_PRUNE_VERSION=8
 # The line above is the version of the component that installed this script,
 # and the first thing a run prints is that version, so the journal shows which
 # prune ran. "Docker - Containers Differ From Expected [Lin]" reads it to flag
