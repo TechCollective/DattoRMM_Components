@@ -1159,7 +1159,7 @@ fi
 # ---- images
 
 # One line per image, tab separated, every field non-empty ("-" for none):
-#   id  tags  names  digests  created  tc.keep(y/n)  readable(y/n)
+#   id  tags  names  digests  created  readable(y/n)
 # tags are its repo:tag names; names every name it has (the tags, plus any
 # repo@sha256 name the containerd image store keeps), which is what removing it
 # takes; digests its repo@sha256 references. All three are space separated.
@@ -1179,7 +1179,7 @@ image_rows() {
         ids="$(printf '%s\n%s\n' "$ids" "$dangling" | sort -u | grep -v '^$')"
         [ -n "$ids" ] || return 0
         out="$(printf '%s\n' "$ids" | xargs "$DOCKER" image inspect -f \
-'{{.Id}}{{"\t"}}{{json .RepoTags}}{{"\t"}}{{json .RepoDigests}}{{"\t"}}{{.Created}}{{"\t"}}{{with .Config}}{{range $k, $v := .Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}{{end}}' 2>"${DOCKER_ERR:-/dev/null}")" || continue
+'{{.Id}}{{"\t"}}{{json .RepoTags}}{{"\t"}}{{json .RepoDigests}}{{"\t"}}{{.Created}}' 2>"${DOCKER_ERR:-/dev/null}")" || continue
         printf '%s\n' "$out" | awk -F'\t' -v OFS='\t' '
             function digest_ok(r,   p, h) {
                 p = index(r, "@sha256:"); if (p < 2) return 0
@@ -1208,16 +1208,29 @@ image_rows() {
                 }
                 return 1
             }
-            NF != 5 || length($1) != 71 || substr($1, 1, 7) != "sha256:" || substr($1, 8) ~ /[^0-9a-f]/ { next }
+            NF != 4 || length($1) != 71 || substr($1, 1, 7) != "sha256:" || substr($1, 8) ~ /[^0-9a-f]/ { next }
             {
                 T = ""; N = ""; D = ""
                 ok = take($2, 1) && take($3, 0)
                 if (!ok) { T = ""; N = ""; D = "" }
-                print $1, dash(T), dash(N), dash(D), dash($4), ($5 == "y" ? "y" : "n"), (ok ? "y" : "n")
+                print $1, dash(T), dash(N), dash(D), dash($4), (ok ? "y" : "n")
             }'
         return 0
     done
     return 1
+}
+
+# The ids of the images labelled tc.keep, tagged or not, one per line, as
+# Docker's own label filter finds them. (Not read from docker image inspect:
+# how an image's labels can be addressed in a template differs between Docker
+# versions, and an image with none has no Labels at all on some.) Returns 1
+# when the list cannot be read.
+keep_images() {
+    local tagged untagged
+    tagged="$("$DOCKER" image ls -q --no-trunc --filter label=tc.keep 2>"${DOCKER_ERR:-/dev/null}")" || return 1
+    untagged="$("$DOCKER" image ls -q --no-trunc --filter dangling=true --filter label=tc.keep 2>"${DOCKER_ERR:-/dev/null}")" || return 1
+    printf '%s\n%s\n' "$tagged" "$untagged" | sort -u | grep -v '^$'
+    return 0
 }
 
 # The image ids every container uses, running or stopped, one per line.
@@ -1248,7 +1261,7 @@ docker_said() {
 }
 
 image_section() {
-    local used rows id tags names digs created keep readable short t ref ok n_tagged=0 store
+    local used keepers rows id tags names digs created readable short t ref ok n_tagged=0 store
     local -a img_removed=() img_kept=()
     # The containerd image store gives every image a repo@sha256 digest, pulled
     # or not, so there a digest does not show that an image can be pulled again.
@@ -1264,17 +1277,21 @@ image_section() {
         echo "ERROR: Docker did not return its container list for the image check. No image was removed.$(docker_said)"
         errors=$((errors + 1)); return
     fi
+    if ! keepers="$(keep_images)"; then
+        echo "ERROR: Docker did not return its image list (the images labelled tc.keep: docker image ls failed). No image was removed.$(docker_said)"
+        errors=$((errors + 1)); return
+    fi
     if ! rows="$(image_rows)"; then
         echo "ERROR: Docker did not return its image list (docker image ls or docker image inspect failed 3 times). No image was removed.$(docker_said)"
         errors=$((errors + 1)); return
     fi
-    while IFS=$'\t' read -r id tags names digs created keep readable; do
+    while IFS=$'\t' read -r id tags names digs created readable; do
         [ -n "$id" ] || continue
         short="${id#sha256:}"; short="${short:0:12}"
         if [ "$readable" != "y" ]; then
             img_kept+=("$short - its tags or digests are not plain references, so it is never removed here"); continue
         fi
-        [ "$keep" = "y" ] && continue                                 # labelled tc.keep
+        case $'\n'"$keepers"$'\n' in *$'\n'"$id"$'\n'*) continue ;; esac  # labelled tc.keep
         case $'\n'"$used"$'\n' in *$'\n'"$id"$'\n'*) continue ;; esac  # a container uses it
         t="$(tc_epoch "$created")" || continue                        # age unknown: keep
         [ "$t" -lt "$cutoff" ] || continue                            # too new
