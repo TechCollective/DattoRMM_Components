@@ -57,6 +57,24 @@ Until then, the prune only clears build cache and unused networks.
 >   Docker 29 daemon in a sandbox for the stamp and its first output line; the
 >   journal check and the timer steps run on the CI runner. It has not yet run
 >   through a Datto agent.
+> - **Version 8** changes how `daemon.json` is written; what is merged into it
+>   is unchanged. Version 7 forced the file to `0644 root:root`, so a
+>   `daemon.json` that was `0600` because it held a proxy password came out
+>   world-readable; it replaced a symlinked `daemon.json` with a plain file;
+>   it built the new file under `/tmp`, so on a host where `/tmp` is its own
+>   filesystem the final move was a copy that a crash or a full disk could
+>   leave truncated (Docker will not start with one); and it kept every
+>   backup for ever, each holding the same password. Version 8 builds the new
+>   file beside the real one and renames it into place, keeps the old file's
+>   mode, owner and group, writes through a symlink and leaves the link, and
+>   keeps the newest 5 backups. It also names each backup uniquely: version 7
+>   overwrote a backup made in the same second. The prune is unchanged, so
+>   `TC_PRUNE_VERSION` is `8` only because it follows this version, and the
+>   monitor's `PRUNE_MIN_VERSION` stays `7`. Version 8 was run against a live
+>   Docker 29 daemon in a sandbox (every case below, including a restart with
+>   a symlinked file, a full disk and an immutable file), and the Tier 1 test
+>   covers them on the CI runner. It has not yet run through a Datto agent,
+>   and the SELinux relabel has not run anywhere (see Known limits).
 
 ## What it does
 
@@ -108,7 +126,49 @@ the engine has that option, **with the daemon's own `--log-driver` and
 run. If the check fails, nothing is written. `--validate` alone does not
 catch every clash (it passes a `journald` daemon with `max-size` in the file,
 which then fails at a real start), which is why the driver is also checked
-directly. The previous file is kept as `daemon.json.tc-bak-<timestamp>`.
+directly.
+
+**How it writes the file.** Docker must never read a half-written
+`daemon.json`, and the file's owner, mode and link must survive:
+
+1. In `Apply` mode only, it builds the new file inside the directory of the
+   real file (`/etc/docker/.daemon.json.tc-XXXXXX`), so the last step is a
+   rename on one filesystem. The merge itself, and its `dockerd --validate`
+   check, run on a scratch file under `$TMPDIR`, as before; that is the only
+   file `Report` mode makes, and nothing in `/etc/docker`. The new file is
+   `0600` while it is written, is compared with the validated one, and only
+   then takes the **mode, owner and group of the file it replaces**. A
+   `daemon.json` that did not exist is created `0644 root:root`.
+2. **A symlinked `daemon.json` stays a symlink.** The change goes to the file
+   it points to, with that file's mode, owner and group. A link that points
+   nowhere, at a directory or at anything else but a regular file, or loops, is
+   not touched: the output says so and the part exits `3`. `Report` mode says
+   the same.
+3. It saves the old file as `/etc/docker/daemon.json.tc-bak-<timestamp>`, with
+   `cp -p`, so the backup has the old file's mode and owner. (When
+   `daemon.json` is a link, the backup is still beside the link and holds the
+   target's content.) A second backup in the same second gets `-1`, `-2` added
+   to its name.
+4. It flushes the new file to disk (`sync <file>`, coreutils 8.24 or later;
+   best effort), renames it over the old one, then runs `restorecon` on it
+   when that command exists (best effort), so an SELinux host keeps the right
+   label.
+5. After a successful write it keeps the **newest 5** backups and removes the
+   older ones. Only names of the form `daemon.json.tc-bak-<14 digits>` (with
+   the optional `-n`) are counted or removed, so a backup someone saved by
+   hand under another name is never touched. They are ordered by name, which
+   is time order; a file's date cannot be used, because `cp -p` gives a
+   backup its source's date.
+6. **Nothing is left behind.** The new file is removed on every way out:
+   success, a failed validation, a failed backup, a failed rename, and a run
+   that is stopped. At the start of an `Apply` run it also removes any
+   `.daemon.json.tc-*` file an earlier run left when it crashed. (`Report`
+   mode removes nothing.)
+
+If the rename fails (an immutable file, say), the part exits `1`, says what
+failed, removes the backup it had just made, and leaves the old file exactly as
+it was. If the disk is full, writing the new file fails before the old file is
+touched.
 
 **It writes nothing to the daemon configuration when:**
 
@@ -338,7 +398,7 @@ every input before it changes anything.
 | Code | Meaning |
 |---|---|
 | `0` | Done, or nothing needed doing. Also returned when Docker is not installed. |
-| `1` | Unexpected failure, such as a write, `systemctl` call or prune step failing. |
+| `1` | Unexpected failure, such as a write, `systemctl` call or prune step failing. A `daemon.json` that could not be replaced (immutable, a full disk, a read-only filesystem) is this; the old file is unchanged. |
 | `2` | An input variable is invalid. Nothing was changed. |
 | `3` | One part could not be applied safely, and was not changed. Other parts may still have run, and the output says which. See the list below. |
 
@@ -347,6 +407,8 @@ What causes exit `3`:
 - no `python3` to merge the JSON
 - the existing `daemon.json` is not valid JSON
 - the merged file failed `dockerd --validate`
+- `daemon.json` is a symlink that does not end at a regular file (it points
+  nowhere, at a directory, or loops); nothing was touched
 - Docker's start flags could not be determined with confidence, so log
   rotation was skipped (`builder.gc` may still have been added). That
   happens when:
@@ -459,6 +521,23 @@ Never a customer first.
   nothing and exits 1. Checked against a Docker 1.10 engine.
 - **systemd only** for the timer. On a host without systemd, the timer part
   exits `3`, and the other parts still run.
+- **The write keeps the mode, owner, group and SELinux label of
+  `daemon.json`, and nothing else about it.** A POSIX ACL or other extended
+  attribute on the file is not copied to the new one. A `daemon.json` with
+  more than one hard link stops being linked to the others (the rename gives
+  the name a new file); a file bind-mounted into the host from somewhere else
+  cannot be renamed over, so that run exits `1` and changes nothing.
+- **The `restorecon` step has not been run on an SELinux host.** It is skipped
+  when the command is missing and its result is ignored, so it can only do
+  good, but treat label handling on SELinux as unverified until it has been
+  run on one.
+- **Backups are counted by name.** Only `daemon.json.tc-bak-<14 digits>` and
+  `-<n>` are pruned. If the host's clock was set back, a newer backup can sort
+  before an older one and be pruned first.
+- **A crashed run's leftover file is removed only by the next `Apply`.** It is
+  `0600` and can hold what `daemon.json` holds until then. Two runs of this
+  component at once on one host are not supported: the second would remove
+  the first's new file, and the first would exit `1` with nothing changed.
 - **Needs `python3`** to merge JSON safely. Without it, the `daemon.json` part
   exits `3` rather than risk rewriting the file badly.
 - **A running daemon is judged by its running flags.** If someone has changed
