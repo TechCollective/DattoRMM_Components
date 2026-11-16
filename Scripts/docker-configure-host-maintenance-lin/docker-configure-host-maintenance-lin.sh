@@ -1174,12 +1174,12 @@ image_rows() {
         # Top-level images, plus the untagged ones a newer docker image ls hides.
         # Not -a: that adds the classic builder's intermediate layers, which are
         # untagged but belong to an image that is still there.
-        ids="$("$DOCKER" image ls -q --no-trunc 2>/dev/null)" || continue
-        dangling="$("$DOCKER" image ls -q --no-trunc --filter dangling=true 2>/dev/null)" || continue
+        ids="$("$DOCKER" image ls -q --no-trunc 2>"${DOCKER_ERR:-/dev/null}")" || continue
+        dangling="$("$DOCKER" image ls -q --no-trunc --filter dangling=true 2>"${DOCKER_ERR:-/dev/null}")" || continue
         ids="$(printf '%s\n%s\n' "$ids" "$dangling" | sort -u | grep -v '^$')"
         [ -n "$ids" ] || return 0
         out="$(printf '%s\n' "$ids" | xargs "$DOCKER" image inspect -f \
-'{{.Id}}{{"\t"}}{{json .RepoTags}}{{"\t"}}{{json .RepoDigests}}{{"\t"}}{{.Created}}{{"\t"}}{{with .Config}}{{range $k, $v := .Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}{{end}}' 2>/dev/null)" || continue
+'{{.Id}}{{"\t"}}{{json .RepoTags}}{{"\t"}}{{json .RepoDigests}}{{"\t"}}{{.Created}}{{"\t"}}{{with .Config}}{{range $k, $v := .Labels}}{{if eq $k "tc.keep"}}y{{end}}{{end}}{{end}}' 2>"${DOCKER_ERR:-/dev/null}")" || continue
         printf '%s\n' "$out" | awk -F'\t' -v OFS='\t' '
             function digest_ok(r,   p, h) {
                 p = index(r, "@sha256:"); if (p < 2) return 0
@@ -1228,11 +1228,23 @@ used_images() {
         [ "$try" -gt 1 ] && sleep 1
         ids="$("$DOCKER" ps -aq --no-trunc 2>/dev/null)" || continue
         [ -n "$ids" ] || return 0
-        out="$(printf '%s\n' "$ids" | xargs "$DOCKER" container inspect -f '{{.Image}}' 2>/dev/null)" || continue
-        printf '%s\n' "$out" | awk 'length($0) == 71 && substr($0, 1, 7) == "sha256:" && substr($0, 8) !~ /[^0-9a-f]/ { print; next } { bad = 1 } END { exit bad }' || return 1
+        out="$(printf '%s\n' "$ids" | xargs "$DOCKER" container inspect -f '{{.Image}}' 2>"${DOCKER_ERR:-/dev/null}")" || continue
+        printf '%s\n' "$out" | awk 'length($0) == 71 && substr($0, 1, 7) == "sha256:" && substr($0, 8) !~ /[^0-9a-f]/ { print; next } { bad = 1 } END { exit bad }' \
+            || { [ -z "$DOCKER_ERR" ] || echo "a container's image is not an image id" >"$DOCKER_ERR"; return 1; }
         return 0
     done
     return 1
+}
+
+# The last thing Docker printed on stderr in image_rows or used_images, made
+# printable and short, for the ERROR line when one of them fails.
+DOCKER_ERR="$(mktemp 2>/dev/null)" || DOCKER_ERR=""
+trap '[ -z "$DOCKER_ERR" ] || rm -f -- "$DOCKER_ERR"' EXIT
+docker_said() {
+    local m
+    [ -n "$DOCKER_ERR" ] || return 0
+    m="$(tail -n 1 "$DOCKER_ERR" 2>/dev/null | tr -cd '[:print:]' | cut -c1-200)"
+    [ -z "$m" ] || printf ' Docker said: %s' "$m"
 }
 
 image_section() {
@@ -1249,11 +1261,11 @@ image_section() {
     fi
     # After the containers above were removed, so an image they used can go.
     if ! used="$(used_images)"; then
-        echo "ERROR: Docker did not return its container list for the image check. No image was removed."
+        echo "ERROR: Docker did not return its container list for the image check. No image was removed.$(docker_said)"
         errors=$((errors + 1)); return
     fi
     if ! rows="$(image_rows)"; then
-        echo "ERROR: Docker did not return its image list (docker image ls or docker image inspect failed 3 times). No image was removed."
+        echo "ERROR: Docker did not return its image list (docker image ls or docker image inspect failed 3 times). No image was removed.$(docker_said)"
         errors=$((errors + 1)); return
     fi
     while IFS=$'\t' read -r id tags names digs created keep readable; do

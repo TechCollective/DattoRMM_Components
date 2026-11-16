@@ -582,38 +582,10 @@
     },
     {
       "type": "command",
-      "label": "containerd image store: Docker restarted with it; there an image built here has a repo@sha256 digest too",
-      "run": "set -e\ncp -p /etc/docker/daemon.json /tmp/tc-store-daemon.json\npython3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d.setdefault('features', {})['containerd-snapshotter'] = True; json.dump(d, open(p, 'w'), indent=2)\"\nsystemctl restart docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done\ncase \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo 'image store: containerd' ;; *) echo 'image store: classic' ;; esac\nr=$(mktemp -d); mkdir -p $r/bin; cp /bin/true $r/bin/; for l in $(ldd /bin/true | grep -oE '/[^ ]+'); do mkdir -p $r$(dirname $l); cp $l $r$l; done\ntar -C $r -c . | docker import --change 'LABEL tc.test=ctd-local' - tc-test-ctd-local:1 >/dev/null\ntar -C $r -c . | docker import --change 'LABEL tc.test=ctd-pulled' - localhost:5055/tc-test-ctd-pulled:1 >/dev/null\ndocker push -q localhost:5055/tc-test-ctd-pulled:1\ndocker image inspect -f 'built here, and still: {{json .RepoDigests}}' tc-test-ctd-local:1",
+      "label": "Images tests: clean up - test containers, images and registry gone, the image setting back",
+      "run": "kill $(cat /tmp/tc-test-registry.pid); docker rm -f tc-age-stopped tc-age-fresh tc-age-never >/dev/null; docker rmi tc-test-localonly:1 tc-test-keepimg:1 localhost:5055/tc-test-pulled:1 >/dev/null; docker image prune -f >/dev/null; sed -i '/^name:tc-age-stopped$/d' /etc/tc-docker/expected-containers; rm -rf /tmp/tc-test-registry /tmp/tc-test-registry.pid /tmp/tc-untagged-id; sed -i 's/^PRUNE_IMAGES=.*/PRUNE_IMAGES=dangling/' /etc/default/tc-docker-prune; docker ps -a --format '{{.Names}}' | grep -c tc-age || echo 'no tc-age containers'",
       "timeoutSeconds": 180,
       "outputContains": [
-        "image store: containerd",
-        "built here, and still: [\"tc-test-ctd-local@sha256:"
-      ]
-    },
-    {
-      "type": "command",
-      "label": "containerd image store, PRUNE_IMAGES=all: a digest proves nothing there, so every tagged image is kept, with the reason",
-      "run": "sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/' /etc/default/tc-docker-prune; grep PRUNE_IMAGES /etc/default/tc-docker-prune; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; for i in tc-test-ctd-local:1 localhost:5055/tc-test-ctd-pulled:1; do docker image inspect -f \"$i kept\" $i 2>/dev/null || echo \"$i GONE\"; done",
-      "outputContains": [
-        "PRUNE_IMAGES=all",
-        "prune exit 0",
-        "tc-test-ctd-local:1 - this host uses the containerd image store, which gives every image a digest, so whether it can be pulled again cannot be told",
-        "localhost:5055/tc-test-ctd-pulled:1 - this host uses the containerd image store",
-        "tc-test-ctd-local:1 kept",
-        "localhost:5055/tc-test-ctd-pulled:1 kept"
-      ],
-      "outputNotContains": [
-        "GONE",
-        "pull again: localhost:5055/tc-test-ctd"
-      ]
-    },
-    {
-      "type": "command",
-      "label": "Images tests: clean up - the classic image store back, test containers, images and registry gone, the age and image settings back",
-      "run": "cp -p /tmp/tc-store-daemon.json /etc/docker/daemon.json; systemctl restart docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; case \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo 'image store: containerd' ;; *) echo 'image store: classic' ;; esac; kill $(cat /tmp/tc-test-registry.pid); docker rm -f tc-age-stopped tc-age-fresh tc-age-never >/dev/null; docker rmi tc-test-localonly:1 tc-test-keepimg:1 localhost:5055/tc-test-pulled:1 >/dev/null; docker image prune -f >/dev/null; sed -i '/^name:tc-age-stopped$/d' /etc/tc-docker/expected-containers; rm -rf /tmp/tc-test-registry /tmp/tc-test-registry.pid /tmp/tc-untagged-id /tmp/tc-store-daemon.json; sed -i 's/^PRUNE_IMAGES=.*/PRUNE_IMAGES=dangling/' /etc/default/tc-docker-prune; docker ps -a --format '{{.Names}}' | grep -c tc-age || echo 'no tc-age containers'",
-      "timeoutSeconds": 180,
-      "outputContains": [
-        "image store: classic",
         "no tc-age containers"
       ]
     },
@@ -1314,6 +1286,41 @@
       "run": "chattr -i /etc/docker/daemon.json 2>/dev/null; rm -rf /opt/tc-test-managed /usr/local/sbin/tc-test-run-component /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-* /tmp/tc-bak-names /tmp/tc-run.out /tmp/tc-imm.* /tmp/tc-badval.sha /tmp/tc-report.sha; cp /tmp/tc-before.json /etc/docker/daemon.json && systemctl reset-failed docker.service docker.socket 2>/dev/null; systemctl restart docker.service && docker info --format 'docker up, LoggingDriver={{.LoggingDriver}}'",
       "outputContains": [
         "docker up, LoggingDriver=json-file"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "containerd image store (last, as it changes the image store): Docker restarted with it, the test registry trusted over plain HTTP; there an image built here has a repo@sha256 digest too",
+      "run": "set -e\nsetsid nohup python3 /usr/local/sbin/tc-test-registry 5055 /tmp/tc-test-registry >/tmp/tc-test-registry.log 2>&1 </dev/null &\necho $! > /tmp/tc-test-registry.pid\nfor i in $(seq 20); do curl -fsS http://127.0.0.1:5055/v2/ >/dev/null 2>&1 && break; sleep 1; done\ncp -p /etc/docker/daemon.json /tmp/tc-store-daemon.json\npython3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d.setdefault('features', {})['containerd-snapshotter'] = True; d['insecure-registries'] = ['localhost:5055']; json.dump(d, open(p, 'w'), indent=2)\"\nsystemctl restart docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done\ncase \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo 'image store: containerd' ;; *) echo 'image store: classic' ;; esac\nr=$(mktemp -d); mkdir -p $r/bin; cp /bin/true $r/bin/; for l in $(ldd /bin/true | grep -oE '/[^ ]+'); do mkdir -p $r$(dirname $l); cp $l $r$l; done\ntar -C $r -c . | docker import --change 'LABEL tc.test=ctd-local' - tc-test-ctd-local:1 >/dev/null\ntar -C $r -c . | docker import --change 'LABEL tc.test=ctd-pulled' - localhost:5055/tc-test-ctd-pulled:1 >/dev/null\ndocker push -q localhost:5055/tc-test-ctd-pulled:1\ndocker image inspect -f 'built here, and still: {{json .RepoDigests}}' tc-test-ctd-local:1",
+      "timeoutSeconds": 180,
+      "outputContains": [
+        "image store: containerd",
+        "built here, and still: [\"tc-test-ctd-local@sha256:"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "containerd image store, PRUNE_IMAGES=all: a digest proves nothing there, so every tagged image is kept, with the reason",
+      "run": "sed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=0/; s/^PRUNE_IMAGES=.*/PRUNE_IMAGES=all/' /etc/default/tc-docker-prune; grep PRUNE_IMAGES /etc/default/tc-docker-prune; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; for i in tc-test-ctd-local:1 localhost:5055/tc-test-ctd-pulled:1; do docker image inspect -f \"$i kept\" $i 2>/dev/null || echo \"$i GONE\"; done",
+      "outputContains": [
+        "PRUNE_IMAGES=all",
+        "prune exit 0",
+        "tc-test-ctd-local:1 - this host uses the containerd image store, which gives every image a digest, so whether it can be pulled again cannot be told",
+        "localhost:5055/tc-test-ctd-pulled:1 - this host uses the containerd image store",
+        "tc-test-ctd-local:1 kept",
+        "localhost:5055/tc-test-ctd-pulled:1 kept"
+      ],
+      "outputNotContains": [
+        "GONE",
+        "pull again: localhost:5055/tc-test-ctd"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "containerd image store: clean up - daemon.json as it was, Docker restarted, the registry stopped",
+      "run": "cp -p /tmp/tc-store-daemon.json /etc/docker/daemon.json; rm -f /tmp/tc-store-daemon.json; kill $(cat /tmp/tc-test-registry.pid) 2>/dev/null; rm -rf /tmp/tc-test-registry /tmp/tc-test-registry.pid; systemctl restart docker.service && docker info --format 'docker up again: {{.ServerVersion}}'",
+      "outputContains": [
+        "docker up again"
       ]
     },
     {
