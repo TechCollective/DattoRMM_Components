@@ -113,7 +113,13 @@ export PATH
 # TC_PRUNE_VERSION=<its own version> at the top of the script). Raise this when a
 # safety fix to the prune ships, and every host still on an older prune is
 # flagged on its next run.
-PRUNE_MIN_VERSION=9
+# 11 is the first prune that never starts a stopped Docker: its service has
+# Requisite=docker.service, and it asks systemd before any docker command. The
+# prunes of versions 9 and 10 start a Docker that was stopped on purpose, and
+# every restart: always container with it. Version 12 only changes how the
+# prune reads its own settings file, which matters after a hand edit of that
+# file, so 11 is still accepted.
+PRUNE_MIN_VERSION=11
 PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
 PRUNE_UNIT="/etc/systemd/system/tc-docker-prune.service"
 PRUNE_CONF="/etc/default/tc-docker-prune"
