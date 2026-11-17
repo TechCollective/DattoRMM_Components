@@ -17,11 +17,13 @@ registry, and when an image's registry has not answered for days.
 > sandbox, except the stopped-Docker steps, which need systemd (run in CI). It
 > has not yet run through a Datto agent. **Version 3** (2026-11-17) brings it
 > to the repo standard: the input variables take the `usr` prefix (the old
-> names are still read; see [Input variables](#input-variables)) and the
-> script runs under `set -u`. Version 3 was exercised through its Tier 1
-> `test.json` against a live Docker 29 daemon in a sandbox, except the steps
-> that need systemd or GNU bash 4.2 (run in CI); it has not run through a
-> Datto agent. Run its script once as a **Scripts**
+> names are still read; see [Input variables](#input-variables)), the script
+> runs under `set -u`, and the container list takes three docker commands
+> whatever the number of containers, instead of four or five per container
+> (see [Listing the containers](#listing-the-containers)). Version 3 was
+> exercised through its Tier 1 `test.json` against a live Docker 29 daemon in
+> a sandbox, except the steps that need systemd or GNU bash 4.2 (run in CI);
+> it has not run through a Datto agent. Run its script once as a **Scripts**
 > component first; see [Test order](#test-order).
 
 ## What it does
@@ -71,6 +73,40 @@ anything left in it. Nothing else is signalled. The whole check uses the same
 mechanism as `Docker - Containers Differ From Expected [Lin]`, and the same
 shared "is Docker running" block (`tools/check-shared-blocks.py` keeps the
 copies identical).
+
+### Listing the containers
+
+The container list takes three docker commands, whatever the number of
+running containers: one `docker ps`, one `docker inspect` over every container
+(name, image reference, image id), and one `docker image inspect` over the
+distinct images (tags, repo digests). Version 2 ran four or five per container.
+Measured with a shim that counts docker commands, on 10 running containers:
+
+| | docker ps | docker inspect | docker image inspect | Total for the list |
+|---|---|---|---|---|
+| Version 2 | 1 | 30 | 10 | **41** |
+| Version 3 | 1 | 1 | 1 | **3** |
+
+- **A container that goes away mid-listing.** A container removed between
+  `docker ps` and `docker inspect` (or its image between the two inspects)
+  makes that call fail, so the whole listing is retried: three tries, one
+  second apart. When no try succeeds the result is exit 1, `Check could not
+  run: Docker did not return its container list`. It is never read as "no
+  containers". Version 2 counted such a container as one with no image tag.
+- **Values are read JSON-encoded.** Each value is kept only when it is a plain
+  name, image reference, digest or id. Nothing in a name, tag or digest can add
+  a row or a field. A name that is not plain is shown as the first 12
+  characters of the container id. A reference or tag that is not plain counts
+  as no image tag. A digest that is not plain is ignored.
+- **No map keys.** The templates read only fixed fields, never a map key. On
+  Docker 29 a template that addresses a missing map key can fail the whole
+  call.
+
+The rows are the same as version 2's, with the same skip reasons. A container
+whose image reference is empty or an image id (run by id) is checked under its
+image's first tag. A container with no usable tag is skipped as `no image
+tag`. A container whose image has no repo digest for that repository is skipped
+as `local image, not from a registry`.
 
 ### Registry load
 
@@ -241,6 +277,7 @@ non-default value, and save each policy again if its value was lost.
 | A docker client and no daemon at all | **Exit 0**, says so |
 | Daemon unreachable | **Exit 1**: "Check could not run: cannot talk to the Docker daemon" |
 | Daemon does not answer | **Exit 1** inside 45 seconds: "Docker did not answer within 40 seconds" |
+| `docker ps`, `docker inspect` or `docker image inspect` fails on three tries | **Exit 1**: "Check could not run: Docker did not return its container list" |
 | `docker buildx` missing | **Exit 1**, naming the `docker-buildx-plugin` package |
 | Docker installed, no containers running | **Exit 0**, and says so |
 | No container uses a registry image | **Exit 0**, counted in the status |
@@ -299,3 +336,11 @@ saved state.
   may not reach them all inside its 75 seconds; the rest are deferred to the
   next runs, which make progress because answers are cached.
 - bash 4.2 or later (tested under GNU bash 4.2 in CI).
+- **Docker's containerd image store** (the default for new installs from
+  Docker 29) gives an image that never came from a registry a repo digest of
+  its own (seen on Docker 29.9.3: an image made with `docker import` and never
+  pushed lists `name@sha256:<its id>`). Such a container is therefore not
+  skipped as `local image, not from a registry`. Its reference is looked up in
+  the registry and, when that fails, it is counted as unreadable and can
+  become stale. Versions 2 and 3 behave the same here. Use
+  `usrExcludePattern` for such containers until this is handled.

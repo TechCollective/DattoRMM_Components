@@ -23,9 +23,11 @@
 #   - docker info fails otherwise                                        -> alert
 # Every command that talks to the daemon is stopped if Docker has not answered
 # DOCKER_TIMEOUT seconds after the monitor started, and the check says Docker
-# did not answer. Registry lookups have their own per-lookup time limit
-# (usrInspectTimeout), and none runs past RUN_LIMIT seconds after the start;
-# what was not looked up by then falls back to the cache and is asked next run.
+# did not answer. The container list takes three docker commands whatever the
+# number of containers (docker ps, docker inspect, docker image inspect).
+# Registry lookups have their own per-lookup time limit (usrInspectTimeout),
+# and none runs past RUN_LIMIT seconds after the start; what was not looked up
+# by then falls back to the cache and is asked next run.
 #
 # REGISTRY LOAD is the main design constraint. Three things keep it low:
 #   1. A digest-only lookup is one cheap HEAD. The image build date, which
@@ -317,45 +319,100 @@ BREAKER="${TMP}/rate-limited"
 
 # ------------------------------------------------------- gather local state
 
-# One line per running container, tab separated:
+# One line per running container, in docker ps order, tab separated:
 #   ok    name  ref  local-digest
 #   excl  name
 #   skip  name  reason
-# Exits 3 when docker ps fails. Run under bounded(), in a bash of its own.
+# Three docker commands, whatever the number of containers: docker ps, one
+# docker inspect over every container, and one docker image inspect over the
+# distinct images they run. The templates name struct fields only, never a map
+# key (on Docker 29 a template that addresses a missing map key can fail the whole
+# call). Every value is read JSON-encoded and kept only when it is a plain
+# name, reference, digest or id, so nothing in a name, tag or digest can add a
+# row or a field: a name that is not plain is shown as the first 12 characters
+# of the container id, a reference or tag that is not plain is no image tag,
+# and a digest that is not plain is ignored. A container removed between docker
+# ps and docker inspect (or its image between the two inspects) fails that
+# call, so the whole listing is retried, three tries one second apart. Exits 3
+# when no try succeeds: "Docker did not answer" is never "no containers". Run
+# under bounded(), in a bash of its own.
 gather() {
-    local ids id cname ref imgid repo r loc
-    ids="$("$DOCKER" ps -q --no-trunc 2>/dev/null)" || exit 3
-    while IFS= read -r id; do
-        [ -n "$id" ] || continue
-        cname="$("$DOCKER" inspect -f '{{.Name}}' "$id" 2>/dev/null)"; cname="${cname#/}"
-        [ -n "$cname" ] || cname="${id:0:12}"
-        if [ -n "$EXCLUDE" ] && printf '%s\n' "$cname" | grep -qE -- "$EXCLUDE" 2>/dev/null; then
-            printf 'excl\t%s\n' "$cname"; continue
+    local try ids cout iout id jn jr ji extra cname ref imgid repo r loc d k n
+    local -a cid cnm cref cimg imgs fl
+    local -A seen tag0 digs
+    for try in 1 2 3; do
+        [ "$try" -gt 1 ] && sleep 1
+        ids="$("$DOCKER" ps -q --no-trunc 2>/dev/null)" || continue
+        [ -n "$ids" ] || exit 0
+        cout="$(printf '%s\n' "$ids" | xargs "$DOCKER" inspect --type container -f \
+'{{json .Id}}{{"\t"}}{{json .Name}}{{"\t"}}{{json .Config.Image}}{{"\t"}}{{json .Image}}' 2>/dev/null)" || continue
+        cid=(); cnm=(); cref=(); cimg=(); imgs=(); seen=(); tag0=(); digs=()
+        while IFS=$'\t' read -r id jn jr ji extra; do
+            [[ "$id" =~ ^\"([0-9a-f]{64})\"$ ]] && [ -n "$ji" ] && [ -z "$extra" ] || continue
+            id="${BASH_REMATCH[1]}"
+            if [[ "$jn" =~ ^\"/?([a-zA-Z0-9][a-zA-Z0-9_.-]*)\"$ ]]; then cname="${BASH_REMATCH[1]}"; else cname="${id:0:12}"; fi
+            if [[ "$jr" =~ ^\"([a-zA-Z0-9][a-zA-Z0-9._/:@-]*)\"$ ]]; then ref="${BASH_REMATCH[1]}"
+            elif [ "$jr" = '""' ]; then ref=""
+            else ref="(unreadable)"; fi
+            if [[ "$ji" =~ ^\"(sha256:[0-9a-f]{64})\"$ ]]; then imgid="${BASH_REMATCH[1]}"; else imgid=""; fi
+            cid+=("$id"); cnm+=("$cname"); cref+=("$ref"); cimg+=("$imgid")
+            if [ -n "$imgid" ] && [ -z "${seen[$imgid]+x}" ]; then seen[$imgid]=1; imgs+=("$imgid"); fi
+        done <<< "$cout"
+        if [ "${#imgs[@]}" -gt 0 ]; then
+            iout="$("$DOCKER" image inspect -f \
+'{{json .Id}}{{range .RepoTags}}{{"\t"}}T{{json .}}{{end}}{{range .RepoDigests}}{{"\t"}}D{{json .}}{{end}}' \
+                    "${imgs[@]}" 2>/dev/null)" || continue
+            while IFS=$'\t' read -r -a fl; do
+                [ "${#fl[@]}" -gt 0 ] && [[ "${fl[0]}" =~ ^\"(sha256:[0-9a-f]{64})\"$ ]] || continue
+                imgid="${BASH_REMATCH[1]}"
+                for ((n = 1; n < ${#fl[@]}; n++)); do
+                    d="${fl[$n]}"
+                    case "$d" in
+                        T*) [ -n "${tag0[$imgid]+x}" ] && continue    # the first tag, as before
+                            if [[ "$d" =~ ^T\"([a-zA-Z0-9][a-zA-Z0-9._/:@-]*)\"$ ]]; then tag0[$imgid]="${BASH_REMATCH[1]}"
+                            else tag0[$imgid]="(unreadable)"; fi ;;
+                        D*) [[ "$d" =~ ^D\"([a-zA-Z0-9][a-zA-Z0-9._/:@-]*)\"$ ]] \
+                                && digs[$imgid]="${digs[$imgid]:-}${BASH_REMATCH[1]}"$'\n' ;;
+                    esac
+                done
+            done <<< "$iout"
         fi
-        ref="$("$DOCKER" inspect -f '{{.Config.Image}}' "$id" 2>/dev/null)"
-        imgid="$("$DOCKER" inspect -f '{{.Image}}' "$id" 2>/dev/null)"
-        if [ -z "$ref" ] || [[ "$ref" =~ ^(sha256:)?[0-9a-f]{12,}$ ]]; then
-            ref="$("$DOCKER" image inspect -f '{{index .RepoTags 0}}' "$imgid" 2>/dev/null)"
-        fi
-        if [ -z "$ref" ] || [ "$ref" = "<none>:<none>" ] || [[ ! "$ref" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]]; then
-            printf 'skip\t%s\tno image tag\n' "$cname"; continue
-        fi
-        r="${ref%%@*}"
-        case "${r##*/}" in *:*) repo="${r%:*}" ;; *) repo="$r" ;; esac
-        loc="$("$DOCKER" image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$imgid" 2>/dev/null \
-               | grep -F "${repo}@" | head -1 | cut -d@ -f2)"
-        if [[ ! "$loc" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            printf 'skip\t%s\tlocal image, not from a registry\n' "$cname"; continue
-        fi
-        printf 'ok\t%s\t%s\t%s\n' "$cname" "$ref" "$loc"
-    done <<< "$ids"
-    exit 0
+        for ((k = 0; k < ${#cid[@]}; k++)); do
+            cname="${cnm[$k]}"; ref="${cref[$k]}"; imgid="${cimg[$k]}"
+            if [ -n "$EXCLUDE" ] && printf '%s\n' "$cname" | grep -qE -- "$EXCLUDE" 2>/dev/null; then
+                printf 'excl\t%s\n' "$cname"; continue
+            fi
+            if [ -z "$ref" ] || [[ "$ref" =~ ^(sha256:)?[0-9a-f]{12,}$ ]]; then
+                ref=""; [ -n "$imgid" ] && ref="${tag0[$imgid]:-}"
+            fi
+            if [ -z "$ref" ] || [[ ! "$ref" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]]; then
+                printf 'skip\t%s\tno image tag\n' "$cname"; continue
+            fi
+            r="${ref%%@*}"
+            case "${r##*/}" in *:*) repo="${r%:*}" ;; *) repo="$r" ;; esac
+            # The first repo digest containing "<repo>@", as before.
+            loc=""
+            if [ -n "$imgid" ]; then
+                while IFS= read -r d; do
+                    [[ "$d" == *"${repo}@"* ]] || continue
+                    loc="${d#*@}"; loc="${loc%%@*}"; break
+                done <<< "${digs[$imgid]:-}"
+            fi
+            if [[ ! "$loc" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                printf 'skip\t%s\tlocal image, not from a registry\n' "$cname"; continue
+            fi
+            printf 'ok\t%s\t%s\t%s\n' "$cname" "$ref" "$loc"
+        done
+        exit 0
+    done
+    exit 3
 }
 
 ROWS="$(bounded "$(declare -f gather)"$'\n''DOCKER=$1; EXCLUDE=$2; gather' "$DOCKER" "$EXCLUDE")"
 case $? in
     0) ;;
-    3) emit 1 "Check could not run: Docker did not return its container list" ;;
+    3)  diag "docker ps, docker inspect or docker image inspect failed on three tries, one second apart. A container removed between docker ps and docker inspect fails one try; three in a row is Docker not answering properly."
+        emit 1 "Check could not run: Docker did not return its container list" ;;
     124|137) docker_hung "Listing the containers (docker ps, docker inspect)" ;;
     *) emit 1 "Check could not run: listing the containers failed unexpectedly" ;;
 esac
