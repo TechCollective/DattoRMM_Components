@@ -47,8 +47,12 @@
 #    flags a host whose prune is older than its PRUNE_MIN_VERSION.
 # 4. Optionally runs that prune once, now.
 #
-# It never restarts Docker. daemon.json changes take effect at the next
-# Docker restart or reboot; the output says "RESTART PENDING" when that applies.
+# It never starts or restarts Docker. Before any docker command it asks whether
+# Docker is running without waking it (systemd, where it manages
+# docker.service), and a stopped Docker stays stopped: the prune's service has
+# Requisite=docker.service, not Requires=. daemon.json changes take effect at
+# the next Docker restart or reboot; the output says "RESTART PENDING" when that
+# applies. The timer is restarted only when the timer unit itself changed.
 #
 # Exit codes:
 #   0  done, or nothing to do (including: Docker is not installed)
@@ -58,10 +62,10 @@
 #   3  could not apply safely (no JSON tool, config failed validation,
 #      Docker's start flags unknown, a --config-file elsewhere, daemon.json
 #      already stops Docker starting, daemon.json is a symlink that does not
-#      end at a regular file, no systemd, snap-packaged Docker, daemon
-#      unreachable for the list or a prune-now, or the daemon answered but did
-#      not return its container list, so the list was not created); nothing
-#      was changed for that part
+#      end at a regular file, no systemd, snap-packaged Docker, Docker
+#      stopped or the daemon unreachable for the list or a prune-now, or the
+#      daemon answered but did not return its container list, so the list was
+#      not created); nothing was changed for that part
 
 set -u
 umask 022
@@ -177,11 +181,47 @@ case "$DOCKER_BIN" in
         fail 3 "Docker here is the snap package ($DOCKER_BIN). Its daemon.json and lifecycle are managed by snap; this component does not handle it." ;;
 esac
 
-ENGINE_VER="$( (dockerd --version 2>/dev/null || "$DOCKER_BIN" version --format '{{.Server.Version}}' 2>/dev/null) \
-    | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)"
+DOCKER="$DOCKER_BIN"
+
+# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# Whether the Docker daemon is running, found out without starting it. Where
+# systemd manages docker.service, systemd is asked, and no docker command is run
+# unless the service is active: on most installs docker.socket stays listening
+# while the service is stopped, and any docker command (docker info, docker ps)
+# would start Docker again, with every restart: always container. Elsewhere
+# docker info is asked. Returns 0 running and answering; 1 stopped (systemd says
+# docker.service is not active); 2 not answering (docker info failed). Sets
+# DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
+# options only, so systemd 219 understands them.
+DOCKER_STATE=""
+tc_docker_running() {
+    local load state
+    DOCKER_STATE=""
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        load="$(systemctl show docker.service -p LoadState 2>/dev/null)"
+        if [ "$load" = "LoadState=loaded" ] && ! systemctl is-active --quiet docker.service 2>/dev/null; then
+            state="$(systemctl is-active docker.service 2>/dev/null)"
+            DOCKER_STATE="docker.service is ${state:-not active}"
+            return 1
+        fi
+    fi
+    if ! "$DOCKER" info >/dev/null 2>&1; then
+        DOCKER_STATE="docker info did not answer"
+        return 2
+    fi
+    return 0
+}
+# <<< tc-docker running
+
+# The engine version from dockerd itself; only if that fails, from the daemon,
+# and only when it is running, so asking never starts Docker.
+ENGINE_VER="$(dockerd --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)"
+if [ -z "$ENGINE_VER" ] && tc_docker_running; then
+    ENGINE_VER="$("$DOCKER_BIN" version --format '{{.Server.Version}}' 2>/dev/null \
+        | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)"
+fi
 ENGINE_MAJOR="${ENGINE_VER%%.*}"
 say "Docker: $DOCKER_BIN, engine ${ENGINE_VER:-unknown}. Mode: $usrMode."
-DOCKER="$DOCKER_BIN"
 
 # >>> tc-docker shared: identical in every tc-docker component; change them together.
 TC_DIR="/etc/tc-docker"
@@ -840,7 +880,7 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # tc-docker-prune -- installed by the Datto RMM component
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune.
-TC_PRUNE_VERSION=10
+TC_PRUNE_VERSION=11
 # The line above is the version of the component that installed this script,
 # and the first thing a run prints is that version, so the journal shows which
 # prune ran. "Docker - Containers Differ From Expected [Lin]" reads it to flag
@@ -879,6 +919,8 @@ TC_PRUNE_VERSION=10
 # If Docker does not return its container list, nothing at all is removed and
 # the exit is 1. If the image list or the second container list cannot be read,
 # no image is removed and the exit is 1. Never volumes. Exit: 0 done, 1 error.
+# With Docker stopped (systemd says docker.service is not active) it runs no
+# docker command, says so in one line, removes nothing and exits 0.
 set -u
 echo "tc-docker-prune version $TC_PRUNE_VERSION"
 # Tests may LOWER the lookup limits through the environment. Read before the
@@ -893,7 +935,46 @@ PENDING_DIR=/var/lib/tc-docker
 PENDING_FILE="$PENDING_DIR/pending-removal"
 
 DOCKER="$(command -v docker)" || { echo "ERROR: docker not found"; exit 1; }
-"$DOCKER" info >/dev/null 2>&1 || { echo "ERROR: the Docker daemon is not reachable"; exit 1; }
+
+# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# Whether the Docker daemon is running, found out without starting it. Where
+# systemd manages docker.service, systemd is asked, and no docker command is run
+# unless the service is active: on most installs docker.socket stays listening
+# while the service is stopped, and any docker command (docker info, docker ps)
+# would start Docker again, with every restart: always container. Elsewhere
+# docker info is asked. Returns 0 running and answering; 1 stopped (systemd says
+# docker.service is not active); 2 not answering (docker info failed). Sets
+# DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
+# options only, so systemd 219 understands them.
+DOCKER_STATE=""
+tc_docker_running() {
+    local load state
+    DOCKER_STATE=""
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        load="$(systemctl show docker.service -p LoadState 2>/dev/null)"
+        if [ "$load" = "LoadState=loaded" ] && ! systemctl is-active --quiet docker.service 2>/dev/null; then
+            state="$(systemctl is-active docker.service 2>/dev/null)"
+            DOCKER_STATE="docker.service is ${state:-not active}"
+            return 1
+        fi
+    fi
+    if ! "$DOCKER" info >/dev/null 2>&1; then
+        DOCKER_STATE="docker info did not answer"
+        return 2
+    fi
+    return 0
+}
+# <<< tc-docker running
+
+# Before any docker command: a stopped Docker stays stopped. Someone stopped it
+# on purpose (a maintenance window, a move of its data directory), and any
+# docker command would start it again through docker.socket.
+tc_docker_running; up=$?
+if [ "$up" -eq 1 ]; then
+    echo "Docker is not running ($DOCKER_STATE): nothing was pruned, and Docker was left stopped."
+    exit 0
+fi
+[ "$up" -eq 0 ] || { echo "ERROR: the Docker daemon is not reachable"; exit 1; }
 
 # >>> tc-docker shared: identical in every tc-docker component; change them together.
 TC_DIR="/etc/tc-docker"
@@ -1571,7 +1652,12 @@ seed_section() {
         else say "Expected list: NOT REVIEWED. Until someone confirms it, the prune removes no containers or images here."; fi
         return 0
     fi
-    if ! "$DOCKER" info >/dev/null 2>&1; then
+    local up
+    tc_docker_running; up=$?
+    if [ "$up" -eq 1 ]; then
+        say "Expected list: Docker is not running ($DOCKER_STATE), so the list was not created and Docker was left stopped; the next run will try again."
+        return 3
+    elif [ "$up" -ne 0 ]; then
         say "Expected list: the Docker daemon is not reachable, so the list was not created; the next run will try again."
         return 3
     fi
@@ -1638,24 +1724,38 @@ timer_section() {
         say "Prune timer: this host is not running systemd; not installed."
         return 3
     fi
-    local svc timer
+    # Requisite, not Requires: the prune runs only while Docker is already
+    # running, and starting it never starts Docker. Requires= would start a
+    # Docker someone stopped on purpose, and every restart: always container
+    # with it. Without a docker.service unit Requisite could never be met, so
+    # the lines are left out and the prune checks Docker itself.
+    local svc timer deps=""
+    if [ "$(systemctl show docker.service -p LoadState 2>/dev/null)" = "LoadState=loaded" ]; then
+        deps="
+Requisite=docker.service
+After=docker.service"
+    else
+        say "Prune timer: this host has no docker.service unit, so $UNIT_NAME.service is written without a dependency on it; the prune checks for itself whether Docker is running."
+    fi
     svc="[Unit]
 Description=Prune unused Docker images, stopped containers, networks and build cache (TechCollective)
-Documentation=https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/docker-configure-host-maintenance-lin
-Requires=docker.service
-After=docker.service
+Documentation=https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/docker-configure-host-maintenance-lin$deps
 
 [Service]
 Type=oneshot
 Nice=10
 IOSchedulingClass=idle
 ExecStart=$PRUNE_BIN"
+    # FixedRandomDelay keeps the random part of the time the same across
+    # daemon-reloads (systemd 247+; older systemd ignores the line), so a reload
+    # does not move the next run.
     timer="[Unit]
 Description=Weekly Docker prune (TechCollective)
 
 [Timer]
 OnCalendar=$usrPruneSchedule
 RandomizedDelaySec=30min
+FixedRandomDelay=true
 Persistent=true
 
 [Install]
@@ -1664,31 +1764,44 @@ WantedBy=timers.target"
     WROTE=0
     install_prune_script                         || return 1
     put_file "$UNIT_DIR/$UNIT_NAME.service" "$svc"   644 || return 1
+    local changed_svc=$WROTE
+    WROTE=0
     put_file "$UNIT_DIR/$UNIT_NAME.timer"   "$timer" 644 || return 1
-    local changed=$WROTE
+    local changed_timer=$WROTE
+    local changed=$(( changed_svc | changed_timer ))
 
     local guard="keeps stopped containers on the expected list, removes other stopped ones ${usrPruneGraceHours}h after recording them, images: $usrPruneImages"
 
     if [ "$usrMode" = "report" ]; then
-        if [ $changed -eq 1 ]; then
+        if [ $changed_timer -eq 1 ]; then
             say "Prune timer: REPORT MODE, would install or update $UNIT_NAME.timer ($usrPruneSchedule, older than ${usrPruneOlderThanHours}h, $guard)."
+        elif [ $changed_svc -eq 1 ]; then
+            say "Prune timer: REPORT MODE, would update the prune service, script or settings (older than ${usrPruneOlderThanHours}h, $guard), and would not restart the timer."
         else
             say "Prune timer: already installed with these settings."
         fi
         return 0
     fi
 
+    # A change to the service, the script or its settings needs only a
+    # daemon-reload: the next run uses it. The timer is restarted only when the
+    # timer itself changed, because restarting a Persistent timer can run a
+    # missed prune at once.
     if [ $changed -eq 1 ]; then
         systemctl daemon-reload || return 1
     fi
-    if ! systemctl is-enabled --quiet "$UNIT_NAME.timer" 2>/dev/null \
-       || ! systemctl is-active --quiet "$UNIT_NAME.timer" 2>/dev/null \
-       || [ $changed -eq 1 ]; then
+    if ! systemctl is-enabled --quiet "$UNIT_NAME.timer" 2>/dev/null; then
         systemctl enable "$UNIT_NAME.timer" >/dev/null 2>&1 || return 1
-        systemctl restart "$UNIT_NAME.timer" || return 1
     fi
-    if [ $changed -eq 1 ]; then
+    if [ $changed_timer -eq 1 ]; then
+        systemctl restart "$UNIT_NAME.timer" || return 1
+    elif ! systemctl is-active --quiet "$UNIT_NAME.timer" 2>/dev/null; then
+        systemctl start "$UNIT_NAME.timer" || return 1
+    fi
+    if [ $changed_timer -eq 1 ]; then
         say "Prune timer: installed $UNIT_NAME.timer ($usrPruneSchedule, removes unused items older than ${usrPruneOlderThanHours}h; volumes are never removed; $guard)."
+    elif [ $changed_svc -eq 1 ]; then
+        say "Prune timer: updated the prune service, script or settings (removes unused items older than ${usrPruneOlderThanHours}h; volumes are never removed; $guard). The timer was not restarted."
     else
         say "Prune timer: already installed with these settings."
     fi
@@ -1707,6 +1820,15 @@ prune_now() {
         return 0
     fi
     install_prune_script || return 1
+    local up
+    tc_docker_running; up=$?
+    if [ "$up" -eq 1 ]; then
+        say "Prune now: Docker is not running ($DOCKER_STATE); not run, and Docker was left stopped."
+        return 3
+    elif [ "$up" -ne 0 ]; then
+        say "Prune now: the Docker daemon is not reachable; not run."
+        return 3
+    fi
     say "Prune now:"
     local out rc
     out="$("$PRUNE_BIN" 2>&1)"; rc=$?
@@ -1726,7 +1848,7 @@ timer_section;   rc=$?; [ $rc -gt $worst ] && worst=$rc
 prune_now;       rc=$?; [ $rc -gt $worst ] && worst=$rc
 
 if [ $CHANGED_DAEMON -eq 1 ]; then
-    if "$DOCKER_BIN" info >/dev/null 2>&1; then
+    if tc_docker_running; then
         say "RESTART PENDING: daemon.json changed. It takes effect when Docker restarts or the host reboots; this component never restarts Docker. Log rotation applies to containers created after that."
     else
         say "daemon.json changed; Docker is not running, so it applies at next start."

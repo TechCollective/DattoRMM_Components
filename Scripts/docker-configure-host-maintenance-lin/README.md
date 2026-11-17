@@ -115,6 +115,22 @@ first records it as waiting, and removes it only on a run at least
 >   Docker 29 daemon in a sandbox on both image stores, with both lookup
 >   tools; the Tier 1 test covers it on the CI runner. It has not yet run
 >   through a Datto agent.
+> - **Version 11 never starts a Docker that is stopped.** Up to version 10
+>   the prune's service had `Requires=docker.service`, so the weekly timer
+>   started a Docker someone had stopped on purpose (a maintenance window, a
+>   move of `/var/lib/docker`), and every `restart: always` container came up
+>   with it. And on a package install `docker.socket` keeps listening while
+>   the service is stopped, so any `docker` command (`docker info`,
+>   `docker ps`) from this component or the prune started it too. Version 11
+>   writes `Requisite=docker.service` instead, asks systemd whether Docker is
+>   running before any `docker` command, and leaves a stopped Docker stopped
+>   (see *It never starts Docker* below). It also restarts the timer only
+>   when the timer itself changed, and adds `FixedRandomDelay=true` to it, so
+>   upgrading a host to version 11 restarts its timer once. What the prune
+>   removes is unchanged. `TC_PRUNE_VERSION=11`; the monitor's
+>   `PRUNE_MIN_VERSION` stays `9`. Version 11 was run against a live Docker 29
+>   daemon under systemd 255 in a sandbox, and the Tier 1 test covers it on
+>   the CI runner. It has not yet run through a Datto agent.
 
 ## What it does
 
@@ -269,6 +285,9 @@ JSON-encoded, so a tab or newline in one cannot add a field or a container.
 If `docker info` answers but `docker ps` or `docker inspect` fails three
 times, the list is **not** created (exit `3`), and the next run tries again.
 An empty list written then would later read as "this host runs nothing".
+If Docker is stopped, the list is not created either (exit `3`), and Docker is
+left stopped: the output says
+`Expected list: Docker is not running (docker.service is inactive), so the list was not created and Docker was left stopped; the next run will try again.`
 
 A host that ran version 2 with `usrRequiredContainers` set has those names
 carried onto the new list.
@@ -280,11 +299,78 @@ carried onto the new list.
 | `/usr/local/sbin/tc-docker-prune` | The prune script |
 | `/etc/default/tc-docker-prune` | Its settings: `OLDER_THAN_HOURS`, `GRACE_HOURS`, `PRUNE_IMAGES` |
 | `/var/lib/tc-docker/pending-removal` | Written by the prune: the stopped containers it has recorded and will remove. Directory `0700`, file `0600`, both root |
-| `/etc/systemd/system/tc-docker-prune.service` | Runs the script |
+| `/etc/systemd/system/tc-docker-prune.service` | Runs the script, only while Docker is running (`Requisite=docker.service`) |
 | `/etc/systemd/system/tc-docker-prune.timer` | Runs the service on `usrPruneSchedule` |
 
 The timer is `Persistent`, so a run missed while the host was off happens at
-the next boot. It also has up to 30 minutes of random delay.
+the next boot. It also has up to 30 minutes of random delay, fixed per host
+(`FixedRandomDelay=true`, systemd 247 and later; older systemd ignores the
+line and draws a new delay each time it reloads), so a `daemon-reload` does
+not move the next run.
+
+The service as written on a host with a `docker.service` unit:
+
+    [Unit]
+    Description=Prune unused Docker images, stopped containers, networks and build cache (TechCollective)
+    Documentation=https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/docker-configure-host-maintenance-lin
+    Requisite=docker.service
+    After=docker.service
+
+    [Service]
+    Type=oneshot
+    Nice=10
+    IOSchedulingClass=idle
+    ExecStart=/usr/local/sbin/tc-docker-prune
+
+On a systemd host with **no `docker.service` unit** (Docker started some other
+way), `Requisite=` could never be met and the prune would never run, so the
+two dependency lines are left out, the output says
+`Prune timer: this host has no docker.service unit, so tc-docker-prune.service is written without a dependency on it; the prune checks for itself whether Docker is running.`,
+and the prune checks Docker itself when it runs. A later run on a host that
+has the unit again writes them back. A host with only `/etc/init.d/docker`
+still has a `docker.service`: systemd generates one from that script, so the
+dependency lines are written there.
+
+**When the timer is restarted.** A change to the prune script, its settings
+or the service needs only `systemctl daemon-reload`; the next run uses it, and
+the output says `Prune timer: updated the prune service, script or settings
+(...). The timer was not restarted.` The timer is restarted only when the
+timer unit itself changed (a new `usrPruneSchedule`, or an upgrade that
+changes the unit, such as version 11 adding `FixedRandomDelay`), because
+restarting a `Persistent` timer can run a missed prune at once. A timer that
+is not enabled is enabled, and one that is not running is started.
+
+#### It never starts Docker
+
+A Docker host is sometimes stopped on purpose: a maintenance window, a move
+of `/var/lib/docker`, a disk being replaced. Starting it again brings back
+every `restart: always` container with it. So neither the component nor the
+prune starts a stopped Docker:
+
+- **The service** has `Requisite=docker.service` with `After=`, not
+  `Requires=`. When the timer fires and Docker is not running, systemd does
+  not start the service and does not start Docker; the timer stays active
+  for its next run. **That week's prune is skipped, not postponed**: the
+  next one is at the following scheduled time.
+- **Before any `docker` command**, the component and the prune ask whether
+  Docker is running without waking it. Where systemd manages
+  `docker.service`, they ask systemd (`systemctl is-active docker.service`)
+  and run no `docker` command unless it is active: on a package install
+  `docker.socket` keeps listening while the service is stopped, and any
+  `docker` command would start it. Elsewhere they ask `docker info`, as
+  before. The code is one function, marked `tc-docker running`, in this
+  component and in the prune it installs; CI's shared-block check keeps the
+  two copies identical.
+- **The prune, run by hand or by Prune now, with Docker stopped** prints
+  `Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.`
+  after its version line, removes nothing and exits `0`. A Docker that
+  systemd reports running but that does not answer `docker info`, or one that
+  does not answer on a host where systemd does not manage it, is still an
+  `ERROR:` and exit `1`.
+- **The component with Docker stopped** still merges `daemon.json` (it reads
+  how Docker would start from `docker.service`), installs the prune and the
+  timer, and leaves Docker stopped. It does not create the list and does not
+  run Prune now: those need Docker, and each makes the run exit `3`.
 
 **The prune is only replaced when this component runs on the host again.**
 Nothing else updates it, so a host keeps whichever prune it last received. To
@@ -314,7 +400,8 @@ What earlier versions left on a host, which the monitor flags:
 | 6 | The current rules, without a stamp | The monitor cannot tell it from an older one |
 | 7, 8 | Removes a stopped container at the first prune after it is old enough, counting from when it was **created**; removes every image no container uses | A container that crashed minutes ago is removed without warning, with its logs; an image built or loaded on the host, which exists nowhere else, is removed |
 | 9 | In `All` mode, keeps every tagged image on the containerd image store | Not unsafe, so the monitor does not flag it: `All` only does no more than `Dangling` there |
-| 10 | Current | |
+| 10 | `Requires=docker.service`, and a `docker info` before it checks anything | The weekly timer starts a Docker that was stopped on purpose. Not flagged by the monitor (`PRUNE_MIN_VERSION` stays 9); run version 11 on the host |
+| 11 | Current | |
 
 **Before the list is reviewed:** the prune removes only unused networks and
 build cache older than `usrPruneOlderThanHours`. No container and no image.
@@ -459,11 +546,16 @@ cleaned.
 ### 4. Optionally prunes once, now
 
 With `usrPruneNow`, it runs the same script immediately and reports free disk
-space before and after.
+space before and after. If Docker is not running, it does not run the prune,
+leaves Docker stopped, says
+`Prune now: Docker is not running (docker.service is inactive); not run, and Docker was left stopped.`,
+and the run exits `3`. A daemon that does not answer is the same, with
+`Prune now: the Docker daemon is not reachable; not run.`
 
 ### What it never does
 
-**It never restarts Docker.** A `daemon.json` change only takes effect when
+**It never starts or restarts Docker.** See *It never starts Docker* above
+for a stopped one. A `daemon.json` change only takes effect when
 Docker restarts or the host reboots. Log rotation then applies only to
 containers created after that. The output prints `RESTART PENDING` whenever a
 restart is still needed. Set a post-condition on that string to turn the job
@@ -585,15 +677,19 @@ What causes exit `3`:
 
 - the host is not running systemd
 - Docker is the snap package
-- the daemon was unreachable, or answered but did not return its container
-  list, so the list could not be created; the next run retries
+- Docker was stopped, the daemon was unreachable, or it answered but did not
+  return its container list, so the list could not be created; the next run
+  retries
+- `usrPruneNow` = `Yes` and Docker was stopped or unreachable, so the prune
+  did not run
 
 Log rotation skipped because the driver does not take these options
 (`journald`, say) or because the daemon has a `--log-opt` flag is a normal
 outcome, not exit `3`.
 
-The prune script on the host exits `0` when it pruned, and `1` on an error:
-the daemon unreachable, its container list not coming back (nothing is
+The prune script on the host exits `0` when it pruned, and also when
+systemd reports Docker stopped (it prunes nothing then, and says so). It
+exits `1` on an error: the daemon unreachable, its container list not coming back (nothing is
 removed then), `pending-removal` not writable (no container removed), its
 image list not coming back (no image removed), a `GRACE_HOURS` or
 `PRUNE_IMAGES` it refuses, a container or image Docker would not remove, or a
@@ -624,10 +720,15 @@ A second run says `KEPT` for each key, `no change`,
 `Expected list: ... exists ... not changed`, and
 `already installed with these settings`.
 
+A prune with Docker stopped (by hand; the timer does not start it then):
+
+    tc-docker-prune version 11
+    Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.
+
 A prune after review reports what it recorded, what is waiting, what it
 removed and what it kept:
 
-    tc-docker-prune version 10
+    tc-docker-prune version 11
     Pruning unused items older than 168h. Volumes are never removed.
     Disk before: 30G free, 29% used
     Stopped containers recorded for removal this run (removed 144h from now if still stopped and not protected):
@@ -776,6 +877,26 @@ Never a customer first.
   Docker's changelog, not from testing on a 27.x host.
 - **It never tightens an existing setting.** A host that already has
   `max-size: 500m` keeps it.
+- **A prune skipped because Docker was stopped is not made up.** The timer
+  fired, so `Persistent` has nothing to catch up; the next prune is at the
+  next scheduled time. The journal shows the skipped start
+  (`journalctl -u tc-docker-prune.service`).
+- **"Running" means `docker.service` is active, where systemd has that
+  unit.** A `dockerd` started by hand on such a host while `docker.service`
+  is inactive is treated as stopped: nothing is pruned and the list is not
+  created. On a host where systemd does not manage `docker.service`, a
+  stopped Docker cannot be told from a broken one: the prune says `ERROR:`
+  and exits `1`, as before.
+- **The check is made once, before the first `docker` command.** If Docker is
+  stopped while a prune or this component is running, a later `docker`
+  command in that run can start it again through `docker.socket`.
+- **The monitors still wake a stopped Docker.** Their own `docker info`
+  calls are unchanged in this version, so a monitor run on a host whose
+  `docker.socket` is listening starts Docker. Pause the Docker monitors on a
+  host while its Docker is stopped on purpose.
+- **Upgrading from version 10 restarts the timer once**, because version 11
+  adds `FixedRandomDelay=true` to it. If the host missed its last scheduled
+  prune (it was off at the time), `Persistent` can run that prune at once.
 - **No alert when the timer itself fails.** The prune's result is in the
   journal and `systemctl --failed`. Disk space monitoring is the backstop.
 - **Removing it** is manual: `systemctl disable --now tc-docker-prune.timer`,
