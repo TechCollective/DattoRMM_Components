@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the containers present as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written. Confirm reviewed records the review with a note, refuses when no list exists, and Show reports the review state and stopped containers the list does not protect. A container whose Compose project label carries a forged row is shown as UNREADABLE by name and short id, left off by Accept current and refused by Add; the label never reaches the output or the list. When docker ps fails but docker info answers (a shim on PATH), Accept current and Add by bare name exit 3 and the list is unchanged, and Show says there is no comparison without changing the exit code. Accept current with no containers will not empty a non-empty list. Show's STOPPED, UNLISTED line follows the prune: before review it says nothing is removed until then; after review a container the prune has recorded in /var/lib/tc-docker/pending-removal is WAITING, with when it was recorded and from when it can be removed (GRACE_HOURS from the prune's settings), and one it has not is not yet recorded; a line of that file that is not well formed is not trusted.",
+  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the containers present as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written. Confirm reviewed records the review with a note, refuses when no list exists, and Show reports the review state and stopped containers the list does not protect. A container whose Compose project label carries a forged row is shown as UNREADABLE by name and short id, left off by Accept current and refused by Add; the label never reaches the output or the list. When docker ps fails but docker info answers (a shim on PATH), Accept current and Add by bare name exit 3 and the list is unchanged, and Show says there is no comparison without changing the exit code. Accept current with no containers will not empty a non-empty list. Show's STOPPED, UNLISTED line follows the prune: before review it says nothing is removed until then; after review a container the prune has recorded in /var/lib/tc-docker/pending-removal is WAITING, with when it was recorded and from when it can be removed (GRACE_HOURS from the prune's settings), and one it has not is not yet recorded; a line of that file that is not well formed is not trusted. When docker info fails, Show says there is no comparison, Accept current and Add by bare name exit 3 with the list byte-for-byte unchanged, Remove takes a bare name as name:<name>, and no docker command but docker info is run. With docker only in /snap/bin, outside the harness PATH, it is found through the appended system directories. With docker.service stopped while docker.socket listens (a shim on PATH records every docker command): Show prints the lists and the review state and says Docker was left stopped; Accept current and Add with a bare name exit 3 and change nothing; Add with keys, Remove, Add ignore, Remove ignore and Confirm reviewed work; no run starts Docker or runs any docker command.",
   "variables": {},
   "steps": [
     {
@@ -342,6 +342,102 @@
     },
     {
       "type": "command",
+      "label": "Docker not answering: record the list, then put a docker shim on PATH that records every docker command and fails docker info (a daemon that is not there)",
+      "run": "set -e; sha256sum /etc/tc-docker/expected-containers > /var/tmp/tc-ec.sha; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; printf '%s\\n' '#!/bin/sh' '# tc-test shim: records every docker command; docker info fails' 'echo \"$*\" >> /var/tmp/tc-docker-calls' '[ \"$1\" = info ] && { echo \"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\" >&2; exit 1; }' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; docker info >/dev/null 2>&1 || echo \"docker info exit $?\"; : > /var/tmp/tc-docker-calls; echo ready",
+      "outputContains": [
+        "docker info exit 1",
+        "ready"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker not answering: Show prints the lists and the review state, and says there is no comparison",
+      "outputContains": [
+        "Expected list (/etc/tc-docker/expected-containers):",
+        "compose:tcshop/web",
+        "Review: confirmed",
+        "The Docker daemon did not answer (docker info failed), so there is no comparison."
+      ],
+      "outputNotContains": [
+        "Compared with this host now"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker not answering: Accept current exits 3 and changes nothing",
+      "variables": {
+        "usrAction": "accept-current"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "the Docker daemon did not answer (docker info failed), so its containers cannot be read; nothing was changed."
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker not answering: Add with a bare name exits 3 instead of guessing name:",
+      "variables": {
+        "usrAction": "add",
+        "usrItems": "tc-a"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "the Docker daemon did not answer (docker info failed), so 'tc-a' cannot be matched to its container; nothing was changed."
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker not answering: Remove takes a bare name as name:<name>, and says so",
+      "variables": {
+        "usrAction": "remove",
+        "usrItems": "tc-not-there"
+      },
+      "outputContains": [
+        "so 'tc-not-there' is taken as name:tc-not-there",
+        "not on the list: name:tc-not-there",
+        "no change"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Docker not answering: the list is byte-for-byte unchanged and no docker command but docker info was run; remove the shim",
+      "run": "sha256sum -c /var/tmp/tc-ec.sha; echo \"docker info asked: $(grep -c '^info' /var/tmp/tc-docker-calls)\"; echo \"other docker commands run: $(grep -vc '^info' /var/tmp/tc-docker-calls)\"; rm -f /usr/local/sbin/docker /var/tmp/tc-docker-calls /var/tmp/tc-ec.sha; hash -r; docker ps >/dev/null && echo 'docker ps answers again'",
+      "outputContains": [
+        "expected-containers: OK",
+        "docker info asked: 4",
+        "other docker commands run: 0",
+        "docker ps answers again"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "PATH: the docker client moved to /snap/bin, which the harness PATH does not reach and the component's appended PATH does",
+      "run": "set -e; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; test ! -e /snap/bin/docker; echo \"$real\" > /var/tmp/tc-docker-real; for d in /snap /snap/bin; do [ -d \"$d\" ] || echo \"$d\"; done > /var/tmp/tc-snap-made; mkdir -p /snap/bin; mv \"$real\" /snap/bin/docker; hash -r; env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -c 'command -v docker || echo \"not on the harness PATH\"'",
+      "outputContains": [
+        "not on the harness PATH"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker only on the appended PATH: found, and Show compares as usual",
+      "outputContains": [
+        "Compared with this host now:",
+        "running  compose:tcshop/web"
+      ],
+      "outputNotContains": [
+        "Docker is not installed"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "PATH: the client put back where it was",
+      "run": "set -e; mv /snap/bin/docker \"$(cat /var/tmp/tc-docker-real)\"; tac /var/tmp/tc-snap-made | xargs -r rmdir; rm -f /var/tmp/tc-docker-real /var/tmp/tc-snap-made; hash -r; docker ps >/dev/null && echo \"docker is back at $(command -v docker)\"",
+      "outputContains": [
+        "docker is back at"
+      ]
+    },
+    {
+      "type": "command",
       "label": "Empty guard: remove every container, keeping the list",
       "run": "docker ps -aq | xargs -r docker rm -f >/dev/null; docker ps -aq | wc -l; sha256sum /etc/tc-docker/expected-containers > /tmp/tc-ec.sha; grep -c '^name:\\|^compose:' /etc/tc-docker/expected-containers",
       "outputContains": [
@@ -402,6 +498,138 @@
         "usrItems": "("
       },
       "expectExitCode": 2
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: a docker shim on PATH records any docker command; docker.service stopped while docker.socket keeps listening; the list recorded",
+      "run": "set -e; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; printf '%s\\n' '#!/bin/sh' '# tc-test shim: records every docker command' 'echo \"$*\" >> /var/tmp/tc-docker-calls' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; : > /var/tmp/tc-docker-calls; echo \"before: $(systemctl is-active docker.service docker.socket | paste -sd' ')\"; systemctl stop docker.service 2>/dev/null; echo \"stopped: $(systemctl is-active docker.service docker.socket | paste -sd' ')\"; sha256sum /etc/tc-docker/expected-containers > /var/tmp/tc-ec.sha; grep -v '^#' /etc/tc-docker/expected-containers | sort > /var/tmp/tc-ec.entries; test -s /etc/tc-docker/reviewed && echo 'reviewed: yes'; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"",
+      "outputContains": [
+        "before: active active",
+        "stopped: inactive active",
+        "reviewed: yes",
+        "docker commands run: 0"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, Show: both lists and the review state, then no comparison, because Docker is stopped and was left stopped",
+      "outputContains": [
+        "Expected list (/etc/tc-docker/expected-containers):",
+        "compose:tcshop/web",
+        "Ignore patterns (/etc/tc-docker/ignore):",
+        "Review: confirmed",
+        "Docker is stopped (docker.service is inactive) and was left stopped: this component ran no docker command, so there is no comparison."
+      ],
+      "outputNotContains": [
+        "Compared with this host now"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, Accept current: exit 3, nothing changed",
+      "variables": {
+        "usrAction": "accept-current"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "Docker is stopped (docker.service is inactive) and was left stopped: this component ran no docker command, so its containers cannot be read; nothing was changed."
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, Add with a bare name beside a key: exit 3, and the key is not added either",
+      "variables": {
+        "usrAction": "add",
+        "usrItems": "compose:tc-stop/db tc-stop-bare"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "so 'tc-stop-bare' cannot be matched to its container; nothing was changed."
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Docker stopped: the list is byte-for-byte unchanged, no docker command was run, and Docker is still stopped",
+      "run": "sha256sum -c /var/tmp/tc-ec.sha; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"; echo \"now: $(systemctl is-active docker.service docker.socket | paste -sd' ')\"",
+      "outputContains": [
+        "expected-containers: OK",
+        "docker commands run: 0",
+        "now: inactive active"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, Add with keys: added, and the Show after it has no comparison",
+      "variables": {
+        "usrAction": "add",
+        "usrItems": "name:tc-stop-key, compose:tc-stop/db"
+      },
+      "outputContains": [
+        "added:   name:tc-stop-key",
+        "added:   compose:tc-stop/db",
+        "and was left stopped: this component ran no docker command, so there is no comparison."
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, Remove: a key, and a bare name taken as name:<name>",
+      "variables": {
+        "usrAction": "remove",
+        "usrItems": "compose:tc-stop/db tc-stop-key"
+      },
+      "outputContains": [
+        "so 'tc-stop-key' is taken as name:tc-stop-key",
+        "removed: compose:tc-stop/db",
+        "removed: name:tc-stop-key"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, Add ignore",
+      "variables": {
+        "usrAction": "add-ignore",
+        "usrItems": "^name:tc-stop-"
+      },
+      "outputContains": [
+        "added:   ^name:tc-stop-",
+        "so there is no comparison."
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, Remove ignore",
+      "variables": {
+        "usrAction": "remove-ignore",
+        "usrItems": "^name:tc-stop-"
+      },
+      "outputContains": [
+        "removed: ^name:tc-stop-",
+        "so there is no comparison."
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, Confirm reviewed, with a note",
+      "variables": {
+        "usrAction": "confirm-reviewed",
+        "usrItems": "stopped-docker check"
+      },
+      "outputContains": [
+        "Review recorded",
+        "stopped-docker check",
+        "so there is no comparison."
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: still stopped, the list's entries as before, and no docker command run by any of those runs; then the shim removed and Docker started again",
+      "run": "echo \"now: $(systemctl is-active docker.service docker.socket | paste -sd' ')\"; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"; grep -v '^#' /etc/tc-docker/expected-containers | sort | cmp -s - /var/tmp/tc-ec.entries && echo 'list entries as before'; rm -f /usr/local/sbin/docker /var/tmp/tc-docker-calls /var/tmp/tc-ec.sha /var/tmp/tc-ec.entries; hash -r; systemctl start docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; echo \"restarted: $(systemctl is-active docker.service docker.socket | paste -sd' ')\"",
+      "outputContains": [
+        "now: inactive active",
+        "docker commands run: 0",
+        "list entries as before",
+        "restarted: active active"
+      ]
     },
     {
       "type": "runComponent",
