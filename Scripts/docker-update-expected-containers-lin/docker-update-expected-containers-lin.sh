@@ -25,15 +25,25 @@
 #
 # The previous version of a changed file is kept as <file>.prev.
 #
+# It never starts a stopped Docker. Where systemd says docker.service is not
+# active, it runs no docker command at all (on most installs docker.socket
+# keeps listening while the service is stopped, and any docker command would
+# start Docker again): show prints the lists and the review state with no
+# comparison; accept-current, and add with a bare name, change nothing (exit 3);
+# add with a key, remove, the ignore actions and confirm-reviewed need no daemon
+# and work as usual. A bare name given to remove is then taken as name:<name>.
+# The same holds when Docker does not answer docker info.
+#
 # Exit codes:
 #   0  done
 #   1  unexpected failure
 #   2  an input variable is invalid; nothing was changed
 #   3  nothing was changed because: accept-current or add (a bare name) needs
-#      Docker's container list and Docker did not return it; accept-current
-#      found no containers and the list is not empty (use remove for that);
-#      add was given a bare name whose container has unreadable Compose
-#      labels; or confirm-reviewed was run on a host that has no list yet
+#      Docker's container list and Docker is stopped, did not answer, or did
+#      not return it; accept-current found no containers and the list is not
+#      empty (use remove for that); add was given a bare name whose container
+#      has unreadable Compose labels; or confirm-reviewed was run on a host
+#      that has no list yet
 
 set -u
 umask 022
@@ -56,12 +66,17 @@ case "$usrAction" in
     *) fail 2 "usrAction must be show, accept-current, confirm-reviewed, add, remove, add-ignore or remove-ignore (got '$usrAction')." ;;
 esac
 
+# One PATH rule, whatever PATH the agent gives the script: the usual system
+# directories are appended (never prepended, so what the agent's PATH finds
+# first still wins), so whether docker is found does not depend on the agent.
+PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+export PATH
+
 DOCKER="$(command -v docker 2>/dev/null || true)"
 if [ -z "$DOCKER" ]; then
     say "Docker is not installed on this host; nothing to do."
     RESULT=0; exit 0
 fi
-DAEMON=0; "$DOCKER" info >/dev/null 2>&1 && DAEMON=1
 
 # >>> tc-docker shared: identical in every tc-docker component; change them together.
 TC_DIR="/etc/tc-docker"
@@ -133,6 +148,51 @@ tc_ignored() {
 tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # <<< tc-docker shared
 
+# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# Whether the Docker daemon is running, found out without starting it. Where
+# systemd manages docker.service, systemd is asked, and no docker command is run
+# unless the service is active: on most installs docker.socket stays listening
+# while the service is stopped, and any docker command (docker info, docker ps)
+# would start Docker again, with every restart: always container. Elsewhere
+# docker info is asked. Returns 0 running and answering; 1 stopped (systemd says
+# docker.service is not active); 2 not answering (docker info failed). Sets
+# DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
+# options only, so systemd 219 understands them.
+DOCKER_STATE=""
+tc_docker_running() {
+    local load state
+    DOCKER_STATE=""
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        load="$(systemctl show docker.service -p LoadState 2>/dev/null)"
+        if [ "$load" = "LoadState=loaded" ] && ! systemctl is-active --quiet docker.service 2>/dev/null; then
+            state="$(systemctl is-active docker.service 2>/dev/null)"
+            DOCKER_STATE="docker.service is ${state:-not active}"
+            return 1
+        fi
+    fi
+    if ! "$DOCKER" info >/dev/null 2>&1; then
+        DOCKER_STATE="docker info did not answer"
+        return 2
+    fi
+    return 0
+}
+# <<< tc-docker running
+
+# Is Docker running? Asked once, without starting it: where systemd manages
+# docker.service and says it is not active, no docker command is run at all,
+# by this or by anything after it (any docker command would start Docker again
+# through docker.socket). DAEMON is running, stopped or noanswer; NOT_RUNNING
+# says why, for the messages.
+DAEMON=running; NOT_RUNNING=""
+tc_docker_running
+case $? in
+    0) ;;
+    1) DAEMON=stopped
+       NOT_RUNNING="Docker is stopped (${DOCKER_STATE:-docker.service is not active}) and was left stopped: this component ran no docker command" ;;
+    *) DAEMON=noanswer
+       NOT_RUNNING="the Docker daemon did not answer (docker info failed)" ;;
+esac
+
 # ---------------------------------------------------------------- inputs
 
 ITEMS=()
@@ -144,6 +204,9 @@ case "$usrAction" in
     add|remove)
         # Entries: compose:<project>/<service>, name:<name>, or a bare container
         # name, which becomes that container's key if it exists, else name:<it>.
+        # A bare name needs Docker's container list. When Docker is not running
+        # (stopped, or not answering), Add refuses one rather than guess, and
+        # Remove takes it as name:<it>: removing only ever takes off what was named.
         read -r -a raw <<<"${usrItems//,/ }"
         [ "${#raw[@]}" -gt 0 ] || fail 2 "usrAction=$usrAction needs at least one entry in usrItems."
         ROWS=""; LISTED=0
@@ -152,7 +215,11 @@ case "$usrAction" in
                 ITEMS+=("$it")
             elif [[ "$it" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
                 k=""
-                if [ $DAEMON -eq 1 ]; then
+                if [ "$DAEMON" != running ] && [ "$usrAction" = add ]; then
+                    fail 3 "$NOT_RUNNING, so '$it' cannot be matched to its container; nothing was changed. Give the key instead (name:$it or compose:<project>/<service>), or run Add again once Docker is running."
+                elif [ "$DAEMON" != running ]; then
+                    say "${NOT_RUNNING^}, so '$it' is taken as name:$it (a Compose service needs compose:<project>/<service>)."
+                else
                     # Docker answers: a guess of name:<it> could be the wrong key for
                     # a Compose container, so a listing that fails stops here.
                     if [ $LISTED -eq 0 ]; then
@@ -236,7 +303,7 @@ show() {
     if [ -n "$(tc_list "$IGNORE_FILE")" ]; then tc_list "$IGNORE_FILE" | sed 's/^/  /'; else say "  (none)"; fi
     if tc_reviewed; then say "Review: confirmed - $(head -n1 "$REVIEWED_FILE")"
     else say "Review: NOT REVIEWED. The weekly prune removes no containers and no images on this host until Confirm reviewed is run."; fi
-    if [ $DAEMON -eq 0 ]; then say "The Docker daemon is not reachable, so there is no comparison."; return 0; fi
+    if [ "$DAEMON" != running ]; then say "${NOT_RUNNING^}, so there is no comparison."; return 0; fi
     local rows
     if ! rows="$(tc_containers)"; then
         say "Docker did not return its container list, so there is no comparison."
@@ -289,7 +356,7 @@ case "$usrAction" in
     show)
         show ;;
     accept-current)
-        [ $DAEMON -eq 1 ] || fail 3 "the Docker daemon is not reachable, so the running containers cannot be read; nothing was changed."
+        [ "$DAEMON" = running ] || fail 3 "$NOT_RUNNING, so its containers cannot be read; nothing was changed."
         ROWS="$(tc_containers)" || fail 3 "Docker did not return its container list; nothing was changed."
         KEYS="$(printf '%s\n' "$ROWS" | awk -F'\t' '$9 == "n" && $2 !~ /^unreadable:/ {print $2}' | sort -u | while IFS= read -r k; do
             [ -n "$k" ] || continue

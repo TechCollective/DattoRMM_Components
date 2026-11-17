@@ -5,49 +5,49 @@
     "description": "Alerts when a container on a moving tag is behind its registry tag by over N days; containers on pinned tags are reported, never alerted.",
     "uid": "2fcd5983-d1dd-42fd-a459-15cc8ac0af64",
     "hash": "",
-    "version": "2",
+    "version": "3",
     "timeout": "120",
     "securityLevel": "4",
     "installType": "unix"
   },
   "variables": [
     {
-      "name": "minAgeDays",
+      "name": "usrMinAgeDays",
       "type": "string",
       "direction": "false",
       "description": "An update does not count until the new image is this many days old. 0-365; 0 disables.",
       "defaultVal": "7"
     },
     {
-      "name": "excludePattern",
+      "name": "usrExcludePattern",
       "type": "string",
       "direction": "false",
       "description": "ERE matched against container names; matches are skipped. e.g. ^(postgres|mysql)",
       "defaultVal": ""
     },
     {
-      "name": "inspectTimeout",
+      "name": "usrInspectTimeout",
       "type": "string",
       "direction": "false",
       "description": "Seconds per registry lookup. 10-60.",
       "defaultVal": "20"
     },
     {
-      "name": "maxParallel",
+      "name": "usrMaxParallel",
       "type": "string",
       "direction": "false",
       "description": "Concurrent registry lookups. 1-8.",
       "defaultVal": "3"
     },
     {
-      "name": "cacheHours",
+      "name": "usrCacheHours",
       "type": "string",
       "direction": "false",
       "description": "Reuse a previous registry lookup for this long. 0-720; 168 = weekly.",
       "defaultVal": "12"
     },
     {
-      "name": "staleAfterDays",
+      "name": "usrStaleAfterDays",
       "type": "string",
       "direction": "false",
       "description": "Alert on an image reference with no successful registry answer for this many days, naming the last error. 0-365; 0 turns it off.",

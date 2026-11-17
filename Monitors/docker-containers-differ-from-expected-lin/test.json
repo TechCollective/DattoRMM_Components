@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 9: a prune stamped 8 is stale. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. An unreviewed list is named with its age (the list file's modification time): one day old, it stays exit 0 under Warn; made 15 days old, it alerts under Warn with the default usrUnreviewedAfterDays of 14, and the diagnostic says why and names the review steps; usrUnreviewedAfterDays 0 never escalates; Ignore does not mention it; Alert alerts as before; before review a missing container is still named, not alerted on; a reviewed list 15 days old is healthy; and a usrUnreviewedAfterDays above 365 or not a number is refused. Version 7: a running unlisted container's age counts from when the monitor first saw it, kept in /var/lib/tc-docker/monitor-first-seen (root-only), so recreating or restarting it does not reset the clock; the first run without the file gives the version 6 result; time is made to pass by editing the file; a key put on the list, or not seen for 7 days, is dropped (6 days is kept); malformed lines are ignored and dropped, the first good line per key is used; an unwritable directory (chattr +i) or a symlink in the file's place falls back to the container's start time and says so, and the symlink's target is untouched. A docker shim that never answers (also one that ignores TERM, and one that hangs only the listing) gives 'Docker did not answer within 40 seconds', exit 1, inside 60 seconds, with no shim process left and a sibling in the caller's process group untouched. With docker.service stopped and docker.socket listening, no docker command is run (a recording shim proves it) and Docker stays stopped: an expected list alerts, no list or an empty list is healthy, and a stale prune is still reported first. A client with no unit, no socket and no list is healthy; with a list it cannot talk to the daemon. No docker command: healthy when nothing of Docker is there, exit 1 when its socket is. A client only in /snap/bin is found through the appended PATH. GNU bash 4.2 is built from source and the monitor's main paths, starting with an empty list and nothing else, run under it without an unbound-variable crash.",
+  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 11, the first prune that never starts a stopped Docker: a prune stamped 10 is stale, and ones stamped 11 and 12 are not. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. An unreviewed list is named with its age (the list file's modification time): one day old, it stays exit 0 under Warn; made 15 days old, it alerts under Warn with the default usrUnreviewedAfterDays of 14, and the diagnostic says why and names the review steps; usrUnreviewedAfterDays 0 never escalates; Ignore does not mention it; Alert alerts as before; before review a missing container is still named, not alerted on; a reviewed list 15 days old is healthy; and a usrUnreviewedAfterDays above 365 or not a number is refused. Version 7: a running unlisted container's age counts from when the monitor first saw it, kept in /var/lib/tc-docker/monitor-first-seen (root-only), so recreating or restarting it does not reset the clock; the first run without the file gives the version 6 result; time is made to pass by editing the file; a key put on the list, or not seen for 7 days, is dropped (6 days is kept); malformed lines are ignored and dropped, the first good line per key is used; an unwritable directory (chattr +i) or a symlink in the file's place falls back to the container's start time and says so, and the symlink's target is untouched. A docker shim that never answers (also one that ignores TERM, and one that hangs only the listing) gives 'Docker did not answer within 40 seconds', exit 1, inside 60 seconds, with no shim process left and a sibling in the caller's process group untouched. With docker.service stopped and docker.socket listening, no docker command is run (a recording shim proves it) and Docker stays stopped: an expected list alerts, no list or an empty list is healthy, and a stale prune is still reported first. A client with no unit, no socket and no list is healthy; with a list it cannot talk to the daemon. No docker command: healthy when nothing of Docker is there, exit 1 when its socket is. A client only in /snap/bin is found through the appended PATH. GNU bash 4.2 is built from source and the monitor's main paths, starting with an empty list and nothing else, run under it without an unbound-variable crash.",
   "variables": {},
   "steps": [
     {
@@ -169,12 +169,12 @@
     },
     {
       "type": "command",
-      "label": "Stale prune: the list is reviewed and a current prune (version 9) is installed",
-      "run": "rm -f /usr/local/sbin/tc-docker-prune /etc/systemd/system/tc-docker-prune.service && mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=9' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && cat /etc/tc-docker/expected-containers | tail -n 1 && test -s /etc/tc-docker/reviewed"
+      "label": "Stale prune: the list is reviewed and a prune at the minimum (version 11) is installed",
+      "run": "rm -f /usr/local/sbin/tc-docker-prune /etc/systemd/system/tc-docker-prune.service && mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=11' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && cat /etc/tc-docker/expected-containers | tail -n 1 && test -s /etc/tc-docker/reviewed"
     },
     {
       "type": "runComponent",
-      "label": "Current prune: no stale text, same status and exit as before",
+      "label": "A prune at the minimum (version 11): no stale text, same status and exit as before",
       "outputContains": [
         "STATUS=1 expected: 1 running; 1 with unreadable Compose labels"
       ],
@@ -188,8 +188,8 @@
     },
     {
       "type": "command",
-      "label": "Stale prune: a newer prune than the minimum (version 10, written 010 with a leading zero)",
-      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' '# TC_PRUNE_VERSION=3 in a comment is not the stamp' 'TC_PRUNE_VERSION=010' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
+      "label": "Stale prune: a newer prune than the minimum (version 12, written 012 with a leading zero)",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' '# TC_PRUNE_VERSION=3 in a comment is not the stamp' 'TC_PRUNE_VERSION=012' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
     },
     {
       "type": "runComponent",
@@ -395,7 +395,7 @@
       "label": "Stamped below the minimum: stale, names both numbers, alert",
       "expectExitCode": 1,
       "outputContains": [
-        "STATUS=prune on this host is version 3, older than 9; 1 expected: 1 running; 1 with unreadable Compose labels",
+        "STATUS=prune on this host is version 3, older than 11; 1 expected: 1 running; 1 with unreadable Compose labels",
         "<-Start Diagnostic->",
         "STALE PRUNE",
         "Run Docker - Configure Host Maintenance [Lin] on this host",
@@ -407,7 +407,7 @@
       "label": "bash 4.2: a stale prune",
       "run": "tc-test-run --bash42",
       "outputContains": [
-        "STATUS=prune on this host is version 3, older than 9",
+        "STATUS=prune on this host is version 3, older than 11",
         "STALE PRUNE",
         "exit 1 after",
         "under bash 4.2.0"
@@ -419,33 +419,33 @@
     },
     {
       "type": "command",
-      "label": "Stale prune: stamped 06 (a leading zero is not octal, and 6 is below 9)",
+      "label": "Stale prune: stamped 06 (a leading zero is not octal, and 6 is below 11)",
       "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=06' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
     },
     {
       "type": "runComponent",
-      "label": "Stamped 06: version 6, older than 9",
+      "label": "Stamped 06: version 6, older than 11",
       "expectExitCode": 1,
       "outputContains": [
-        "STATUS=prune on this host is version 6, older than 9; 1 expected: 1 running; 1 with unreadable Compose labels"
+        "STATUS=prune on this host is version 6, older than 11; 1 expected: 1 running; 1 with unreadable Compose labels"
       ]
     },
     {
       "type": "command",
-      "label": "Stale prune: stamped 8 (Host Maintenance 8, before the grace period)",
-      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=8' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 2 /usr/local/sbin/tc-docker-prune",
+      "label": "Stale prune: stamped 10 (Host Maintenance 10, the last prune that can start a stopped Docker)",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=10' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 2 /usr/local/sbin/tc-docker-prune",
       "outputContains": [
-        "TC_PRUNE_VERSION=8"
+        "TC_PRUNE_VERSION=10"
       ]
     },
     {
       "type": "runComponent",
-      "label": "Stamped 8: stale, version 8 older than 9, alert",
+      "label": "Stamped 10: stale, version 10 older than 11, alert",
       "expectExitCode": 1,
       "outputContains": [
-        "prune on this host is version 8, older than 9",
+        "prune on this host is version 10, older than 11",
         "STALE PRUNE",
-        "wants 9 or newer"
+        "wants 11 or newer"
       ]
     },
     {
@@ -475,7 +475,7 @@
       "label": "Stale prune and an unreviewed list: both are in the status, the stale prune first, and it alerts",
       "expectExitCode": 1,
       "outputContains": [
-        "STATUS=prune on this host is version 3, older than 9; 1 expected: 1 running",
+        "STATUS=prune on this host is version 3, older than 11; 1 expected: 1 running",
         "list NOT REVIEWED",
         "STALE PRUNE"
       ]
@@ -492,7 +492,7 @@
         "usrStalePruneAction": "Warn"
       },
       "outputContains": [
-        "STATUS=prune on this host is version 3, older than 9; 1 expected: 1 running; 1 with unreadable Compose labels"
+        "STATUS=prune on this host is version 3, older than 11; 1 expected: 1 running; 1 with unreadable Compose labels"
       ],
       "outputNotContains": [
         "Diagnostic",
@@ -631,8 +631,8 @@
     },
     {
       "type": "command",
-      "label": "Current layout: version 9 script, the right unit, and no list",
-      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=9' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && mkdir -p /etc/systemd/system && printf '%s\\n' '[Unit]' 'Description=tc-test prune' '[Service]' 'Type=oneshot' 'ExecStart=/usr/local/sbin/tc-docker-prune' > /etc/systemd/system/tc-docker-prune.service && cat /etc/systemd/system/tc-docker-prune.service"
+      "label": "Current layout: version 11 script, the right unit, and no list",
+      "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=11' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune && mkdir -p /etc/systemd/system && printf '%s\\n' '[Unit]' 'Description=tc-test prune' '[Service]' 'Type=oneshot' 'ExecStart=/usr/local/sbin/tc-docker-prune' > /etc/systemd/system/tc-docker-prune.service && cat /etc/systemd/system/tc-docker-prune.service"
     },
     {
       "type": "runComponent",
@@ -1283,7 +1283,7 @@
       "label": "Docker stopped, a stale prune: still reported, first, and alerts",
       "expectExitCode": 1,
       "outputContains": [
-        "STATUS=prune on this host is version 3, older than 9; Docker is stopped (docker.service is inactive); no expected-containers list on this host yet",
+        "STATUS=prune on this host is version 3, older than 11; Docker is stopped (docker.service is inactive); no expected-containers list on this host yet",
         "STALE PRUNE"
       ]
     },

@@ -1,6 +1,6 @@
 #!/bin/bash
-# Docker - Container Images Behind Registry [Lin]
-# (saved in Datto as "Docker Images monitor [Lin]"; see the README)
+# Docker Images monitor [Lin]
+# (the name in component.json and in Datto; see "Known issues" in the README)
 # Datto RMM custom monitor. Runs as root. Safe to assign to every Linux device.
 #
 # Walks every running container, compares its local image digest against the
@@ -23,22 +23,24 @@
 #   - docker info fails otherwise                                        -> alert
 # Every command that talks to the daemon is stopped if Docker has not answered
 # DOCKER_TIMEOUT seconds after the monitor started, and the check says Docker
-# did not answer. Registry lookups have their own per-lookup time limit
-# (inspectTimeout), and none runs past RUN_LIMIT seconds after the start; what
-# was not looked up by then falls back to the cache and is asked next run.
+# did not answer. The container list takes three docker commands whatever the
+# number of containers (docker ps, docker inspect, docker image inspect).
+# Registry lookups have their own per-lookup time limit (usrInspectTimeout),
+# and none runs past RUN_LIMIT seconds after the start; what was not looked up
+# by then falls back to the cache and is asked next run.
 #
 # REGISTRY LOAD is the main design constraint. Three things keep it low:
 #   1. A digest-only lookup is one cheap HEAD. The image build date, which
 #      costs a manifest walk plus a config blob per platform, is fetched ONLY
 #      for images that actually moved -- usually none.
-#   2. Results are cached on disk for cacheHours, so a monitor on a 15-minute
+#   2. Results are cached on disk for usrCacheHours, so a monitor on a 15-minute
 #      schedule does not re-ask the registry 96 times a day for the same tags.
 #   3. The first rate-limit answer (429 Too Many Requests, toomanyrequests)
 #      trips a circuit breaker: no further lookups are made this run, and
 #      everything unresolved falls back to cache.
 #
 # Being rate limited once is reported, not alerted. An image reference that has
-# had no successful registry answer for staleAfterDays days alerts, naming the
+# had no successful registry answer for usrStaleAfterDays days alerts, naming the
 # last error (rate limited, refused, not found, timeout, other) and since when:
 # that is how a broken registry login or permanent rate limiting surfaces.
 #
@@ -57,12 +59,17 @@
 # ignored and dropped.
 #
 # Input variables (all arrive as strings; an invalid value is refused):
-#   minAgeDays      default 7   0-365  ignore an update until the new image is this many days old
-#   excludePattern  default ""         ERE matched against container names; matches are skipped
-#   inspectTimeout  default 20  10-60  seconds allowed per registry lookup
-#   maxParallel     default 3   1-8    concurrent registry lookups
-#   cacheHours      default 12  0-720  reuse a previous lookup for this long
-#   staleAfterDays  default 7   0-365  alert on a ref with no registry answer this long; 0 off
+#   usrMinAgeDays      default 7   0-365  ignore an update until the new image is this many days old
+#   usrExcludePattern  default ""         ERE matched against container names; matches are skipped
+#   usrInspectTimeout  default 20  10-60  seconds allowed per registry lookup
+#   usrMaxParallel     default 3   1-8    concurrent registry lookups
+#   usrCacheHours      default 12  0-720  reuse a previous lookup for this long
+#   usrStaleAfterDays  default 7   0-365  alert on a ref with no registry answer this long; 0 off
+# Before version 3 they had no usr prefix (minAgeDays, excludePattern, ...).
+# Monitor policies saved before then still send those names, so each value is
+# read from its usr name and, when that is not set, from its old name.
+
+set -u
 
 EMITTED=0
 DIAG=""
@@ -120,12 +127,22 @@ STATE_KEEP_DAYS=90
 
 trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
 
-MIN_AGE="$(trim "${minAgeDays-7}")";         [ -n "$MIN_AGE" ] || MIN_AGE=7
-EXCLUDE="$(trim "${excludePattern-}")"
-TIMEOUT="$(trim "${inspectTimeout-20}")";    [ -n "$TIMEOUT" ] || TIMEOUT=20
-MAXPAR="$(trim "${maxParallel-3}")";         [ -n "$MAXPAR" ] || MAXPAR=3
-CACHE_HOURS="$(trim "${cacheHours-12}")";    [ -n "$CACHE_HOURS" ] || CACHE_HOURS=12
-STALE_DAYS="$(trim "${staleAfterDays-7}")";  [ -n "$STALE_DAYS" ] || STALE_DAYS=7
+# Each value is read from its usr name first. OLD-NAME FALLBACK: when the usr
+# name is not set at all, the name used before version 3 is read instead, for
+# monitor policies saved before the rename. Remove the inner ${old-...} and
+# from_name once no policy in Datto sends the old names.
+MIN_AGE="$(trim "${usrMinAgeDays-${minAgeDays-7}}")";           [ -n "$MIN_AGE" ] || MIN_AGE=7
+EXCLUDE="$(trim "${usrExcludePattern-${excludePattern-}}")"
+TIMEOUT="$(trim "${usrInspectTimeout-${inspectTimeout-20}}")";  [ -n "$TIMEOUT" ] || TIMEOUT=20
+MAXPAR="$(trim "${usrMaxParallel-${maxParallel-3}}")";          [ -n "$MAXPAR" ] || MAXPAR=3
+CACHE_HOURS="$(trim "${usrCacheHours-${cacheHours-12}}")";      [ -n "$CACHE_HOURS" ] || CACHE_HOURS=12
+STALE_DAYS="$(trim "${usrStaleAfterDays-${staleAfterDays-7}}")"; [ -n "$STALE_DAYS" ] || STALE_DAYS=7
+
+# The name a value was read from, for messages: the usr name ($1) unless only
+# the old name ($2) is set. OLD-NAME FALLBACK: goes with it.
+from_name() {
+    if [ -z "${!1+x}" ] && [ -n "${!2+x}" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi
+}
 
 # A whole number from $3 to $4, at most 3 digits; a leading zero is decimal.
 check_num() {  # name value min max
@@ -133,11 +150,11 @@ check_num() {  # name value min max
     [[ "$v" =~ ^[0-9]{1,3}$ ]] && [ $((10#$v)) -ge "$3" ] && [ $((10#$v)) -le "$4" ] \
         || emit 1 "Check could not run: $name must be a whole number from $3 to $4 (got '$(printf '%s' "$v" | tr -cd '[:print:]' | cut -c1-40)')"
 }
-check_num minAgeDays "$MIN_AGE" 0 365;          MIN_AGE=$((10#$MIN_AGE))
-check_num inspectTimeout "$TIMEOUT" 10 60;      TIMEOUT=$((10#$TIMEOUT))
-check_num maxParallel "$MAXPAR" 1 8;            MAXPAR=$((10#$MAXPAR))
-check_num cacheHours "$CACHE_HOURS" 0 720;      CACHE_HOURS=$((10#$CACHE_HOURS))
-check_num staleAfterDays "$STALE_DAYS" 0 365;   STALE_DAYS=$((10#$STALE_DAYS))
+check_num "$(from_name usrMinAgeDays minAgeDays)" "$MIN_AGE" 0 365;              MIN_AGE=$((10#$MIN_AGE))
+check_num "$(from_name usrInspectTimeout inspectTimeout)" "$TIMEOUT" 10 60;      TIMEOUT=$((10#$TIMEOUT))
+check_num "$(from_name usrMaxParallel maxParallel)" "$MAXPAR" 1 8;               MAXPAR=$((10#$MAXPAR))
+check_num "$(from_name usrCacheHours cacheHours)" "$CACHE_HOURS" 0 720;          CACHE_HOURS=$((10#$CACHE_HOURS))
+check_num "$(from_name usrStaleAfterDays staleAfterDays)" "$STALE_DAYS" 0 365;   STALE_DAYS=$((10#$STALE_DAYS))
 
 for t in awk grep sed sort cut tr date mktemp stat timeout xargs cksum; do
     command -v "$t" >/dev/null 2>&1 || emit 1 "Check could not run: required tool '$t' is missing"
@@ -147,7 +164,7 @@ timeout -k 1 10 true >/dev/null 2>&1 \
 
 if [ -n "$EXCLUDE" ]; then
     printf 'x' | grep -qE -- "$EXCLUDE" 2>/dev/null
-    [ $? -le 1 ] || emit 1 "Check could not run: excludePattern is not a valid extended regular expression"
+    [ $? -le 1 ] || emit 1 "Check could not run: $(from_name usrExcludePattern excludePattern) is not a valid extended regular expression"
 fi
 
 START="$(date +%s)"
@@ -302,45 +319,100 @@ BREAKER="${TMP}/rate-limited"
 
 # ------------------------------------------------------- gather local state
 
-# One line per running container, tab separated:
+# One line per running container, in docker ps order, tab separated:
 #   ok    name  ref  local-digest
 #   excl  name
 #   skip  name  reason
-# Exits 3 when docker ps fails. Run under bounded(), in a bash of its own.
+# Three docker commands, whatever the number of containers: docker ps, one
+# docker inspect over every container, and one docker image inspect over the
+# distinct images they run. The templates name struct fields only, never a map
+# key (on Docker 29 a template that addresses a missing map key can fail the whole
+# call). Every value is read JSON-encoded and kept only when it is a plain
+# name, reference, digest or id, so nothing in a name, tag or digest can add a
+# row or a field: a name that is not plain is shown as the first 12 characters
+# of the container id, a reference or tag that is not plain is no image tag,
+# and a digest that is not plain is ignored. A container removed between docker
+# ps and docker inspect (or its image between the two inspects) fails that
+# call, so the whole listing is retried, three tries one second apart. Exits 3
+# when no try succeeds: "Docker did not answer" is never "no containers". Run
+# under bounded(), in a bash of its own.
 gather() {
-    local ids id cname ref imgid repo r loc
-    ids="$("$DOCKER" ps -q --no-trunc 2>/dev/null)" || exit 3
-    while IFS= read -r id; do
-        [ -n "$id" ] || continue
-        cname="$("$DOCKER" inspect -f '{{.Name}}' "$id" 2>/dev/null)"; cname="${cname#/}"
-        [ -n "$cname" ] || cname="${id:0:12}"
-        if [ -n "$EXCLUDE" ] && printf '%s\n' "$cname" | grep -qE -- "$EXCLUDE" 2>/dev/null; then
-            printf 'excl\t%s\n' "$cname"; continue
+    local try ids cout iout id jn jr ji extra cname ref imgid repo r loc d k n
+    local -a cid cnm cref cimg imgs fl
+    local -A seen tag0 digs
+    for try in 1 2 3; do
+        [ "$try" -gt 1 ] && sleep 1
+        ids="$("$DOCKER" ps -q --no-trunc 2>/dev/null)" || continue
+        [ -n "$ids" ] || exit 0
+        cout="$(printf '%s\n' "$ids" | xargs "$DOCKER" inspect --type container -f \
+'{{json .Id}}{{"\t"}}{{json .Name}}{{"\t"}}{{json .Config.Image}}{{"\t"}}{{json .Image}}' 2>/dev/null)" || continue
+        cid=(); cnm=(); cref=(); cimg=(); imgs=(); seen=(); tag0=(); digs=()
+        while IFS=$'\t' read -r id jn jr ji extra; do
+            [[ "$id" =~ ^\"([0-9a-f]{64})\"$ ]] && [ -n "$ji" ] && [ -z "$extra" ] || continue
+            id="${BASH_REMATCH[1]}"
+            if [[ "$jn" =~ ^\"/?([a-zA-Z0-9][a-zA-Z0-9_.-]*)\"$ ]]; then cname="${BASH_REMATCH[1]}"; else cname="${id:0:12}"; fi
+            if [[ "$jr" =~ ^\"([a-zA-Z0-9][a-zA-Z0-9._/:@-]*)\"$ ]]; then ref="${BASH_REMATCH[1]}"
+            elif [ "$jr" = '""' ]; then ref=""
+            else ref="(unreadable)"; fi
+            if [[ "$ji" =~ ^\"(sha256:[0-9a-f]{64})\"$ ]]; then imgid="${BASH_REMATCH[1]}"; else imgid=""; fi
+            cid+=("$id"); cnm+=("$cname"); cref+=("$ref"); cimg+=("$imgid")
+            if [ -n "$imgid" ] && [ -z "${seen[$imgid]+x}" ]; then seen[$imgid]=1; imgs+=("$imgid"); fi
+        done <<< "$cout"
+        if [ "${#imgs[@]}" -gt 0 ]; then
+            iout="$("$DOCKER" image inspect -f \
+'{{json .Id}}{{range .RepoTags}}{{"\t"}}T{{json .}}{{end}}{{range .RepoDigests}}{{"\t"}}D{{json .}}{{end}}' \
+                    "${imgs[@]}" 2>/dev/null)" || continue
+            while IFS=$'\t' read -r -a fl; do
+                [ "${#fl[@]}" -gt 0 ] && [[ "${fl[0]}" =~ ^\"(sha256:[0-9a-f]{64})\"$ ]] || continue
+                imgid="${BASH_REMATCH[1]}"
+                for ((n = 1; n < ${#fl[@]}; n++)); do
+                    d="${fl[$n]}"
+                    case "$d" in
+                        T*) [ -n "${tag0[$imgid]+x}" ] && continue    # the first tag, as before
+                            if [[ "$d" =~ ^T\"([a-zA-Z0-9][a-zA-Z0-9._/:@-]*)\"$ ]]; then tag0[$imgid]="${BASH_REMATCH[1]}"
+                            else tag0[$imgid]="(unreadable)"; fi ;;
+                        D*) [[ "$d" =~ ^D\"([a-zA-Z0-9][a-zA-Z0-9._/:@-]*)\"$ ]] \
+                                && digs[$imgid]="${digs[$imgid]:-}${BASH_REMATCH[1]}"$'\n' ;;
+                    esac
+                done
+            done <<< "$iout"
         fi
-        ref="$("$DOCKER" inspect -f '{{.Config.Image}}' "$id" 2>/dev/null)"
-        imgid="$("$DOCKER" inspect -f '{{.Image}}' "$id" 2>/dev/null)"
-        if [ -z "$ref" ] || [[ "$ref" =~ ^(sha256:)?[0-9a-f]{12,}$ ]]; then
-            ref="$("$DOCKER" image inspect -f '{{index .RepoTags 0}}' "$imgid" 2>/dev/null)"
-        fi
-        if [ -z "$ref" ] || [ "$ref" = "<none>:<none>" ] || [[ ! "$ref" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]]; then
-            printf 'skip\t%s\tno image tag\n' "$cname"; continue
-        fi
-        r="${ref%%@*}"
-        case "${r##*/}" in *:*) repo="${r%:*}" ;; *) repo="$r" ;; esac
-        loc="$("$DOCKER" image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$imgid" 2>/dev/null \
-               | grep -F "${repo}@" | head -1 | cut -d@ -f2)"
-        if [[ ! "$loc" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            printf 'skip\t%s\tlocal image, not from a registry\n' "$cname"; continue
-        fi
-        printf 'ok\t%s\t%s\t%s\n' "$cname" "$ref" "$loc"
-    done <<< "$ids"
-    exit 0
+        for ((k = 0; k < ${#cid[@]}; k++)); do
+            cname="${cnm[$k]}"; ref="${cref[$k]}"; imgid="${cimg[$k]}"
+            if [ -n "$EXCLUDE" ] && printf '%s\n' "$cname" | grep -qE -- "$EXCLUDE" 2>/dev/null; then
+                printf 'excl\t%s\n' "$cname"; continue
+            fi
+            if [ -z "$ref" ] || [[ "$ref" =~ ^(sha256:)?[0-9a-f]{12,}$ ]]; then
+                ref=""; [ -n "$imgid" ] && ref="${tag0[$imgid]:-}"
+            fi
+            if [ -z "$ref" ] || [[ ! "$ref" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]]; then
+                printf 'skip\t%s\tno image tag\n' "$cname"; continue
+            fi
+            r="${ref%%@*}"
+            case "${r##*/}" in *:*) repo="${r%:*}" ;; *) repo="$r" ;; esac
+            # The first repo digest containing "<repo>@", as before.
+            loc=""
+            if [ -n "$imgid" ]; then
+                while IFS= read -r d; do
+                    [[ "$d" == *"${repo}@"* ]] || continue
+                    loc="${d#*@}"; loc="${loc%%@*}"; break
+                done <<< "${digs[$imgid]:-}"
+            fi
+            if [[ ! "$loc" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                printf 'skip\t%s\tlocal image, not from a registry\n' "$cname"; continue
+            fi
+            printf 'ok\t%s\t%s\t%s\n' "$cname" "$ref" "$loc"
+        done
+        exit 0
+    done
+    exit 3
 }
 
 ROWS="$(bounded "$(declare -f gather)"$'\n''DOCKER=$1; EXCLUDE=$2; gather' "$DOCKER" "$EXCLUDE")"
 case $? in
     0) ;;
-    3) emit 1 "Check could not run: Docker did not return its container list" ;;
+    3)  diag "docker ps, docker inspect or docker image inspect failed on three tries, one second apart. A container removed between docker ps and docker inspect fails one try; three in a row is Docker not answering properly."
+        emit 1 "Check could not run: Docker did not return its container list" ;;
     124|137) docker_hung "Listing the containers (docker ps, docker inspect)" ;;
     *) emit 1 "Check could not run: listing the containers failed unexpectedly" ;;
 esac
@@ -410,14 +482,14 @@ save_state() {
     local r newest
     declare -A wrote=()
     {
-        for r in "${UNIQ[@]}" "${S_ORDER[@]}"; do
+        for r in ${UNIQ[@]+"${UNIQ[@]}"} ${S_ORDER[@]+"${S_ORDER[@]}"}; do
             [ -n "$r" ] && [ -n "${S_OK[$r]+x}" ] && [ -z "${wrote[$r]+x}" ] || continue
             wrote[$r]=1
             if [ -z "${IN_USE[$r]+x}" ]; then
-                newest="${S_OK[$r]}"; [ "${S_SINCE[$r]}" -gt "$newest" ] && newest="${S_SINCE[$r]}"
+                newest="${S_OK[$r]}"; [ "${S_SINCE[$r]:-0}" -gt "$newest" ] && newest="${S_SINCE[$r]:-0}"
                 [ $(( NOW - newest )) -lt $(( STATE_KEEP_DAYS * 86400 )) ] || continue
             fi
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "${S_DIG[$r]}" "${S_CRE[$r]}" "${S_OK[$r]}" "${S_ERR[$r]}" "${S_SINCE[$r]}"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "${S_DIG[$r]:--}" "${S_CRE[$r]:--}" "${S_OK[$r]}" "${S_ERR[$r]:-none}" "${S_SINCE[$r]:-0}"
         done
     } | tc_state_write "$STATE_NAME" || STATE_NOTE="; saved state could not be written to $STATE_DIR"
 }
@@ -438,9 +510,9 @@ if [ "$CACHE_HOURS" -ge 24 ]; then
 fi
 TTL=$(( CACHE_HOURS * 3600 - JITTER ))
 
-mapfile -t UNIQ < <(printf '%s\n' "${REFS[@]}" | sort -u)
+mapfile -t UNIQ < <(printf '%s\n' ${REFS[@]+"${REFS[@]}"} | sort -u)
 declare -A IN_USE=()
-for r in "${UNIQ[@]}"; do IN_USE[$r]=1; done
+for r in ${UNIQ[@]+"${UNIQ[@]}"}; do IN_USE[$r]=1; done
 
 # --------------------------------------------- phase 1: digests, cheap and cached
 
@@ -450,9 +522,9 @@ declare -A R_DIG=() R_CRE=() R_SRC=() R_MSG=()
 CACHED=0; QUERIED=0; TIMED_OUT_RUN=0
 
 TO_QUERY=()
-for r in "${UNIQ[@]}"; do
-    if [[ "${S_DIG[$r]:-}" == sha256:* ]] && [ "${S_ERR[$r]}" = none ] && [ $(( NOW - S_OK[$r] )) -lt "$TTL" ]; then
-        R_DIG[$r]="${S_DIG[$r]}"; R_CRE[$r]="${S_CRE[$r]}"; R_SRC[$r]=cached
+for r in ${UNIQ[@]+"${UNIQ[@]}"}; do
+    if [[ "${S_DIG[$r]:-}" == sha256:* ]] && [ "${S_ERR[$r]:-}" = none ] && [ $(( NOW - ${S_OK[$r]:-0} )) -lt "$TTL" ]; then
+        R_DIG[$r]="${S_DIG[$r]}"; R_CRE[$r]="${S_CRE[$r]:--}"; R_SRC[$r]=cached
         CACHED=$((CACHED + 1))
     else
         TO_QUERY+=("$r")
@@ -460,7 +532,7 @@ for r in "${UNIQ[@]}"; do
 done
 
 # Runs one registry lookup with its own time limit (the smaller of
-# inspectTimeout and what is left of RUN_LIMIT), in a process group of its
+# usrInspectTimeout and what is left of RUN_LIMIT), in a process group of its
 # own that is killed if the lookup times out. Prints its output; returns its
 # exit status (124 or 137: timed out).
 reg_inspect() {  # seconds, format, ref
@@ -508,7 +580,7 @@ lookup_secs() {
 }
 
 n=0
-for r in "${TO_QUERY[@]}"; do
+for r in ${TO_QUERY[@]+"${TO_QUERY[@]}"}; do
     [ -e "$BREAKER" ] && break
     while [ "$(jobs -rp | wc -l)" -ge "$MAXPAR" ]; do sleep 0.2; done
     [ -e "$BREAKER" ] && break
@@ -532,7 +604,7 @@ for ((i = 1; i <= n; i++)); do
         ERR)
             ATTEMPT[$r]="$kind"; R_MSG[$r]="$msg"
             if [ -z "${S_OK[$r]+x}" ]; then S_DIG[$r]="-"; S_CRE[$r]="-"; S_OK[$r]=0; S_ERR[$r]=none; S_SINCE[$r]=0; fi
-            if [ "${S_ERR[$r]}" = none ]; then S_SINCE[$r]="$NOW"; fi
+            if [ "${S_ERR[$r]:-none}" = none ]; then S_SINCE[$r]="$NOW"; fi
             S_ERR[$r]="$kind"
             ;;
     esac
@@ -542,12 +614,12 @@ done
 # a stale answer beats no answer, so fall back to whatever we knew before. A
 # lookup that failed for another reason is a real failure: unreadable, as before.
 STALE=0
-for r in "${UNIQ[@]}"; do
+for r in ${UNIQ[@]+"${UNIQ[@]}"}; do
     [ -n "${R_SRC[$r]:-}" ] && continue
     a="${ATTEMPT[$r]:-}"
     if [ -n "$a" ] && [ "$a" != ratelimited ]; then R_SRC[$r]=err; continue; fi
     if [[ "${S_DIG[$r]:-}" == sha256:* ]]; then
-        R_DIG[$r]="${S_DIG[$r]}"; R_CRE[$r]="${S_CRE[$r]}"; R_SRC[$r]=stale
+        R_DIG[$r]="${S_DIG[$r]}"; R_CRE[$r]="${S_CRE[$r]:--}"; R_SRC[$r]=stale
         STALE=$((STALE + 1))
     elif [ "$a" = ratelimited ] || [ -e "$BREAKER" ]; then
         R_SRC[$r]=ratelimit
@@ -559,10 +631,10 @@ done
 # --------------------------------- phase 2: build dates, only for images that moved
 
 MOVERS=()
-for r in "${UNIQ[@]}"; do
+for r in ${UNIQ[@]+"${UNIQ[@]}"}; do
     [ -n "${R_DIG[$r]:-}" ] || continue
     [ "${R_CRE[$r]:--}" = "-" ] || continue          # created date already known
-    for i in "${!REFS[@]}"; do
+    for ((i = 0; i < ${#REFS[@]}; i++)); do
         if [ "${REFS[$i]}" = "$r" ] && [ "${LOCALS[$i]}" != "${R_DIG[$r]}" ]; then
             MOVERS+=("$r"); break
         fi
@@ -586,7 +658,7 @@ lookup_created() {  # ref, out file, seconds
 }
 
 m=0
-for r in "${MOVERS[@]}"; do
+for r in ${MOVERS[@]+"${MOVERS[@]}"}; do
     [ -e "$BREAKER" ] && break
     while [ "$(jobs -rp | wc -l)" -ge "$MAXPAR" ]; do sleep 0.2; done
     [ -e "$BREAKER" ] && break
@@ -599,7 +671,7 @@ for ((i = 1; i <= m; i++)); do
     IFS=$'\t' read -r r c < "${TMP}/c${i}" 2>/dev/null || continue
     [ -n "$r" ] && [ -n "$c" ] || continue
     R_CRE[$r]="$c"
-    [ "${S_DIG[$r]:-}" = "${R_DIG[$r]}" ] && S_CRE[$r]="$c"
+    [ "${S_DIG[$r]:-}" = "${R_DIG[$r]:-}" ] && S_CRE[$r]="$c"
 done
 
 save_state
@@ -608,17 +680,17 @@ save_state
 
 BEHIND=(); PENDING=(); CURRENT=(); PINNED=(); UNCHECKED=(); RATELIMITED=(); DEFERRED=()
 
-for i in "${!NAMES[@]}"; do
+for ((i = 0; i < ${#NAMES[@]}; i++)); do
     CNAME="${NAMES[$i]}"; REF="${REFS[$i]}"; LOCAL="${LOCALS[$i]}"
     TAG="$(image_tag "$REF")"
     REMOTE="${R_DIG[$REF]:-}"; CREATED="${R_CRE[$REF]:-}"; [ "$CREATED" = "-" ] && CREATED=""
 
-    case "${R_SRC[$REF]}" in
+    case "${R_SRC[$REF]:-}" in
         ratelimit) RATELIMITED+=("$CNAME"); continue ;;
         deferred)  DEFERRED+=("$CNAME"); continue ;;
         err)
             UNCHECKED+=("$CNAME")
-            diag "${CNAME} (${REF}): registry lookup failed (${ATTEMPT[$REF]})"
+            diag "${CNAME} (${REF}): registry lookup failed (${ATTEMPT[$REF]:-other})"
             diag "  ${R_MSG[$REF]:-no detail}"
             continue ;;
     esac
@@ -653,7 +725,7 @@ for i in "${!NAMES[@]}"; do
     diag ""
 done
 
-# A reference with no successful registry answer for staleAfterDays days.
+# A reference with no successful registry answer for usrStaleAfterDays days.
 kind_text() {
     case "$1" in
         ratelimited) echo "rate limited" ;; refused) echo "refused" ;; notfound) echo "not found" ;;
@@ -662,14 +734,14 @@ kind_text() {
 }
 STALE_REFS=()
 if [ "$STALE_DAYS" -gt 0 ] && [ -n "$STATE_DIR" ]; then
-    for r in "${UNIQ[@]}"; do
+    for r in ${UNIQ[@]+"${UNIQ[@]}"}; do
         [ -n "${S_ERR[$r]:-}" ] && [ "${S_ERR[$r]}" != none ] || continue
-        if [ "${S_OK[$r]}" -gt 0 ]; then base="${S_OK[$r]}"; since="no registry answer since $(day "${S_OK[$r]}")"
-        else base="${S_SINCE[$r]}"; since="failing since $(day "${S_SINCE[$r]}"), never answered"; fi
+        if [ "${S_OK[$r]:-0}" -gt 0 ]; then base="${S_OK[$r]}"; since="no registry answer since $(day "${S_OK[$r]}")"
+        else base="${S_SINCE[$r]:-0}"; since="failing since $(day "${S_SINCE[$r]:-0}"), never answered"; fi
         [ $(( NOW - base )) -ge $(( STALE_DAYS * 86400 )) ] || continue
         STALE_REFS+=("${r} ($(kind_text "${S_ERR[$r]}"), ${since})")
-        diag "${r}: no successful registry answer for $(( (NOW - base) / 86400 )) days (staleAfterDays ${STALE_DAYS})"
-        diag "  last error: $(kind_text "${S_ERR[$r]}"), errors since $(day "${S_SINCE[$r]}")${R_MSG[$r]:+: ${R_MSG[$r]}}"
+        diag "${r}: no successful registry answer for $(( (NOW - base) / 86400 )) days (usrStaleAfterDays ${STALE_DAYS})"
+        diag "  last error: $(kind_text "${S_ERR[$r]}"), errors since $(day "${S_SINCE[$r]:-0}")${R_MSG[$r]:+: ${R_MSG[$r]}}"
         diag "  Refused: check root's docker login on this host. Rate limited: docker login as root moves the host to a per-account allowance."
         diag ""
     done

@@ -2,7 +2,7 @@
  "platforms": [
   "linux"
  ],
- "description": "On a runner with Docker and systemd, against a test registry (the one from Host Maintenance's test, over HTTPS with a test CA) on ports 5055 and 4290. Two containers, one from each, are current; the second run is served from the cache, a root-only directory and file in the version 2 format. The state directory: a pre-made symlink is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the cache file is not read and is replaced, its target untouched. excludePattern starting with - is a pattern. Rate limits: an error that only contains 4290 (the registry on that port stopped) is an unreadable image, not a rate limit, and the other image is still queried; a real 429 Too Many Requests trips the breaker. Staleness: a ref with no registry answer for 8 days alerts, naming it, the error kind (rate limited; refused) and since when; 2 days does not; staleAfterDays 0 never does; a success clears it. Version 1 cache lines are read; malformed ones dropped. Every invalid input is refused. A docker shim that never answers gives 'Docker did not answer within 40 seconds', exit 1, inside 90 seconds, nothing left running; TERM mid-run prints the fallback result block. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found. GNU bash 4.2 runs the main paths.",
+ "description": "On a runner with Docker and systemd, against a test registry (the one from Host Maintenance's test, over HTTPS with a test CA) on ports 5055 and 4290. Two containers, one from each, are current; the second run is served from the cache, a root-only directory and file in the version 2 format. The state directory: a pre-made symlink is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the cache file is not read and is replaced, its target untouched. usrExcludePattern starting with - is a pattern. Rate limits: an error that only contains 4290 (the registry on that port stopped) is an unreadable image, not a rate limit, and the other image is still queried; a real 429 Too Many Requests trips the breaker. Staleness: a ref with no registry answer for 8 days alerts, naming it, the error kind (rate limited; refused) and since when; 2 days does not; usrStaleAfterDays 0 never does; a success clears it. Version 1 cache lines are read; malformed ones dropped. Every invalid input is refused, naming the variable. The input variables are read by their usr names; a variable set only under its old name (before version 3) is read from that, and when both are set the usr name wins. The container list is three docker commands (counted with a recording shim), retried when a container goes between docker ps and docker inspect, an error after three failed tries; a name holding a newline and tabs adds no row. A container run by image id is checked under its image's tag; one from an untagged image is skipped. A docker shim that never answers gives 'Docker did not answer within 40 seconds', exit 1, inside 90 seconds, nothing left running; TERM mid-run prints the fallback result block. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found. GNU bash 4.2 runs the main paths.",
  "steps": [
   {
    "type": "command",
@@ -174,7 +174,7 @@
   },
   {
    "type": "runComponent",
-   "label": "excludePattern starting with -: a pattern, not a grep option",
+   "label": "usrExcludePattern starting with -: a pattern, not a grep option",
    "outputContains": [
     "STATUS=1 checked: 0 behind, 1 current, 0 pinned, 1 excluded"
    ],
@@ -184,7 +184,7 @@
     "not a valid"
    ],
    "variables": {
-    "excludePattern": "-cur"
+    "usrExcludePattern": "-cur"
    }
   },
   {
@@ -208,8 +208,8 @@
     "deferred"
    ],
    "variables": {
-    "cacheHours": "0",
-    "maxParallel": "1"
+    "usrCacheHours": "0",
+    "usrMaxParallel": "1"
    }
   },
   {
@@ -232,7 +232,7 @@
   {
    "type": "command",
    "label": "A real rate limit trips the breaker: one lookup made, the other not asked, both from the stale cache, exit 0",
-   "run": "tc-test-run cacheHours=0 maxParallel=1; echo \"requests to port 5055: $(wc -l < /tmp/tc-test-registry-5055/requests.log)\"",
+   "run": "tc-test-run usrCacheHours=0 usrMaxParallel=1; echo \"requests to port 5055: $(wc -l < /tmp/tc-test-registry-5055/requests.log)\"",
    "outputContains": [
     "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 1 queried, 2 from stale cache, rate limited]",
     "exit 0 after",
@@ -261,11 +261,11 @@
   },
   {
    "type": "runComponent",
-   "label": "Rate limited for 8 days (staleAfterDays 7, the default): alerts, naming it, the error kind and since when",
+   "label": "Rate limited for 8 days (usrStaleAfterDays 7, the default): alerts, naming it, the error kind and since when",
    "expectExitCode": 1,
    "outputContains": [
     "No registry answer for 7+ days: tc-registry.test:4290/tc-test-other:1 (rate limited, no registry answer since ",
-    "no successful registry answer for 8 days (staleAfterDays 7)",
+    "no successful registry answer for 8 days (usrStaleAfterDays 7)",
     "last error: rate limited",
     "429 Too Many Requests"
    ],
@@ -274,14 +274,14 @@
     "unbound variable"
    ],
    "variables": {
-    "cacheHours": "0",
-    "maxParallel": "1"
+    "usrCacheHours": "0",
+    "usrMaxParallel": "1"
    }
   },
   {
    "type": "command",
    "label": "bash 4.2: the staleness alert",
-   "run": "tc-test-run --bash42 cacheHours=0 maxParallel=1",
+   "run": "tc-test-run --bash42 usrCacheHours=0 usrMaxParallel=1",
    "outputContains": [
     "No registry answer for 7+ days: tc-registry.test:4290/tc-test-other:1 (rate limited",
     "exit 1 after",
@@ -294,7 +294,7 @@
   },
   {
    "type": "runComponent",
-   "label": "staleAfterDays 0: the same state, never alerts",
+   "label": "usrStaleAfterDays 0: the same state, never alerts",
    "outputContains": [
     "rate limited]"
    ],
@@ -304,9 +304,9 @@
     "No registry answer"
    ],
    "variables": {
-    "cacheHours": "0",
-    "maxParallel": "1",
-    "staleAfterDays": "0"
+    "usrCacheHours": "0",
+    "usrMaxParallel": "1",
+    "usrStaleAfterDays": "0"
    }
   },
   {
@@ -329,8 +329,8 @@
     "No registry answer"
    ],
    "variables": {
-    "cacheHours": "0",
-    "maxParallel": "1"
+    "usrCacheHours": "0",
+    "usrMaxParallel": "1"
    }
   },
   {
@@ -354,7 +354,7 @@
     "unbound variable"
    ],
    "variables": {
-    "cacheHours": "0"
+    "usrCacheHours": "0"
    }
   },
   {
@@ -377,7 +377,7 @@
     "No registry answer"
    ],
    "variables": {
-    "cacheHours": "0"
+    "usrCacheHours": "0"
    }
   },
   {
@@ -420,157 +420,240 @@
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: inspectTimeout=abc",
+   "label": "Invalid input refused: usrInspectTimeout=abc",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: inspectTimeout must be a whole number from 10 to 60 (got 'abc')"
+    "STATUS=Check could not run: usrInspectTimeout must be a whole number from 10 to 60 (got 'abc')"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "inspectTimeout": "abc"
+    "usrInspectTimeout": "abc"
    }
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: inspectTimeout=5",
+   "label": "Invalid input refused: usrInspectTimeout=5",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: inspectTimeout must be a whole number from 10 to 60 (got '5')"
+    "STATUS=Check could not run: usrInspectTimeout must be a whole number from 10 to 60 (got '5')"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "inspectTimeout": "5"
+    "usrInspectTimeout": "5"
    }
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: maxParallel=0",
+   "label": "Invalid input refused: usrMaxParallel=0",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: maxParallel must be a whole number from 1 to 8 (got '0')"
+    "STATUS=Check could not run: usrMaxParallel must be a whole number from 1 to 8 (got '0')"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "maxParallel": "0"
+    "usrMaxParallel": "0"
    }
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: maxParallel=9",
+   "label": "Invalid input refused: usrMaxParallel=9",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: maxParallel must be a whole number from 1 to 8 (got '9')"
+    "STATUS=Check could not run: usrMaxParallel must be a whole number from 1 to 8 (got '9')"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "maxParallel": "9"
+    "usrMaxParallel": "9"
    }
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: cacheHours=12h",
+   "label": "Invalid input refused: usrCacheHours=12h",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: cacheHours must be a whole number from 0 to 720 (got '12h')"
+    "STATUS=Check could not run: usrCacheHours must be a whole number from 0 to 720 (got '12h')"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "cacheHours": "12h"
+    "usrCacheHours": "12h"
    }
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: cacheHours=721",
+   "label": "Invalid input refused: usrCacheHours=721",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: cacheHours must be a whole number from 0 to 720 (got '721')"
+    "STATUS=Check could not run: usrCacheHours must be a whole number from 0 to 720 (got '721')"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "cacheHours": "721"
+    "usrCacheHours": "721"
    }
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: minAgeDays=-1",
+   "label": "Invalid input refused: usrMinAgeDays=-1",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: minAgeDays must be a whole number from 0 to 365 (got '-1')"
+    "STATUS=Check could not run: usrMinAgeDays must be a whole number from 0 to 365 (got '-1')"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "minAgeDays": "-1"
+    "usrMinAgeDays": "-1"
    }
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: minAgeDays=366",
+   "label": "Invalid input refused: usrMinAgeDays=366",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: minAgeDays must be a whole number from 0 to 365 (got '366')"
+    "STATUS=Check could not run: usrMinAgeDays must be a whole number from 0 to 365 (got '366')"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "minAgeDays": "366"
+    "usrMinAgeDays": "366"
    }
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: staleAfterDays=x",
+   "label": "Invalid input refused: usrStaleAfterDays=x",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: staleAfterDays must be a whole number from 0 to 365 (got 'x')"
+    "STATUS=Check could not run: usrStaleAfterDays must be a whole number from 0 to 365 (got 'x')"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "staleAfterDays": "x"
+    "usrStaleAfterDays": "x"
    }
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: staleAfterDays=400",
+   "label": "Invalid input refused: usrStaleAfterDays=400",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: staleAfterDays must be a whole number from 0 to 365 (got '400')"
+    "STATUS=Check could not run: usrStaleAfterDays must be a whole number from 0 to 365 (got '400')"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "staleAfterDays": "400"
+    "usrStaleAfterDays": "400"
    }
   },
   {
    "type": "runComponent",
-   "label": "Invalid input refused: excludePattern=(",
+   "label": "Invalid input refused: usrExcludePattern=(",
    "expectExitCode": 1,
    "outputContains": [
-    "STATUS=Check could not run: excludePattern is not a valid extended regular expression"
+    "STATUS=Check could not run: usrExcludePattern is not a valid extended regular expression"
    ],
    "outputNotContains": [
     "checked:"
    ],
    "variables": {
-    "excludePattern": "("
+    "usrExcludePattern": "("
    }
+  },
+  {
+   "type": "command",
+   "label": "Old name only (a monitor policy saved before version 3): maxParallel=0 is read, and the message names maxParallel",
+   "run": "tc-test-run maxParallel=0",
+   "outputContains": [
+    "STATUS=Check could not run: maxParallel must be a whole number from 1 to 8 (got '0')",
+    "exit 1 after"
+   ],
+   "outputNotContains": [
+    "checked:",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Old name only, a valid value: excludePattern=-cur is used",
+   "run": "tc-test-run excludePattern=-cur",
+   "outputContains": [
+    "STATUS=1 checked: 0 behind, 1 current, 0 pinned, 1 excluded",
+    "exit 0 after"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Both names set: the usr name wins (usrMaxParallel=2 is used, maxParallel=0 is not read)",
+   "run": "tc-test-run usrMaxParallel=2 maxParallel=0",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned",
+    "exit 0 after"
+   ],
+   "outputNotContains": [
+    "must be a whole number",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Both names set: an invalid usr value is refused, naming the usr name, whatever the old name says",
+   "run": "tc-test-run usrMaxParallel=0 maxParallel=2",
+   "outputContains": [
+    "STATUS=Check could not run: usrMaxParallel must be a whole number from 1 to 8 (got '0')",
+    "exit 1 after"
+   ],
+   "outputNotContains": [
+    "checked:",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Both names set: an empty usrExcludePattern is a value (no exclusion), so excludePattern=-cur is not read",
+   "run": "tc-test-run usrExcludePattern= excludePattern=-cur",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned",
+    "exit 0 after"
+   ],
+   "outputNotContains": [
+    "excluded",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: old name only",
+   "run": "tc-test-run --bash42 excludePattern=-cur",
+   "outputContains": [
+    "STATUS=1 checked: 0 behind, 1 current, 0 pinned, 1 excluded",
+    "exit 0 after",
+    "under bash 4.2.0"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
   },
   {
    "type": "command",
@@ -762,6 +845,104 @@
   },
   {
    "type": "command",
+   "label": "Listing: a docker shim first on PATH that records every docker command (and can list a container that is gone)",
+   "run": "set -e; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; echo \"$real\" > /var/tmp/tc-docker-real\ncat > /usr/local/sbin/docker <<'EOF'\n#!/bin/sh\n# tc-test-shim: records every docker command in /var/tmp/tc-docker-calls. With\n# /var/tmp/tc-vanish holding once or always, docker ps also lists a container\n# that is gone, as one removed between docker ps and docker inspect is: on the\n# first docker ps only, or on every one.\necho \"$*\" >> /var/tmp/tc-docker-calls\nm=$(cat /var/tmp/tc-vanish 2>/dev/null)\nif [ \"$1\" = ps ] && { [ \"$m\" = always ] || { [ \"$m\" = once ] && [ ! -e /var/tmp/tc-vanish.done ]; }; }; then\n    : > /var/tmp/tc-vanish.done\n    @REAL@ \"$@\"; rc=$?\n    echo deaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddead\n    exit $rc\nfi\nexec @REAL@ \"$@\"\nEOF\nsed -i \"s|@REAL@|$real|\" /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r\nrm -f /var/tmp/tc-vanish /var/tmp/tc-vanish.done; : > /var/tmp/tc-docker-calls; echo 'counting shim installed'\ndocker ps -aq --filter id=deaddead | wc -l | sed 's/^/containers with an id starting deaddead: /' ",
+   "outputContains": [
+    "counting shim installed",
+    "containers with an id starting deaddead: 0"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Listing: three docker commands for the container list (one docker ps, one docker inspect, one docker image inspect), not several per container",
+   "run": ": > /var/tmp/tc-docker-calls; tc-test-run; c=/var/tmp/tc-docker-calls; echo \"docker ps: $(grep -c '^ps ' $c), docker inspect: $(grep -c '^inspect ' $c), docker image inspect: $(grep -c '^image inspect ' $c)\"",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned",
+    "exit 0 after",
+    "docker ps: 1, docker inspect: 1, docker image inspect: 1"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Listing: a container removed between docker ps and docker inspect (docker inspect fails): the listing is retried, the gone container is not counted",
+   "run": "echo once > /var/tmp/tc-vanish; rm -f /var/tmp/tc-vanish.done; : > /var/tmp/tc-docker-calls; tc-test-run; c=/var/tmp/tc-docker-calls; echo \"docker ps: $(grep -c '^ps ' $c), docker inspect: $(grep -c '^inspect ' $c), docker image inspect: $(grep -c '^image inspect ' $c)\"",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [",
+    "exit 0 after",
+    "docker ps: 2, docker inspect: 2, docker image inspect: 1"
+   ],
+   "outputNotContains": [
+    "not from a registry",
+    "deaddeaddead",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: a container removed between docker ps and docker inspect",
+   "run": "echo once > /var/tmp/tc-vanish; rm -f /var/tmp/tc-vanish.done; : > /var/tmp/tc-docker-calls; tc-test-run --bash42; c=/var/tmp/tc-docker-calls; echo \"docker ps: $(grep -c '^ps ' $c), docker inspect: $(grep -c '^inspect ' $c), docker image inspect: $(grep -c '^image inspect ' $c)\"",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [",
+    "exit 0 after",
+    "under bash 4.2.0",
+    "docker ps: 2, docker inspect: 2, docker image inspect: 1"
+   ],
+   "outputNotContains": [
+    "not from a registry",
+    "deaddeaddead",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Listing: docker inspect fails on every try: three tries, then 'Docker did not return its container list', exit 1 (never 'no containers')",
+   "run": "echo always > /var/tmp/tc-vanish; : > /var/tmp/tc-docker-calls; tc-test-run; c=/var/tmp/tc-docker-calls; echo \"docker ps: $(grep -c '^ps ' $c), docker inspect: $(grep -c '^inspect ' $c), docker image inspect: $(grep -c '^image inspect ' $c)\"",
+   "outputContains": [
+    "STATUS=Check could not run: Docker did not return its container list",
+    "exit 1 after",
+    "failed on three tries",
+    "docker ps: 3, docker inspect: 3, docker image inspect: 0"
+   ],
+   "outputNotContains": [
+    "checked:",
+    "no containers",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Listing: a container name holding a newline and tabs cannot add a row or a field (values are read JSON-encoded): still two containers, no phantom",
+   "run": "set -e; real=$(cat /var/tmp/tc-docker-real)\ncat > /usr/local/sbin/docker <<'EOF'\n#!/bin/sh\n# tc-test-shim: Docker as usual, except that docker inspect gives tc-cur a name\n# holding a newline and tabs that spell out a row for a container \"phantom\":\n# JSON-encoded (\\n, \\t) where the template asks for json, raw otherwise.\n[ \"$1\" = inspect ] || exec @REAL@ \"$@\"\n@REAL@ \"$@\" | sed -e 's#\"/tc-cur\"#\"/tc-cur\\\\nok\\\\tphantom\\\\ttc-registry.test:5055/tc-test-cur:1\\\\tsha256:0000000000000000000000000000000000000000000000000000000000000000\"#' \\\n                 -e 's#^/tc-cur$#/tc-cur\\nok\\tphantom\\ttc-registry.test:5055/tc-test-cur:1\\tsha256:0000000000000000000000000000000000000000000000000000000000000000#'\nEOF\nsed -i \"s|@REAL@|$real|\" /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r\ndocker inspect -f '{{json .Name}}' tc-cur\ntc-test-run",
+   "outputContains": [
+    "\"/tc-cur\\nok\\tphantom",
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned",
+    "exit 0 after"
+   ],
+   "outputNotContains": [
+    "STATUS=3",
+    "phantom (",
+    "Behind:",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Listing: shims removed, Docker answers again",
+   "run": "rm -f /usr/local/sbin/docker /var/tmp/tc-docker-real /var/tmp/tc-vanish /var/tmp/tc-vanish.done /var/tmp/tc-docker-calls; hash -r; docker ps >/dev/null && echo 'docker ps answers again'",
+   "outputContains": [
+    "docker ps answers again"
+   ]
+  },
+  {
+   "type": "command",
    "label": "Behind: a new image pushed to tc-registry.test:5055/tc-test-cur:1, and the local tag put back on the old one, as on a host that has not pulled",
    "run": "set -e; old=$(docker inspect -f '{{.Image}}' tc-cur); r=$(mktemp -d); mkdir -p $r/bin; cp /bin/sleep $r/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $r$(dirname $l); cp $l $r$l; done; tar -C $r -c . | docker import --change \"LABEL tc.nonce=new$(date +%s%N)\" - tc-registry.test:5055/tc-test-cur:1 >/dev/null; rm -rf $r; docker push -q tc-registry.test:5055/tc-test-cur:1 >/dev/null; docker tag \"$old\" tc-registry.test:5055/tc-test-cur:1; docker image inspect -f 'old image digests {{json .RepoDigests}}' \"$old\"",
    "outputContains": [
@@ -770,7 +951,7 @@
   },
   {
    "type": "runComponent",
-   "label": "Behind, new image younger than minAgeDays (7): pending, exit 0",
+   "label": "Behind, new image younger than usrMinAgeDays (7): pending, exit 0",
    "outputContains": [
     "STATUS=2 checked: 0 behind, 1 current, 0 pinned, 1 update(s) newer than 7d [0 cached, 2 queried]"
    ],
@@ -779,12 +960,12 @@
     "unbound variable"
    ],
    "variables": {
-    "cacheHours": "0"
+    "usrCacheHours": "0"
    }
   },
   {
    "type": "runComponent",
-   "label": "Behind, minAgeDays 0: alerts, with both digests in the diagnostic",
+   "label": "Behind, usrMinAgeDays 0: alerts, with both digests in the diagnostic",
    "expectExitCode": 1,
    "outputContains": [
     "STATUS=2 checked: 1 behind, 1 current, 0 pinned",
@@ -797,16 +978,59 @@
     "unbound variable"
    ],
    "variables": {
-    "cacheHours": "0",
-    "minAgeDays": "0"
+    "usrCacheHours": "0",
+    "usrMinAgeDays": "0"
    }
   },
   {
    "type": "command",
    "label": "bash 4.2: behind",
-   "run": "tc-test-run --bash42 cacheHours=0 minAgeDays=0",
+   "run": "tc-test-run --bash42 usrCacheHours=0 usrMinAgeDays=0",
    "outputContains": [
     "Behind: tc-cur:1 (0d)",
+    "exit 1 after",
+    "under bash 4.2.0"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Image by id: tc-byid runs tc-other's image by its id (so its tag comes from the image's tags), tc-untagged runs an image with no tag",
+   "run": "set -e; docker rm -f tc-byid tc-untagged >/dev/null 2>&1 || true\nr=$(mktemp -d); mkdir -p $r/bin; cp /bin/sleep $r/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $r$(dirname $l); cp $l $r$l; done\nid=$(tar -C $r -c . | docker import --change \"LABEL tc.nonce=untagged$(date +%s%N)\" --change 'CMD [\"/bin/sleep\",\"86400\"]' -); rm -rf $r\ndocker run -d --name tc-untagged \"$id\" >/dev/null\ndocker run -d --name tc-byid \"$(docker inspect -f '{{.Image}}' tc-other)\" >/dev/null\ndocker inspect -f '{{.Name}} runs {{json .Config.Image}}' tc-byid tc-untagged\ndocker image inspect -f 'untagged image tags {{json .RepoTags}}' \"$id\"",
+   "outputContains": [
+    "/tc-byid runs \"sha256:",
+    "/tc-untagged runs \"sha256:",
+    "untagged image tags []"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Image by id: tc-byid checked under its image's tag (current), tc-untagged skipped as no image tag, tc-cur still behind",
+   "expectExitCode": 1,
+   "variables": {
+    "usrCacheHours": "0",
+    "usrMinAgeDays": "0"
+   },
+   "outputContains": [
+    "STATUS=3 checked: 1 behind, 2 current, 0 pinned, 1 not from a registry [0 cached, 2 queried]",
+    "Behind: tc-cur:1 (0d)",
+    "Not checked: tc-untagged (no image tag)"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: image by id and untagged",
+   "run": "tc-test-run --bash42 usrCacheHours=0 usrMinAgeDays=0",
+   "outputContains": [
+    "STATUS=3 checked: 1 behind, 2 current, 0 pinned, 1 not from a registry",
+    "Not checked: tc-untagged (no image tag)",
     "exit 1 after",
     "under bash 4.2.0"
    ],

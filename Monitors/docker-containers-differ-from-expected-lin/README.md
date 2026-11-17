@@ -63,6 +63,22 @@ again.
 > the Tier 1 harness against Docker 29 under systemd 255 in a sandbox
 > (141 steps, including runs under GNU bash 4.2 built from source); not yet
 > through a Datto agent.
+>
+> **Version 8** (2026-11-17) raises `PRUNE_MIN_VERSION` from 9 to **11**, and
+> changes nothing else. Host Maintenance version 11 is the first whose prune
+> never starts a stopped Docker; the prunes of versions 9 and 10 start one
+> (their service has `Requires=docker.service`, and they run `docker info`
+> first), and every `restart: always` container with it. **Every host whose
+> prune is version 9 or 10 is reported as stale, and alerts by default, as
+> soon as version 8 is deployed, until Host Maintenance is run on it again.**
+> Run Host Maintenance (version 11 or later) across the Docker hosts first, or
+> set `usrStalePruneAction` = Warn until it has reached them. A version 11
+> prune is accepted: version 12 only changes how the prune reads its own
+> settings file. The Tier 1 `test.json` covers the new minimum with stand-in
+> prune files stamped 10, 11 and 12. Those steps were run through the Tier 1
+> harness against a live Docker 29 daemon in a sandbox with no systemd and no
+> bash 4.2, so the bash 4.2 and stopped-Docker steps were **not** run for this
+> version; CI runs them. Not yet through a Datto agent.
 
 ## What it does
 
@@ -228,7 +244,11 @@ host has, and the earlier ones are unsafe: version 1 ran
 `docker system prune --all` from the service with no list and no review;
 version 2 ran it behind a required-containers check; version 3 protected
 containers one by one but had no review gate; versions 4 and 5 had the review
-gate but a container label could still make them delete a protected container.
+gate but a container label could still make them delete a protected container;
+versions 7 and 8 removed a stopped container at the first prune after it was
+old enough, counting from when it was created; and versions 9 and 10 start a
+Docker that was stopped on purpose (the weekly timer does, and so does a run by
+hand), bringing every `restart: always` container back with it.
 
 Since version 7 of Host Maintenance, the installed script
 `/usr/local/sbin/tc-docker-prune` carries a line `TC_PRUNE_VERSION=<n>`, where
@@ -242,13 +262,14 @@ when any of these is true:
 - the script exists with no `TC_PRUNE_VERSION=` line (every version before 7),
   or one whose value is not a whole number;
 - the script's `TC_PRUNE_VERSION` is lower than `PRUNE_MIN_VERSION`, a constant
-  near the top of the script (9 now).
+  near the top of the script (**11** now: the first prune that never starts a
+  stopped Docker).
 
 A host with neither file has no prune installed, which is not stale. A
 leading zero in the stamp is read as decimal.
 
 The status names what was found, for example `prune on this host is version 3,
-older than 9`, `prune on this host has no version (installed before version
+older than 11`, `prune on this host has no version (installed before version
 7)`, or `prune service on this host does not run
 /usr/local/sbin/tc-docker-prune (version 1 layout)`. It goes first in the
 status, because the status is cut at 400 characters. On an alert the
@@ -262,7 +283,11 @@ prune is reported exactly as before.
 **Raising `PRUNE_MIN_VERSION`** is how a future safety fix to the prune gets
 flagged across the fleet: bump the prune's stamp by shipping a new Host
 Maintenance version, raise the constant to that version here, and every host
-still on an older prune alerts on its next run.
+still on an older prune alerts on its next run. The constant does not have to
+follow every Host Maintenance version: it is 11 while Host Maintenance is 12,
+because version 12 changes only how the prune reads its settings file (as
+text, never run, with `OLDER_THAN_HOURS` checked), which matters on a host
+where someone edited that file by hand.
 
 A container's labels are untrusted: it inherits them from its image. They are
 read JSON-encoded, so a tab or newline in a label cannot add a field or a
