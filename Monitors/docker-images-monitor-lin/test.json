@@ -1,0 +1,819 @@
+{
+ "platforms": [
+  "linux"
+ ],
+ "description": "On a runner with Docker and systemd, against a test registry (the one from Host Maintenance's test, over HTTPS with a test CA) on ports 5055 and 4290. Two containers, one from each, are current; the second run is served from the cache, a root-only directory and file in the version 2 format. The state directory: a pre-made symlink is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the cache file is not read and is replaced, its target untouched. excludePattern starting with - is a pattern. Rate limits: an error that only contains 4290 (the registry on that port stopped) is an unreadable image, not a rate limit, and the other image is still queried; a real 429 Too Many Requests trips the breaker. Staleness: a ref with no registry answer for 8 days alerts, naming it, the error kind (rate limited; refused) and since when; 2 days does not; staleAfterDays 0 never does; a success clears it. Version 1 cache lines are read; malformed ones dropped. Every invalid input is refused. A docker shim that never answers gives 'Docker did not answer within 40 seconds', exit 1, inside 90 seconds, nothing left running; TERM mid-run prints the fallback result block. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found. GNU bash 4.2 runs the main paths.",
+ "steps": [
+  {
+   "type": "command",
+   "label": "Test helpers and a test registry: tc-test-run (runs the monitor the way the harness does, timed, under /bin/bash or bash 4.2), tc-test-left, tc-test-dstate, tc-test-state, tc-test-reg; the registry server from Host Maintenance's test, over HTTPS with a test CA at tc-registry.test (127.0.0.1 on this runner), on ports 5055 and 4290; one tiny image pushed to each",
+   "run": "set -e\nM=\"$PWD/Monitors/docker-images-monitor-lin/docker-images-monitor-lin.sh\"\ntest -f \"$M\"\ncat > /usr/local/sbin/tc-test-registry <<'EOF'\n#!/usr/bin/env python3\n# tc-test-registry PORT DIR [CERT KEY]: a minimal image registry (the Docker\n# Registry HTTP API v2, enough for docker push, docker pull and a manifest\n# lookup) on 127.0.0.1, so a test can give an image a real registry digest\n# without the internet. With CERT and KEY it serves HTTPS. Files in DIR change\n# how it answers, so a test can switch them on and off:\n#   htpasswd   \"user:password\": every request needs that Basic login\n#   ratelimit  manifest requests get 429 Too Many Requests, as Docker Hub's do\n#   delay      manifest requests wait this many seconds first\n# Every manifest request is appended to DIR/requests.log.\nimport base64, hashlib, os, ssl, sys, time, uuid\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nfrom urllib.parse import urlparse, parse_qs\nPORT, DIR = int(sys.argv[1]), sys.argv[2]\nfor sub in (\"blobs\", \"uploads\", \"manifests\"):\n    os.makedirs(os.path.join(DIR, sub), exist_ok=True)\ndef safe(s): return s.replace(\"/\", \"_\").replace(\":\", \"_\")\ndef sha(b): return \"sha256:\" + hashlib.sha256(b).hexdigest()\ndef flag(n):\n    try: return open(os.path.join(DIR, n)).read().strip()\n    except OSError: return None\nclass H(BaseHTTPRequestHandler):\n    protocol_version = \"HTTP/1.1\"\n    def log_message(self, *a): pass\n    def send(self, code, body=b\"\", headers=None):\n        self.send_response(code)\n        for k, v in (headers or {}).items(): self.send_header(k, v)\n        self.send_header(\"Content-Length\", str(len(body)))\n        self.send_header(\"Docker-Distribution-API-Version\", \"registry/2.0\")\n        self.end_headers()\n        if self.command != \"HEAD\": self.wfile.write(body)\n    def body(self):\n        n = int(self.headers.get(\"Content-Length\") or 0)\n        if n: return self.rfile.read(n)\n        if self.headers.get(\"Transfer-Encoding\", \"\").lower() != \"chunked\": return b\"\"\n        out = b\"\"\n        while True:\n            size = int(self.rfile.readline().strip().split(b\";\")[0], 16)\n            if size == 0: self.rfile.readline(); return out\n            out += self.rfile.read(size); self.rfile.readline()\n    def route(self):\n        u = urlparse(self.path); p = u.path; q = parse_qs(u.query)\n        login = flag(\"htpasswd\")\n        if login:\n            want = \"Basic \" + base64.b64encode(login.encode()).decode()\n            if self.headers.get(\"Authorization\") != want:\n                self.body()\n                return self.send(401, b'{\"errors\":[{\"code\":\"UNAUTHORIZED\",\"message\":\"authentication required\"}]}',\n                                 {\"WWW-Authenticate\": 'Basic realm=\"tc-test-registry\"', \"Content-Type\": \"application/json\"})\n        if p in (\"/v2\", \"/v2/\"): return self.send(200, b\"{}\")\n        if \"/blobs/uploads/\" in p:\n            name, rest = p[4:].split(\"/blobs/uploads/\", 1)\n            if self.command == \"POST\":\n                uid = uuid.uuid4().hex\n                open(f\"{DIR}/uploads/{uid}\", \"wb\").close()\n                return self.send(202, headers={\"Location\": f\"/v2/{name}/blobs/uploads/{uid}\", \"Range\": \"0-0\", \"Docker-Upload-UUID\": uid})\n            uid = rest.strip(\"/\"); f = f\"{DIR}/uploads/{uid}\"\n            with open(f, \"ab\") as fh: fh.write(self.body())\n            if self.command == \"PATCH\":\n                return self.send(202, headers={\"Location\": f\"/v2/{name}/blobs/uploads/{uid}\", \"Range\": f\"0-{max(os.path.getsize(f) - 1, 0)}\", \"Docker-Upload-UUID\": uid})\n            d = q[\"digest\"][0]\n            if sha(open(f, \"rb\").read()) != d: return self.send(400, b'{\"errors\":[{\"code\":\"DIGEST_INVALID\"}]}')\n            os.replace(f, f\"{DIR}/blobs/{safe(d)}\")\n            return self.send(201, headers={\"Location\": f\"/v2/{name}/blobs/{d}\", \"Docker-Content-Digest\": d})\n        if \"/blobs/\" in p:\n            d = p.rsplit(\"/blobs/\", 1)[1]; f = f\"{DIR}/blobs/{safe(d)}\"\n            if not os.path.exists(f): return self.send(404, b'{\"errors\":[{\"code\":\"BLOB_UNKNOWN\"}]}')\n            return self.send(200, open(f, \"rb\").read(), {\"Docker-Content-Digest\": d, \"Content-Type\": \"application/octet-stream\"})\n        if \"/manifests/\" in p:\n            name, ref = p[4:].rsplit(\"/manifests/\", 1)\n            if self.command == \"PUT\":\n                data = self.body(); d = sha(data)\n                for r in (ref, d):\n                    open(f\"{DIR}/manifests/{safe(name)}@{safe(r)}\", \"wb\").write(data)\n                    open(f\"{DIR}/manifests/{safe(name)}@{safe(r)}.type\", \"w\").write(self.headers.get(\"Content-Type\", \"\"))\n                return self.send(201, headers={\"Location\": f\"/v2/{name}/manifests/{d}\", \"Docker-Content-Digest\": d})\n            with open(f\"{DIR}/requests.log\", \"a\") as log: log.write(f\"{self.command} {p}\\n\")\n            delay = flag(\"delay\")\n            if delay: time.sleep(int(delay))\n            if flag(\"ratelimit\") is not None:\n                return self.send(429, b'{\"errors\":[{\"code\":\"TOOMANYREQUESTS\",\"message\":\"You have reached your pull rate limit.\"}]}', {\"Content-Type\": \"application/json\"})\n            f = f\"{DIR}/manifests/{safe(name)}@{safe(ref)}\"\n            if not os.path.exists(f): return self.send(404, b'{\"errors\":[{\"code\":\"MANIFEST_UNKNOWN\",\"message\":\"manifest unknown\"}]}', {\"Content-Type\": \"application/json\"})\n            data = open(f, \"rb\").read()\n            return self.send(200, data, {\"Docker-Content-Digest\": sha(data), \"Content-Type\": open(f + \".type\").read()})\n        return self.send(404)\n    do_GET = do_HEAD = do_POST = do_PATCH = do_PUT = route\nsrv = ThreadingHTTPServer((\"127.0.0.1\", PORT), H)\nif len(sys.argv) > 4:\n    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(sys.argv[3], sys.argv[4])\n    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)\nsrv.serve_forever()\nEOF\ncat > /usr/local/bin/tc-test-run <<'EOF'\n#!/bin/bash\n# tc-test-run [--bash42] [VAR=value...]: run the monitor as the harness does (a clean\n# environment and the agent's root PATH); print its output, exit code and seconds taken.\nb=/bin/bash; if [ \"${1:-}\" = --bash42 ]; then b=/opt/tc-bash42/bin/bash; shift; fi\nt0=$(date +%s)\nenv -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \"$@\" \"$b\" \"@MONITOR@\"\nrc=$?\nsecs=$(( $(date +%s) - t0 ))\necho \"exit $rc after $secs seconds, under $(\"$b\" -c 'echo \"bash $BASH_VERSION\"')\"\n[ \"$secs\" -lt 90 ] && echo \"result inside 90 seconds\"\nexit 0\nEOF\nsed -i \"s|@MONITOR@|$M|\" /usr/local/bin/tc-test-run\ncat > /usr/local/bin/tc-test-left <<'EOF'\n#!/bin/bash\n# tc-test-left: any docker shim or client process still running, from ps.\nsleep 1\necho \"--- ps -eo pid,ppid,pgid,etime,args, docker shims, clients and their children:\"\nps -eo pid,ppid,pgid,etime,args | grep -E '[/]usr/local/sbin/docker|[s]leep 600|[t]c-test-shim|[b]uildx imagetools' || echo \"no docker client or shim process left\"\nEOF\ncat > /usr/local/bin/tc-test-dstate <<'EOF'\n#!/bin/bash\n# tc-test-dstate LABEL: what systemd says about Docker.\necho \"$1: systemctl is-active docker.service docker.socket -> $(systemctl is-active docker.service docker.socket | paste -sd' ')\"\nEOF\ncat > /usr/local/bin/tc-test-state <<'EOF'\n#!/bin/bash\n# tc-test-state: the state directory and the cache file, or that they are not there.\nd=/var/lib/tc-docker-monitor; f=$d/image-digests.tsv\nls -lad \"$d\" 2>&1\nif [ -f \"$f\" ] && [ ! -L \"$f\" ]; then echo \"--- $f (now $(date +%s)):\"; ls -la \"$f\"; cat \"$f\"; else echo \"(no cache file)\"; fi\nEOF\ncat > /usr/local/bin/tc-test-reg <<'EOF'\n#!/bin/bash\n# tc-test-reg start|stop PORT: a test registry at https://tc-registry.test:PORT, its\n# files (and switches: ratelimit, htpasswd, delay) in /tmp/tc-test-registry-PORT.\n# tc-test-reg image NAME PORT: build a tiny image (sleep only), push it to that\n# registry as tc-registry.test:PORT/tc-test-NAME:1 and print the digest.\n# tc-test-reg run NAME PORT: run a container tc-NAME from that image.\nD=/tmp/tc-test-registry-$3; [ \"$1\" = start ] || [ \"$1\" = stop ] && D=/tmp/tc-test-registry-$2\ncase \"$1\" in\nstart)\n    mkdir -p \"$D\"; [ -s \"$D.pid\" ] && kill \"$(cat \"$D.pid\")\" 2>/dev/null; sleep 1\n    setsid nohup python3 /usr/local/sbin/tc-test-registry \"$2\" \"$D\" /etc/tc-test-pki/registry.crt /etc/tc-test-pki/registry.key >\"$D.log\" 2>&1 </dev/null &\n    echo $! > \"$D.pid\"\n    for i in $(seq 20); do curl -fsS \"https://tc-registry.test:$2/v2/\" >/dev/null 2>&1 && break; sleep 1; done\n    curl -fsS \"https://tc-registry.test:$2/v2/\" >/dev/null && echo \"test registry answers on https://tc-registry.test:$2\" ;;\nstop)\n    [ -s \"$D.pid\" ] && kill \"$(cat \"$D.pid\")\" 2>/dev/null; rm -f \"$D.pid\"; sleep 1\n    curl -fsS \"https://tc-registry.test:$2/v2/\" >/dev/null 2>&1 && echo \"test registry STILL ANSWERS\" || echo \"test registry on $2 stopped\" ;;\nimage)\n    r=$(mktemp -d); mkdir -p \"$r/bin\"; cp /bin/sleep \"$r/bin/\"\n    for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p \"$r$(dirname \"$l\")\"; cp \"$l\" \"$r$l\"; done\n    ref=\"tc-registry.test:$3/tc-test-$2:1\"\n    tar -C \"$r\" -c . | docker import --change \"LABEL tc.nonce=$(date +%s%N)\" --change 'CMD [\"/bin/sleep\",\"86400\"]' - \"$ref\" >/dev/null\n    rm -rf \"$r\"\n    docker push -q \"$ref\" >/dev/null || echo \"PUSH FAILED: $ref\"\n    docker image inspect -f \"$ref {{json .RepoDigests}}\" \"$ref\" ;;\nrun)\n    docker rm -f \"tc-$2\" >/dev/null 2>&1\n    docker run -d --name \"tc-$2\" \"tc-registry.test:$3/tc-test-$2:1\" >/dev/null && echo \"running tc-$2\" ;;\nesac\nEOF\nchmod 755 /usr/local/sbin/tc-test-registry /usr/local/bin/tc-test-run /usr/local/bin/tc-test-left /usr/local/bin/tc-test-dstate /usr/local/bin/tc-test-state /usr/local/bin/tc-test-reg\nmkdir -p /etc/tc-test-pki; cd /etc/tc-test-pki\nopenssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=tc-test-ca -keyout ca.key -out ca.crt -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign 2>/dev/null\nopenssl req -newkey rsa:2048 -nodes -subj /CN=tc-registry.test -keyout registry.key -out registry.csr 2>/dev/null\nprintf 'subjectAltName=DNS:tc-registry.test\\nbasicConstraints=CA:FALSE\\nextendedKeyUsage=serverAuth\\n' > ext\nopenssl x509 -req -in registry.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 2 -out registry.crt -extfile ext 2>/dev/null\ngrep -q ' tc-registry.test$' /etc/hosts || echo '127.0.0.1 tc-registry.test' >> /etc/hosts\nfor p in 5055 4290; do mkdir -p /etc/docker/certs.d/tc-registry.test:$p && cp ca.crt /etc/docker/certs.d/tc-registry.test:$p/ca.crt; done\ncp ca.crt /usr/local/share/ca-certificates/tc-test-ca.crt && update-ca-certificates >/dev/null 2>&1\ncd /\ndocker rm -f $(docker ps -aq) >/dev/null 2>&1 || true\nrm -rf /var/lib/tc-docker-monitor\ntc-test-reg start 5055\ntc-test-reg start 4290\ntc-test-reg image cur 5055\ntc-test-reg image other 4290\necho \"helpers installed for $M\"\n",
+   "outputContains": [
+    "test registry answers on https://tc-registry.test:5055",
+    "test registry answers on https://tc-registry.test:4290",
+    "tc-registry.test:5055/tc-test-cur:1 [\"tc-registry.test:5055/tc-test-cur@sha256:",
+    "tc-registry.test:4290/tc-test-other:1 [\"tc-registry.test:4290/tc-test-other@sha256:",
+    "helpers installed for"
+   ],
+   "outputNotContains": [
+    "PUSH FAILED"
+   ],
+   "timeoutSeconds": 300
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: build GNU bash 4.2 from the GNU release (sha256 checked) into /opt/tc-bash42; it has the bug: an empty array is unbound under set -u",
+   "run": "set -e\nd=$(mktemp -d); cd \"$d\"\nfor u in https://ftp.gnu.org/gnu/bash/bash-4.2.tar.gz https://ftpmirror.gnu.org/bash/bash-4.2.tar.gz; do\n  curl -fsSL --retry 3 -o bash-4.2.tar.gz \"$u\" && break\ndone\necho 'a27a1179ec9c0830c65c6aa5d7dab60f7ce1a2a608618570f96bfa72e95ab3d8  bash-4.2.tar.gz' | sha256sum -c -\ntar xzf bash-4.2.tar.gz\ncd bash-4.2\n# 2011 C: -std=gnu89 goes in CC so it also reaches the build-time tools (CC_FOR_BUILD), which a\n# newer gcc defaulting to C23 otherwise refuses; the old-style warnings stay warnings.\nW='-O1 -fpermissive -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-return-mismatch'\ngcc --version | head -n 1\nCC='gcc -std=gnu89' CFLAGS=\"$W\" CFLAGS_FOR_BUILD=\"$W\" ./configure --without-bash-malloc --disable-nls >configure.log 2>&1 || { tail -n 30 configure.log; exit 1; }\nmake -j\"$(nproc)\" >make.log 2>&1 || { grep -m 20 'error:' make.log; tail -n 30 make.log; exit 1; }\ninstall -D -m 755 bash /opt/tc-bash42/bin/bash\n/opt/tc-bash42/bin/bash -c 'echo \"built bash $BASH_VERSION\"'\n/opt/tc-bash42/bin/bash -c 'set -u; a=(); echo \"${a[@]}\"' 2>&1 || true",
+   "outputContains": [
+    "built bash 4.2.0",
+    "a[@]: unbound variable"
+   ],
+   "timeoutSeconds": 900
+  },
+  {
+   "type": "command",
+   "label": "Two containers, tc-cur from port 5055 and tc-other from port 4290",
+   "run": "tc-test-reg run cur 5055; tc-test-reg run other 4290",
+   "outputContains": [
+    "running tc-cur",
+    "running tc-other"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "First run: both current, both queried",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Second run: both from the cache",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [2 cached, 0 queried]"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Cache file: a root-only directory and file; six tab-separated fields per line (ref, digest, created, last ok, error kind, error since)",
+   "run": "tc-test-state; awk -F'\\t' 'NF == 6 && $2 ~ /^sha256:/ && $5 == \"none\" && $6 == 0 {n++} END {print n \" well-formed success lines\"}' /var/lib/tc-docker-monitor/image-digests.tsv",
+   "outputContains": [
+    "drwx------ 2 root root",
+    "-rw------- 1 root root",
+    "2 well-formed success lines"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: a run from the cache",
+   "run": "tc-test-run --bash42",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [2 cached, 0 queried]",
+    "exit 0 after",
+    "under bash 4.2.0"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "State directory a symlink: /var/lib/tc-docker-monitor set aside, and a symlink to /tmp/tc-elsewhere made in its place (another user could have made one where the old fallback was)",
+   "run": "set -e; mv /var/lib/tc-docker-monitor /var/tmp/tc-state.real; rm -rf /tmp/tc-elsewhere; mkdir -m 755 /tmp/tc-elsewhere; ln -s /tmp/tc-elsewhere /var/lib/tc-docker-monitor; ls -la /var/lib/tc-docker-monitor /tmp/tc-elsewhere",
+   "outputContains": [
+    "/var/lib/tc-docker-monitor -> /tmp/tc-elsewhere"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Symlink: not followed, the check still runs without saved state, and says so",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]; no saved state (/var/lib/tc-docker-monitor is a symlink)"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Symlink: nothing written through it, its target still 0755 and empty",
+   "run": "ls -la /var/lib/tc-docker-monitor /tmp/tc-elsewhere; [ -z \"$(ls -A /tmp/tc-elsewhere)\" ] && echo 'target empty'; stat -c 'target mode %a' /tmp/tc-elsewhere",
+   "outputContains": [
+    "target empty",
+    "target mode 755"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "State directory not owned by root: a real directory owned by nobody, with a cache file in it that names a digest",
+   "run": "set -e; rm -f /var/lib/tc-docker-monitor; mkdir -m 755 /var/lib/tc-docker-monitor; printf 'tc-registry.test:5055/tc-test-cur:1\\tsha256:%064d\\t-\\t%s\\tnone\\t0\\n' 0 \"$(date +%s)\" > /var/lib/tc-docker-monitor/image-digests.tsv; chown -R 65534:65534 /var/lib/tc-docker-monitor; ls -la /var/lib/tc-docker-monitor",
+   "outputContains": [
+    "image-digests.tsv"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Wrong owner: not used (its cache is not read), the check still runs, the status says why",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]; no saved state (/var/lib/tc-docker-monitor is not owned by root)"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable",
+    "behind: tc-cur"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Wrong owner: owner, mode and file unchanged",
+   "run": "ls -la /var/lib/tc-docker-monitor; stat -c 'owner %u mode %a' /var/lib/tc-docker-monitor; grep -c 0000000000 /var/lib/tc-docker-monitor/image-digests.tsv",
+   "outputContains": [
+    "owner 65534 mode 755"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "State: the real directory put back, made 0755, with a symlink where the cache file goes",
+   "run": "set -e; rm -rf /var/lib/tc-docker-monitor; mv /var/tmp/tc-state.real /var/lib/tc-docker-monitor; chmod 755 /var/lib/tc-docker-monitor; echo sentinel > /tmp/tc-target; ln -sf /tmp/tc-target /var/lib/tc-docker-monitor/image-digests.tsv; ls -la /var/lib/tc-docker-monitor",
+   "outputContains": [
+    "image-digests.tsv -> /tmp/tc-target"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "A symlink at the cache file: not read, so nothing cached; replaced by a real file",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable",
+    "no saved state"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "The symlink's target is untouched; the cache file is a root-only regular file again; the directory made 0700",
+   "run": "cat /tmp/tc-target; tc-test-state",
+   "outputContains": [
+    "sentinel",
+    "drwx------ 2 root root",
+    "-rw------- 1 root root",
+    "tc-registry.test:5055/tc-test-cur:1\tsha256:"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "excludePattern starting with -: a pattern, not a grep option",
+   "outputContains": [
+    "STATUS=1 checked: 0 behind, 1 current, 0 pinned, 1 excluded"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable",
+    "not a valid"
+   ],
+   "variables": {
+    "excludePattern": "-cur"
+   }
+  },
+  {
+   "type": "command",
+   "label": "Not a rate limit: the registry on port 4290 stopped; the lookup's error names 127.0.0.1:4290 (the digits 429), and says nothing about a rate limit",
+   "run": "tc-test-reg stop 4290; env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root docker buildx imagetools inspect tc-registry.test:4290/tc-test-other:1 2>&1 | tail -n 1 | grep -oE '[0-9.]+:4290[^ ]*: connect: connection refused'",
+   "outputContains": [
+    ":4290: connect: connection refused"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "An error containing 4290 is not a rate limit: that one unreadable, the breaker not tripped, the other still queried",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 1 current, 0 pinned, 1 unreadable [0 cached, 2 queried]"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable",
+    "rate limit",
+    "deferred"
+   ],
+   "variables": {
+    "cacheHours": "0",
+    "maxParallel": "1"
+   }
+  },
+  {
+   "type": "command",
+   "label": "Its error kind is recorded as other, since that run",
+   "run": "tc-test-state",
+   "outputContains": [
+    "tc-registry.test:4290/tc-test-other:1\tsha256:",
+    "\tother\t"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "A real rate limit: the registry on 4290 back, answering 429 Too Many Requests (TOOMANYREQUESTS), as Docker Hub does; the request log on 5055 emptied",
+   "run": "tc-test-reg start 4290; touch /tmp/tc-test-registry-4290/ratelimit; : > /tmp/tc-test-registry-5055/requests.log",
+   "outputContains": [
+    "test registry answers on https://tc-registry.test:4290"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "A real rate limit trips the breaker: one lookup made, the other not asked, both from the stale cache, exit 0",
+   "run": "tc-test-run cacheHours=0 maxParallel=1; echo \"requests to port 5055: $(wc -l < /tmp/tc-test-registry-5055/requests.log)\"",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 1 queried, 2 from stale cache, rate limited]",
+    "exit 0 after",
+    "requests to port 5055: 0"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Rate limited is recorded as the error kind, the run of errors still dated from its start",
+   "run": "tc-test-state",
+   "outputContains": [
+    "\tratelimited\t"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Staleness: tc-registry.test:4290/tc-test-other:1 given no registry answer for 8 days, rate limited all that time",
+   "run": "set -e; f=/var/lib/tc-docker-monitor/image-digests.tsv; t=$(( $(date +%s) - 8 * 86400 )); awk -F'\\t' -v OFS='\\t' -v t=\"$t\" -v k=ratelimited '$1 == \"tc-registry.test:4290/tc-test-other:1\" {$4 = t; $5 = k; $6 = t} {print}' $f > $f.new; cat $f.new > $f; rm -f $f.new; tc-test-state",
+   "outputContains": [
+    "\tratelimited\t"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Rate limited for 8 days (staleAfterDays 7, the default): alerts, naming it, the error kind and since when",
+   "expectExitCode": 1,
+   "outputContains": [
+    "No registry answer for 7+ days: tc-registry.test:4290/tc-test-other:1 (rate limited, no registry answer since ",
+    "no successful registry answer for 8 days (staleAfterDays 7)",
+    "last error: rate limited",
+    "429 Too Many Requests"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ],
+   "variables": {
+    "cacheHours": "0",
+    "maxParallel": "1"
+   }
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: the staleness alert",
+   "run": "tc-test-run --bash42 cacheHours=0 maxParallel=1",
+   "outputContains": [
+    "No registry answer for 7+ days: tc-registry.test:4290/tc-test-other:1 (rate limited",
+    "exit 1 after",
+    "under bash 4.2.0"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "staleAfterDays 0: the same state, never alerts",
+   "outputContains": [
+    "rate limited]"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable",
+    "No registry answer"
+   ],
+   "variables": {
+    "cacheHours": "0",
+    "maxParallel": "1",
+    "staleAfterDays": "0"
+   }
+  },
+  {
+   "type": "command",
+   "label": "Staleness: the same, but for 2 days",
+   "run": "set -e; f=/var/lib/tc-docker-monitor/image-digests.tsv; t=$(( $(date +%s) - 2 * 86400 )); awk -F'\\t' -v OFS='\\t' -v t=\"$t\" -v k=ratelimited '$1 == \"tc-registry.test:4290/tc-test-other:1\" {$4 = t; $5 = k; $6 = t} {print}' $f > $f.new; cat $f.new > $f; rm -f $f.new; tc-test-state",
+   "outputContains": [
+    "\tratelimited\t"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Rate limited for 2 days: not stale yet, exit 0",
+   "outputContains": [
+    "rate limited]"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable",
+    "No registry answer"
+   ],
+   "variables": {
+    "cacheHours": "0",
+    "maxParallel": "1"
+   }
+  },
+  {
+   "type": "command",
+   "label": "Refused: the registry on 4290 stops rate limiting and asks for a login nobody has; the ref given 8 days with no answer",
+   "run": "rm -f /tmp/tc-test-registry-4290/ratelimit; echo 'tc-user:tc-not-a-real-password' > /tmp/tc-test-registry-4290/htpasswd; set -e; f=/var/lib/tc-docker-monitor/image-digests.tsv; t=$(( $(date +%s) - 8 * 86400 )); awk -F'\\t' -v OFS='\\t' -v t=\"$t\" -v k=refused '$1 == \"tc-registry.test:4290/tc-test-other:1\" {$4 = t; $5 = k; $6 = t} {print}' $f > $f.new; cat $f.new > $f; rm -f $f.new; tc-test-state",
+   "outputContains": [
+    "\trefused\t"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Refused for 8 days: alerts with the kind refused",
+   "expectExitCode": 1,
+   "outputContains": [
+    "No registry answer for 7+ days: tc-registry.test:4290/tc-test-other:1 (refused, no registry answer since ",
+    "last error: refused"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ],
+   "variables": {
+    "cacheHours": "0"
+   }
+  },
+  {
+   "type": "command",
+   "label": "Success: the login requirement removed",
+   "run": "rm -f /tmp/tc-test-registry-4290/htpasswd; echo removed",
+   "outputContains": [
+    "removed"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "A successful answer clears it: exit 0, both queried",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable",
+    "No registry answer"
+   ],
+   "variables": {
+    "cacheHours": "0"
+   }
+  },
+  {
+   "type": "command",
+   "label": "Cleared in the cache file: no error, last ok now",
+   "run": "tc-test-state; grep -P '^tc-registry.test:4290/tc-test-other:1\\tsha256:[0-9a-f]{64}\\t-\\t[0-9]+\\tnone\\t0$' /var/lib/tc-docker-monitor/image-digests.tsv && echo 'cleared'",
+   "outputContains": [
+    "cleared"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Version 1 cache lines (ref, digest, created, checked) are read as successes; a malformed line is dropped",
+   "run": "set -e; f=/var/lib/tc-docker-monitor/image-digests.tsv; now=$(date +%s); d=$(awk -F'\\t' '$1 ~ /5055/ {print $2}' $f); printf 'tc-registry.test:5055/tc-test-cur:1\\t%s\\t\\t%s\\nnot a line\\n' \"$d\" \"$now\" > $f; tc-test-state",
+   "outputContains": [
+    "not a line"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Version 1 line used from the cache; the 4290 ref (no entry) queried",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [1 cached, 1 queried]"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "The cache rewritten in the version 2 format, the malformed line gone",
+   "run": "tc-test-state; grep -c 'not a line' /var/lib/tc-docker-monitor/image-digests.tsv || true",
+   "outputContains": [
+    "tc-registry.test:5055/tc-test-cur:1\tsha256:"
+   ],
+   "outputNotContains": [
+    "not a line"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: inspectTimeout=abc",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: inspectTimeout must be a whole number from 10 to 60 (got 'abc')"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "inspectTimeout": "abc"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: inspectTimeout=5",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: inspectTimeout must be a whole number from 10 to 60 (got '5')"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "inspectTimeout": "5"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: maxParallel=0",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: maxParallel must be a whole number from 1 to 8 (got '0')"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "maxParallel": "0"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: maxParallel=9",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: maxParallel must be a whole number from 1 to 8 (got '9')"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "maxParallel": "9"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: cacheHours=12h",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: cacheHours must be a whole number from 0 to 720 (got '12h')"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "cacheHours": "12h"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: cacheHours=721",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: cacheHours must be a whole number from 0 to 720 (got '721')"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "cacheHours": "721"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: minAgeDays=-1",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: minAgeDays must be a whole number from 0 to 365 (got '-1')"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "minAgeDays": "-1"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: minAgeDays=366",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: minAgeDays must be a whole number from 0 to 365 (got '366')"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "minAgeDays": "366"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: staleAfterDays=x",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: staleAfterDays must be a whole number from 0 to 365 (got 'x')"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "staleAfterDays": "x"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: staleAfterDays=400",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: staleAfterDays must be a whole number from 0 to 365 (got '400')"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "staleAfterDays": "400"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Invalid input refused: excludePattern=(",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: excludePattern is not a valid extended regular expression"
+   ],
+   "outputNotContains": [
+    "checked:"
+   ],
+   "variables": {
+    "excludePattern": "("
+   }
+  },
+  {
+   "type": "command",
+   "label": "Hung daemon: a docker shim first on PATH that takes every command and never answers",
+   "run": "set -e; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; echo \"$real\" > /var/tmp/tc-docker-real; printf '%s\\n' '#!/bin/sh' '# tc-test-shim: takes the command and never answers' 'sleep 600' > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; echo 'hang shim installed'",
+   "outputContains": [
+    "hang shim installed"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Hung daemon, with a sibling process in the caller's process group: result inside 90 seconds, exit 1, nothing left running, the sibling untouched",
+   "run": "sleep 900 & sib=$!; tc-test-run; tc-test-left; kill -0 \"$sib\" && echo \"sibling $sib in the caller's process group still running\"; kill \"$sib\"",
+   "outputContains": [
+    "STATUS=Check could not run: Docker did not answer within 40 seconds",
+    "exit 1 after",
+    "result inside 90 seconds",
+    "no docker client or shim process left",
+    "in the caller's process group still running"
+   ],
+   "timeoutSeconds": 150
+  },
+  {
+   "type": "runComponent",
+   "label": "Hung daemon, as the harness runs it: exit 1, and the diagnostic says what was stopped",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: Docker did not answer within 40 seconds",
+    "docker info had not finished 40 seconds after this monitor started",
+    "nothing else was signalled"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Hung daemon: nothing left running after that run",
+   "run": "tc-test-left",
+   "outputContains": [
+    "no docker client or shim process left"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: a hung daemon",
+   "run": "tc-test-run --bash42; tc-test-left",
+   "outputContains": [
+    "Docker did not answer within 40 seconds",
+    "exit 1 after",
+    "result inside 90 seconds",
+    "under bash 4.2.0",
+    "no docker client or shim process left"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ],
+   "timeoutSeconds": 150
+  },
+  {
+   "type": "command",
+   "label": "Hung listing: a shim that passes docker info to Docker and never answers anything else",
+   "run": "real=$(cat /var/tmp/tc-docker-real); printf '%s\\n' '#!/bin/sh' '# tc-test-shim: docker info answers, nothing else does' \"[ \\\"\\$1\\\" = info ] && exec $real \\\"\\$@\\\"\" 'sleep 600' > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; docker info --format 'docker info still answers: {{.ServerVersion}}'",
+   "outputContains": [
+    "docker info still answers"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Hung listing: exit 1, and the diagnostic says it was the listing",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: Docker did not answer within 40 seconds",
+    "Listing the containers (docker ps, docker inspect) had not finished"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Unexpected exit: the monitor sent TERM 3 seconds into a run (the hang shim still in place): it prints the fallback result block and exits 1",
+   "run": "( sleep 3; pkill -TERM -f '[d]ocker-images-monitor-lin.sh' ) & tc-test-run; wait; tc-test-left",
+   "outputContains": [
+    "STATUS=Check could not run: the monitor stopped unexpectedly (exit 143)",
+    "exit 1 after",
+    "no docker client or shim process left"
+   ],
+   "timeoutSeconds": 150
+  },
+  {
+   "type": "command",
+   "label": "Shims removed: Docker answers again",
+   "run": "rm -f /usr/local/sbin/docker; hash -r; docker ps >/dev/null && echo 'docker ps answers again'",
+   "outputContains": [
+    "docker ps answers again"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Stopped Docker: a shim on PATH records any docker command; docker.service stopped while docker.socket keeps listening",
+   "run": "set -e; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; printf '%s\\n' '#!/bin/sh' '# tc-test-shim: records every docker command' 'echo \"$*\" >> /var/tmp/tc-docker-calls' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; : > /var/tmp/tc-docker-calls; tc-test-dstate before; systemctl stop docker.service 2>/dev/null; tc-test-dstate stopped; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"",
+   "outputContains": [
+    "before: systemctl is-active docker.service docker.socket -> active active",
+    "stopped: systemctl is-active docker.service docker.socket -> inactive active",
+    "docker commands run: 0"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Docker stopped: exit 0, says so, and runs no docker command",
+   "outputContains": [
+    "STATUS=Docker is stopped (docker.service is inactive); nothing to check"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: Docker stopped",
+   "run": "tc-test-run --bash42",
+   "outputContains": [
+    "STATUS=Docker is stopped (docker.service is inactive); nothing to check",
+    "exit 0 after",
+    "under bash 4.2.0"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Stopped Docker: still stopped, and no docker command was run; then Docker started again, and the containers with it",
+   "run": "tc-test-dstate after; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"; rm -f /usr/local/sbin/docker /var/tmp/tc-docker-calls; hash -r; systemctl start docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; docker start tc-cur tc-other >/dev/null; tc-test-dstate restarted",
+   "outputContains": [
+    "after: systemctl is-active docker.service docker.socket -> inactive active",
+    "docker commands run: 0",
+    "restarted: systemctl is-active docker.service docker.socket -> active active"
+   ],
+   "timeoutSeconds": 120
+  },
+  {
+   "type": "runComponent",
+   "label": "Docker answers again",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "No docker command, but Docker's socket is there: the client moved out of every PATH directory",
+   "run": "set -e; real=$(command -v docker); echo \"$real\" > /var/tmp/tc-docker-real; mv \"$real\" /var/tmp/tc-docker-cli.moved; hash -r; command -v docker || echo 'no docker command'; test -S /var/run/docker.sock && echo '/var/run/docker.sock is a socket'",
+   "outputContains": [
+    "no docker command",
+    "/var/run/docker.sock is a socket"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Socket present, no docker command: exit 1",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker appears to be installed but no docker command was found"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "PATH: the docker client in /snap/bin only, which the harness PATH does not reach and the monitor's appended PATH does",
+   "run": "set -e; mkdir -p /snap/bin; mv /var/tmp/tc-docker-cli.moved /snap/bin/docker; env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -c 'command -v docker || echo \"not on the harness PATH\"'",
+   "outputContains": [
+    "not on the harness PATH"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Docker only on the appended PATH: found, and the check runs as usual",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "PATH: the client put back where it was",
+   "run": "set -e; mv /snap/bin/docker \"$(cat /var/tmp/tc-docker-real)\"; rm -f /var/tmp/tc-docker-real; hash -r; docker ps --format '{{.Names}}' | sort | paste -sd' '",
+   "outputContains": [
+    "tc-cur tc-other"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Back to normal",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Behind: a new image pushed to tc-registry.test:5055/tc-test-cur:1, and the local tag put back on the old one, as on a host that has not pulled",
+   "run": "set -e; old=$(docker inspect -f '{{.Image}}' tc-cur); r=$(mktemp -d); mkdir -p $r/bin; cp /bin/sleep $r/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $r$(dirname $l); cp $l $r$l; done; tar -C $r -c . | docker import --change \"LABEL tc.nonce=new$(date +%s%N)\" - tc-registry.test:5055/tc-test-cur:1 >/dev/null; rm -rf $r; docker push -q tc-registry.test:5055/tc-test-cur:1 >/dev/null; docker tag \"$old\" tc-registry.test:5055/tc-test-cur:1; docker image inspect -f 'old image digests {{json .RepoDigests}}' \"$old\"",
+   "outputContains": [
+    "old image digests [\"tc-registry.test:5055/tc-test-cur@sha256:"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Behind, new image younger than minAgeDays (7): pending, exit 0",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 1 current, 0 pinned, 1 update(s) newer than 7d [0 cached, 2 queried]"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ],
+   "variables": {
+    "cacheHours": "0"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "Behind, minAgeDays 0: alerts, with both digests in the diagnostic",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=2 checked: 1 behind, 1 current, 0 pinned",
+    "Behind: tc-cur:1 (0d)",
+    "local digest    sha256:",
+    "registry digest sha256:"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ],
+   "variables": {
+    "cacheHours": "0",
+    "minAgeDays": "0"
+   }
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: behind",
+   "run": "tc-test-run --bash42 cacheHours=0 minAgeDays=0",
+   "outputContains": [
+    "Behind: tc-cur:1 (0d)",
+    "exit 1 after",
+    "under bash 4.2.0"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  }
+ ]
+}

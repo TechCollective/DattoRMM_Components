@@ -1,5 +1,6 @@
 #!/bin/bash
 # Docker - Container Images Behind Registry [Lin]
+# (saved in Datto as "Docker Images monitor [Lin]"; see the README)
 # Datto RMM custom monitor. Runs as root. Safe to assign to every Linux device.
 #
 # Walks every running container, compares its local image digest against the
@@ -12,7 +13,19 @@
 # checked, and a "pinned-looking" tag whose digest HAS moved (alpine3.19,
 # php8.3-fpm and friends) is correctly treated as behind.
 #
-# A host with no Docker exits 0 and says so, so blanket assignment is safe.
+# Before any docker command, and in this order:
+#   - no docker command (PATH plus the usual system directories)
+#       but /var/run/docker.sock is a socket or docker.service is loaded -> alert
+#       otherwise: Docker is not installed                              -> healthy
+#   - systemd says docker.service is not active: no docker command is run (any
+#     would start Docker again through docker.socket)                    -> healthy
+#   - docker info fails with no docker.service and no socket (a client only) -> healthy
+#   - docker info fails otherwise                                        -> alert
+# Every command that talks to the daemon is stopped if Docker has not answered
+# DOCKER_TIMEOUT seconds after the monitor started, and the check says Docker
+# did not answer. Registry lookups have their own per-lookup time limit
+# (inspectTimeout), and none runs past RUN_LIMIT seconds after the start; what
+# was not looked up by then falls back to the cache and is asked next run.
 #
 # REGISTRY LOAD is the main design constraint. Three things keep it low:
 #   1. A digest-only lookup is one cheap HEAD. The image build date, which
@@ -20,62 +33,334 @@
 #      for images that actually moved -- usually none.
 #   2. Results are cached on disk for cacheHours, so a monitor on a 15-minute
 #      schedule does not re-ask the registry 96 times a day for the same tags.
-#   3. The first HTTP 429 trips a circuit breaker: no further lookups are made
-#      this run, and everything unresolved falls back to cache. Being rate
-#      limited is reported, never alerted on.
+#   3. The first rate-limit answer (429 Too Many Requests, toomanyrequests)
+#      trips a circuit breaker: no further lookups are made this run, and
+#      everything unresolved falls back to cache.
+#
+# Being rate limited once is reported, not alerted. An image reference that has
+# had no successful registry answer for staleAfterDays days alerts, naming the
+# last error (rate limited, refused, not found, timeout, other) and since when:
+# that is how a broken registry login or permanent rate limiting surfaces.
 #
 # Registry access goes through `docker buildx imagetools inspect`, which does
 # the bearer-token handshake, reuses the host's existing docker login and
 # honours the daemon's proxy settings. This script handles no credentials.
 #
-# Sites with several Docker hosts behind one NAT share Docker Hub's anonymous
-# per-IP allowance. `docker login` as root with any free Docker account moves
-# the host to a per-account allowance and largely removes the 429s.
+# State: /var/lib/tc-docker-monitor/image-digests.tsv (see the shared block
+# below). Tab separated, one line per image reference:
+#   ref  digest  created  last-ok  error-kind  error-since
+# digest and created are "-" when unknown; last-ok is when the registry last
+# answered for this ref (0: never); error-kind is none, ratelimited, refused,
+# notfound, timeout or other; error-since is when the current run of errors
+# began (0 when error-kind is none). Lines written by version 1 (ref, digest,
+# created, checked) are read as a success at "checked". Any other line is
+# ignored and dropped.
 #
-# Input variables (all arrive as strings):
-#   minAgeDays      String  default 7   ignore an update until the new image is this many days old
-#   excludePattern  String  default ""  ERE matched against container names; matches are skipped
-#   inspectTimeout  String  default 20  seconds allowed per registry lookup
-#   maxParallel     String  default 3   concurrent registry lookups
-#   cacheHours      String  default 12  reuse a previous lookup for this long
+# Input variables (all arrive as strings; an invalid value is refused):
+#   minAgeDays      default 7   0-365  ignore an update until the new image is this many days old
+#   excludePattern  default ""         ERE matched against container names; matches are skipped
+#   inspectTimeout  default 20  10-60  seconds allowed per registry lookup
+#   maxParallel     default 3   1-8    concurrent registry lookups
+#   cacheHours      default 12  0-720  reuse a previous lookup for this long
+#   staleAfterDays  default 7   0-365  alert on a ref with no registry answer this long; 0 off
 
-PATH="$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/snap/bin"
-
-MIN_AGE="${minAgeDays:-7}"
-EXCLUDE="${excludePattern:-}"
-TIMEOUT="${inspectTimeout:-20}"
-MAXPAR="${maxParallel:-3}"
-CACHE_HOURS="${cacheHours:-12}"
-
-# Free-text numeric inputs are attacker-adjacent; validate rather than trust.
-[[ "$MIN_AGE"     =~ ^[0-9]+$ ]] || MIN_AGE=7
-[[ "$TIMEOUT"     =~ ^[0-9]+$ ]] || TIMEOUT=20
-[[ "$MAXPAR"      =~ ^[0-9]+$ ]] || MAXPAR=3
-[[ "$CACHE_HOURS" =~ ^[0-9]+$ ]] || CACHE_HOURS=12
-[ "$MAXPAR" -lt 1 ] && MAXPAR=1
-[ "$MAXPAR" -gt 8 ] && MAXPAR=8
-
+EMITTED=0
 DIAG=""
 diag() { DIAG="${DIAG}${1}"$'\n'; }
 
-emit_result() {
-    local msg="$1"
-    msg="${msg//$'\n'/ }"
+emit() {  # exit code, status line
+    local msg="$2"
+    msg="${msg//$'\r'/ }"; msg="${msg//$'\n'/ }"; msg="${msg//$'\t'/ }"
     [ "${#msg}" -gt 400 ] && msg="${msg:0:397}..."
     echo '<-Start Result->'
     echo "STATUS=${msg}"
     echo '<-End Result->'
+    EMITTED=1
+    if [ "$1" -ne 0 ] && [ -n "$DIAG" ]; then
+        echo '<-Start Diagnostic->'
+        printf '%s' "$DIAG"
+        echo '<-End Diagnostic->'
+    fi
+    exit "$1"
+}
+on_exit() {
+    local rc=$?
+    [ -n "${TMP:-}" ] && rm -rf -- "$TMP" 2>/dev/null
+    if [ "$EMITTED" -eq 0 ]; then
+        echo '<-Start Result->'
+        echo "STATUS=Check could not run: the monitor stopped unexpectedly (exit ${rc})"
+        echo '<-End Result->'
+        exit 1
+    fi
+}
+trap on_exit EXIT
+# A signal ends the run through the EXIT trap above, with the usual 128+N status.
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+
+# One PATH rule, whatever PATH the agent gives the script: the usual system
+# directories are appended (never prepended, so what the agent's PATH finds
+# first still wins).
+PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+export PATH
+
+DOCKER_SOCK="/var/run/docker.sock"
+# Every command that talks to the Docker daemon must have finished this many
+# seconds after the monitor started; whatever is still running then is stopped.
+DOCKER_TIMEOUT=40
+# No registry lookup runs past this many seconds after the start (plus the 5
+# seconds timeout(1) allows after TERM before KILL), so the result is out
+# inside 90 seconds on every path. The component's Datto timeout is 120.
+RUN_LIMIT=75
+STATE_NAME="image-digests.tsv"
+# A cache entry for an image no running container uses is dropped once nothing
+# has been recorded for it for this many days.
+STATE_KEEP_DAYS=90
+
+# ---------------------------------------------------------------- inputs
+
+trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
+
+MIN_AGE="$(trim "${minAgeDays-7}")";         [ -n "$MIN_AGE" ] || MIN_AGE=7
+EXCLUDE="$(trim "${excludePattern-}")"
+TIMEOUT="$(trim "${inspectTimeout-20}")";    [ -n "$TIMEOUT" ] || TIMEOUT=20
+MAXPAR="$(trim "${maxParallel-3}")";         [ -n "$MAXPAR" ] || MAXPAR=3
+CACHE_HOURS="$(trim "${cacheHours-12}")";    [ -n "$CACHE_HOURS" ] || CACHE_HOURS=12
+STALE_DAYS="$(trim "${staleAfterDays-7}")";  [ -n "$STALE_DAYS" ] || STALE_DAYS=7
+
+# A whole number from $3 to $4, at most 3 digits; a leading zero is decimal.
+check_num() {  # name value min max
+    local name="$1" v="$2"
+    [[ "$v" =~ ^[0-9]{1,3}$ ]] && [ $((10#$v)) -ge "$3" ] && [ $((10#$v)) -le "$4" ] \
+        || emit 1 "Check could not run: $name must be a whole number from $3 to $4 (got '$(printf '%s' "$v" | tr -cd '[:print:]' | cut -c1-40)')"
+}
+check_num minAgeDays "$MIN_AGE" 0 365;          MIN_AGE=$((10#$MIN_AGE))
+check_num inspectTimeout "$TIMEOUT" 10 60;      TIMEOUT=$((10#$TIMEOUT))
+check_num maxParallel "$MAXPAR" 1 8;            MAXPAR=$((10#$MAXPAR))
+check_num cacheHours "$CACHE_HOURS" 0 720;      CACHE_HOURS=$((10#$CACHE_HOURS))
+check_num staleAfterDays "$STALE_DAYS" 0 365;   STALE_DAYS=$((10#$STALE_DAYS))
+
+for t in awk grep sed sort cut tr date mktemp stat timeout xargs cksum; do
+    command -v "$t" >/dev/null 2>&1 || emit 1 "Check could not run: required tool '$t' is missing"
+done
+timeout -k 1 10 true >/dev/null 2>&1 \
+    || emit 1 "Check could not run: this host's timeout command does not take -k (GNU coreutils timeout is needed)"
+
+if [ -n "$EXCLUDE" ]; then
+    printf 'x' | grep -qE -- "$EXCLUDE" 2>/dev/null
+    [ $? -le 1 ] || emit 1 "Check could not run: excludePattern is not a valid extended regular expression"
+fi
+
+START="$(date +%s)"
+[[ "$START" =~ ^[0-9]+$ ]] || emit 1 "Check could not run: date +%s does not give the time in seconds"
+NOW="$START"
+DOCKER_DEADLINE=$(( START + DOCKER_TIMEOUT ))
+RUN_DEADLINE=$(( START + RUN_LIMIT ))
+
+# ---------------------------------------------------------------- bounded docker
+
+# Runs $1 (shell code) in a new bash under timeout(1), with the rest of the
+# arguments as $1..., and returns its exit status: 124 or 137 when it was still
+# running DOCKER_TIMEOUT seconds after the monitor started. timeout(1) puts the
+# command in a process group of its own, whose id is timeout's own pid, and
+# signals that group only (TERM; KILL 5 seconds later if its child is still
+# there). Once it has timed out, whatever is left in that group (a docker client
+# that ignored TERM after the bash above it died) is sent KILL here. Nothing
+# else is ever signalled: not the monitor's own process group, not its parent.
+bounded() {
+    local code=$1 left pid rc
+    shift
+    left=$(( DOCKER_DEADLINE - $(date +%s) ))
+    [ "$left" -ge 1 ] || left=1
+    timeout -k 5 "$left" "${BASH:-bash}" -c "$code" tc-docker-monitor "$@" &
+    pid=$!
+    wait "$pid"; rc=$?
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+        kill -KILL -- "-$pid" 2>/dev/null
+    fi
+    return "$rc"
+}
+systemd_up() { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; }
+docker_unit_loaded() {
+    systemd_up || return 1
+    [ "$(timeout -k 2 10 systemctl show docker.service -p LoadState 2>/dev/null)" = "LoadState=loaded" ]
+}
+docker_hung() {  # what was running
+    diag "$1 had not finished $DOCKER_TIMEOUT seconds after this monitor started, so it was stopped: timeout(1) sent TERM to the process group of the docker commands this run started, then anything left in that group was sent KILL; nothing else was signalled."
+    diag "A Docker daemon that accepts connections but does not answer is the usual cause. Look at dockerd: systemctl status docker; journalctl -u docker."
+    emit 1 "Check could not run: Docker did not answer within $DOCKER_TIMEOUT seconds"
 }
 
-emit_diag() {
-    [ -z "$DIAG" ] && return 0
-    echo '<-Start Diagnostic->'
-    printf '%s' "$DIAG"
-    echo '<-End Diagnostic->'
+# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# Whether the Docker daemon is running, found out without starting it. Where
+# systemd manages docker.service, systemd is asked, and no docker command is run
+# unless the service is active: on most installs docker.socket stays listening
+# while the service is stopped, and any docker command (docker info, docker ps)
+# would start Docker again, with every restart: always container. Elsewhere
+# docker info is asked. Returns 0 running and answering; 1 stopped (systemd says
+# docker.service is not active); 2 not answering (docker info failed). Sets
+# DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
+# options only, so systemd 219 understands them.
+DOCKER_STATE=""
+tc_docker_running() {
+    local load state
+    DOCKER_STATE=""
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        load="$(systemctl show docker.service -p LoadState 2>/dev/null)"
+        if [ "$load" = "LoadState=loaded" ] && ! systemctl is-active --quiet docker.service 2>/dev/null; then
+            state="$(systemctl is-active docker.service 2>/dev/null)"
+            DOCKER_STATE="docker.service is ${state:-not active}"
+            return 1
+        fi
+    fi
+    if ! "$DOCKER" info >/dev/null 2>&1; then
+        DOCKER_STATE="docker info did not answer"
+        return 2
+    fi
+    return 0
+}
+# <<< tc-docker running
+
+# >>> tc-docker monitor state: identical in the Health and Images monitors; change them together.
+# The state directory these monitors share. There is no other directory: no
+# fallback to /var/tmp, where another local user could have made the path first.
+# tc_state_dir uses it only if it is a real directory (not a symlink) owned by
+# root, creating it 0700 when it is missing and making it 0700 when it is not.
+# It sets STATE_DIR, or leaves STATE_DIR empty and sets STATE_WHY. Never fatal:
+# a monitor without its state directory runs without saved state and says so.
+# tc_state_read NAME prints the file only when it is a regular file (not a
+# symlink) owned by root; the caller keeps only the lines it can check.
+# tc_state_write NAME replaces the file with its stdin by renaming a new
+# root-only file into place, so a symlink there is replaced, never followed.
+# Needs GNU stat (-c) and mv (-T).
+TC_STATE_DIR=/var/lib/tc-docker-monitor
+STATE_DIR=""
+STATE_WHY=""
+tc_state_dir() {
+    local d="$TC_STATE_DIR"
+    STATE_DIR=""; STATE_WHY=""
+    if [ -L "$d" ]; then STATE_WHY="$d is a symlink"; return 1; fi
+    if [ ! -e "$d" ]; then
+        ( umask 077 && mkdir -m 700 -- "$d" ) 2>/dev/null
+    fi
+    if [ -L "$d" ] || [ ! -d "$d" ]; then STATE_WHY="$d is not a directory"; return 1; fi
+    if [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then STATE_WHY="$d is not owned by root"; return 1; fi
+    if [ "$(stat -c %a -- "$d" 2>/dev/null)" != "700" ] && ! chmod 700 -- "$d" 2>/dev/null; then
+        STATE_WHY="$d cannot be made 0700"; return 1
+    fi
+    STATE_DIR="$d"
+    return 0
+}
+tc_state_read() {
+    local f="$STATE_DIR/$1"
+    [ -n "$STATE_DIR" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ "$(stat -c %u -- "$f" 2>/dev/null)" = "0" ] || return 0
+    cat -- "$f" 2>/dev/null
+    return 0
+}
+tc_state_write() {
+    local f="$STATE_DIR/$1" tmp
+    [ -n "$STATE_DIR" ] || return 1
+    tmp="$(mktemp -- "$STATE_DIR/.$1.XXXXXX" 2>/dev/null)" || return 1
+    if ! cat > "$tmp" 2>/dev/null || ! chmod 600 -- "$tmp" 2>/dev/null || ! mv -fT -- "$tmp" "$f" 2>/dev/null; then
+        rm -f -- "$tmp" 2>/dev/null
+        return 1
+    fi
+    return 0
+}
+# <<< tc-docker monitor state
+
+# ------------------------------------------------------------------- pre-flight
+
+DOCKER="$(command -v docker 2>/dev/null || true)"
+if [ -z "$DOCKER" ]; then
+    seen=""
+    [ -S "$DOCKER_SOCK" ] && seen="$DOCKER_SOCK is a socket"
+    docker_unit_loaded && seen="${seen:+$seen and }docker.service is loaded"
+    if [ -n "$seen" ]; then
+        diag "No docker command was found in $PATH, but $seen, so Docker looks installed here. Find where its client went (a package removed only the CLI, a snap or a custom path) and put docker on one of those directories."
+        emit 1 "Docker appears to be installed but no docker command was found"
+    fi
+    emit 0 "Docker is not installed on this host; nothing to check"
+fi
+
+STATE="$(bounded "$(declare -f tc_docker_running)"$'\n''DOCKER=$1; tc_docker_running; rc=$?; printf "%s" "$DOCKER_STATE"; exit "$rc"' "$DOCKER")"
+case $? in
+    0) ;;
+    1) emit 0 "Docker is stopped (${STATE:-docker.service is not active}); nothing to check" ;;
+    2)  if [ ! -S "$DOCKER_SOCK" ] && ! docker_unit_loaded; then
+            emit 0 "Docker client installed ($DOCKER) but no Docker daemon on this host (no docker.service, no $DOCKER_SOCK); nothing to check"
+        fi
+        err="$(bounded '"$1" info 2>&1 >/dev/null' "$DOCKER")"
+        case $? in 124|137) docker_hung "docker info" ;; esac
+        diag "docker info said: $(printf '%s' "$err" | tail -n 2 | tr -cd '[:print:]\n' | cut -c1-300)"
+        emit 1 "Check could not run: cannot talk to the Docker daemon" ;;
+    124|137) docker_hung "docker info" ;;
+    *) emit 1 "Check could not run: asking whether Docker is running failed unexpectedly" ;;
+esac
+
+TMP="$(mktemp -d)" || emit 1 "Check could not run: cannot create a temporary directory"
+BREAKER="${TMP}/rate-limited"
+
+# ------------------------------------------------------- gather local state
+
+# One line per running container, tab separated:
+#   ok    name  ref  local-digest
+#   excl  name
+#   skip  name  reason
+# Exits 3 when docker ps fails. Run under bounded(), in a bash of its own.
+gather() {
+    local ids id cname ref imgid repo r loc
+    ids="$("$DOCKER" ps -q --no-trunc 2>/dev/null)" || exit 3
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        cname="$("$DOCKER" inspect -f '{{.Name}}' "$id" 2>/dev/null)"; cname="${cname#/}"
+        [ -n "$cname" ] || cname="${id:0:12}"
+        if [ -n "$EXCLUDE" ] && printf '%s\n' "$cname" | grep -qE -- "$EXCLUDE" 2>/dev/null; then
+            printf 'excl\t%s\n' "$cname"; continue
+        fi
+        ref="$("$DOCKER" inspect -f '{{.Config.Image}}' "$id" 2>/dev/null)"
+        imgid="$("$DOCKER" inspect -f '{{.Image}}' "$id" 2>/dev/null)"
+        if [ -z "$ref" ] || [[ "$ref" =~ ^(sha256:)?[0-9a-f]{12,}$ ]]; then
+            ref="$("$DOCKER" image inspect -f '{{index .RepoTags 0}}' "$imgid" 2>/dev/null)"
+        fi
+        if [ -z "$ref" ] || [ "$ref" = "<none>:<none>" ] || [[ ! "$ref" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]]; then
+            printf 'skip\t%s\tno image tag\n' "$cname"; continue
+        fi
+        r="${ref%%@*}"
+        case "${r##*/}" in *:*) repo="${r%:*}" ;; *) repo="$r" ;; esac
+        loc="$("$DOCKER" image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$imgid" 2>/dev/null \
+               | grep -F "${repo}@" | head -1 | cut -d@ -f2)"
+        if [[ ! "$loc" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            printf 'skip\t%s\tlocal image, not from a registry\n' "$cname"; continue
+        fi
+        printf 'ok\t%s\t%s\t%s\n' "$cname" "$ref" "$loc"
+    done <<< "$ids"
+    exit 0
 }
 
-ok()   { save_cache; emit_result "$1"; exit 0; }
-fail() { save_cache; emit_result "$1"; emit_diag; exit 1; }
+ROWS="$(bounded "$(declare -f gather)"$'\n''DOCKER=$1; EXCLUDE=$2; gather' "$DOCKER" "$EXCLUDE")"
+case $? in
+    0) ;;
+    3) emit 1 "Check could not run: Docker did not return its container list" ;;
+    124|137) docker_hung "Listing the containers (docker ps, docker inspect)" ;;
+    *) emit 1 "Check could not run: listing the containers failed unexpectedly" ;;
+esac
+
+[ -z "${ROWS//[[:space:]]/}" ] && emit 0 "Docker is installed but no containers are running"
+
+if ! timeout -k 2 10 "$DOCKER" buildx version >/dev/null 2>&1; then
+    emit 1 "Check could not run: docker buildx is missing; install the docker-buildx-plugin package on this host"
+fi
+
+NAMES=(); REFS=(); LOCALS=(); SKIPPED=(); EXCLUDED=0
+while IFS=$'\t' read -r kind a b c; do
+    case "$kind" in
+        ok)   NAMES+=("$a"); REFS+=("$b"); LOCALS+=("$c") ;;
+        excl) EXCLUDED=$((EXCLUDED + 1)) ;;
+        skip) SKIPPED+=("$a ($b)") ;;
+    esac
+done <<< "$ROWS"
+
+TOTAL=$(( ${#NAMES[@]} + ${#SKIPPED[@]} + EXCLUDED ))
 
 join() {
     local sep="$1"; shift
@@ -84,35 +369,63 @@ join() {
     for i in "$@"; do out="${out}${sep}${i}"; done
     printf '%s' "$out"
 }
-
-strip_tag() {
-    local r="${1%%@*}"
-    case "${r##*/}" in *:*) printf '%s' "${r%:*}" ;; *) printf '%s' "$r" ;; esac
-}
 image_tag() {
     local r="${1%%@*}"
     case "${r##*/}" in *:*) printf '%s' "${r##*:}" ;; *) printf 'latest' ;; esac
 }
+day() { date -u -d "@$1" +%Y-%m-%d 2>/dev/null || printf '%s' "$1"; }
 
-# ---------------------------------------------------------------------- cache
+# ---------------------------------------------------------------------- state
 
-# ref <TAB> digest <TAB> created <TAB> epoch-checked
-CACHE=""
-NEWCACHE=""
-CACHE_FILE=""
+tc_state_dir
+declare -A S_DIG=() S_CRE=() S_OK=() S_ERR=() S_SINCE=()
+S_ORDER=()
+while IFS=$'\t' read -r -a f; do
+    n=${#f[@]}
+    r="${f[0]:-}"
+    [[ "$r" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]] || continue
+    [ -z "${S_OK[$r]+x}" ] || continue                       # first line per ref wins
+    if [ "$n" -eq 4 ]; then                                  # version 1: ref digest created checked
+        f=("$r" "${f[1]}" "${f[2]:--}" "${f[3]}" none 0)
+    elif [ "$n" -eq 3 ]; then                                # version 1 with no created date
+        f=("$r" "${f[1]}" - "${f[2]}" none 0)
+    elif [ "$n" -ne 6 ]; then
+        continue
+    fi
+    [[ "${f[1]}" =~ ^(sha256:[0-9a-f]{64}|-)$ ]] || continue
+    [[ "${f[2]}" =~ ^(-|[0-9][0-9TZ:.+-]{0,39})$ ]] || continue
+    [[ "${f[3]}" =~ ^[0-9]{1,12}$ ]] && [[ "${f[5]}" =~ ^[0-9]{1,12}$ ]] || continue
+    [ "${f[3]}" -le $((NOW + 3600)) ] && [ "${f[5]}" -le $((NOW + 3600)) ] || continue
+    case "${f[4]}" in none|ratelimited|refused|notfound|timeout|other) ;; *) continue ;; esac
+    [ "${f[4]}" = none ] && f[5]=0
+    S_DIG[$r]="${f[1]}"; S_CRE[$r]="${f[2]}"; S_OK[$r]="${f[3]}"; S_ERR[$r]="${f[4]}"; S_SINCE[$r]="${f[5]}"
+    S_ORDER+=("$r")
+done < <(tc_state_read "$STATE_NAME")
 
-init_cache() {
-    local d
-    for d in /var/lib/tc-docker-monitor /var/tmp/tc-docker-monitor; do
-        if mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; then
-            CACHE_FILE="${d}/image-digests.tsv"
-            break
-        fi
-    done
-    [ -z "$CACHE_FILE" ] && return 0
-    [ -r "$CACHE_FILE" ] && CACHE=$(cat "$CACHE_FILE" 2>/dev/null)
-    return 0
+STATE_NOTE=""
+[ -z "$STATE_DIR" ] && STATE_NOTE="; no saved state ($STATE_WHY), so nothing is cached and lookup failures are not tracked over time"
+
+save_state() {
+    [ -n "$STATE_DIR" ] || return 0
+    local r newest
+    declare -A wrote=()
+    {
+        for r in "${UNIQ[@]}" "${S_ORDER[@]}"; do
+            [ -n "$r" ] && [ -n "${S_OK[$r]+x}" ] && [ -z "${wrote[$r]+x}" ] || continue
+            wrote[$r]=1
+            if [ -z "${IN_USE[$r]+x}" ]; then
+                newest="${S_OK[$r]}"; [ "${S_SINCE[$r]}" -gt "$newest" ] && newest="${S_SINCE[$r]}"
+                [ $(( NOW - newest )) -lt $(( STATE_KEEP_DAYS * 86400 )) ] || continue
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "${S_DIG[$r]}" "${S_CRE[$r]}" "${S_OK[$r]}" "${S_ERR[$r]}" "${S_SINCE[$r]}"
+        done
+    } | tc_state_write "$STATE_NAME" || STATE_NOTE="; saved state could not be written to $STATE_DIR"
 }
+
+if [ "${#NAMES[@]}" -eq 0 ]; then
+    emit 0 "$(printf '%d container(s) running, none checkable (%d excluded, %d without a registry image)' \
+        "$TOTAL" "$EXCLUDED" "${#SKIPPED[@]}")${STATE_NOTE}"
+fi
 
 # A long TTL means every host refreshes in one burst. Hosts built from the same
 # image would then all refresh together and hammer the site's shared NAT address,
@@ -125,260 +438,188 @@ if [ "$CACHE_HOURS" -ge 24 ]; then
 fi
 TTL=$(( CACHE_HOURS * 3600 - JITTER ))
 
-# Prints the cached line for $1 if it is younger than the effective TTL.
-cache_fresh() {
-    local line age
-    line=$(awk -F'\t' -v r="$1" '$1==r {print; exit}' <<< "$CACHE")
-    [ -z "$line" ] && return 1
-    age=$(printf '%s' "$line" | cut -f4)
-    [[ "$age" =~ ^[0-9]+$ ]] || return 1
-    [ $(( NOW - age )) -lt "$TTL" ] || return 1
-    printf '%s' "$line"
-}
-
-cache_any() {  # cached line regardless of age, for fallback when rate limited
-    awk -F'\t' -v r="$1" '$1==r {print; exit}' <<< "$CACHE"
-}
-
-save_cache() {
-    [ -z "$CACHE_FILE" ] && return 0
-    [ -z "$NEWCACHE" ] && return 0
-    # Keep this run's entries, plus any older entry for a ref we did not revisit.
-    {
-        printf '%s\n' "$NEWCACHE"
-        awk -F'\t' 'NR==FNR {seen[$1]; next} !($1 in seen)' \
-            <(printf '%s\n' "$NEWCACHE") <(printf '%s\n' "$CACHE")
-    } | grep -v '^$' > "${CACHE_FILE}.tmp" 2>/dev/null && \
-        mv -f "${CACHE_FILE}.tmp" "$CACHE_FILE" 2>/dev/null
-    chmod 600 "$CACHE_FILE" 2>/dev/null
-    return 0
-}
-
-# ------------------------------------------------------------------- pre-flight
-
-NOW=$(date +%s)
-
-# Not a Docker host. Nothing to watch, nothing wrong -- this is why the monitor
-# can be assigned to the whole Linux estate.
-command -v docker >/dev/null 2>&1 || ok "Docker is not installed on this host; nothing to check"
-
-if ! PS_OUT=$(docker ps --no-trunc --format '{{.ID}}' 2>&1); then
-    diag "docker ps said: ${PS_OUT}"
-    fail "Check could not run: cannot talk to the Docker daemon"
-fi
-
-[ -z "${PS_OUT//[[:space:]]/}" ] && ok "Docker is installed but no containers are running"
-
-docker buildx version >/dev/null 2>&1 || \
-    fail "Check could not run: docker buildx is missing; install the docker-buildx-plugin package on this host"
-
-TMP=$(mktemp -d) || fail "Check could not run: cannot create a temporary directory"
-trap 'rm -rf "$TMP"' EXIT
-BREAKER="${TMP}/rate-limited"
-
-init_cache
-
-# ------------------------------------------------------- gather local state
-
-CIDS=(); NAMES=(); REFS=(); LOCALS=()
-SKIPPED=(); EXCLUDED=0
-
-while read -r CID; do
-    [ -z "$CID" ] && continue
-
-    CNAME=$(docker inspect -f '{{.Name}}' "$CID" 2>/dev/null); CNAME="${CNAME#/}"
-    [ -z "$CNAME" ] && CNAME="${CID:0:12}"
-
-    if [ -n "$EXCLUDE" ] && printf '%s' "$CNAME" | grep -qE "$EXCLUDE"; then
-        EXCLUDED=$((EXCLUDED + 1))
-        continue
-    fi
-
-    REF=$(docker inspect -f '{{.Config.Image}}' "$CID" 2>/dev/null)
-    IMGID=$(docker inspect -f '{{.Image}}' "$CID" 2>/dev/null)
-
-    if [ -z "$REF" ] || [[ "$REF" =~ ^(sha256:)?[0-9a-f]{12,}$ ]]; then
-        REF=$(docker image inspect -f '{{index .RepoTags 0}}' "$IMGID" 2>/dev/null)
-    fi
-    if [ -z "$REF" ] || [ "$REF" = "<none>:<none>" ]; then
-        SKIPPED+=("${CNAME} (no image tag)")
-        continue
-    fi
-
-    REPO=$(strip_tag "$REF")
-    LOCAL=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$IMGID" 2>/dev/null \
-            | grep -F "${REPO}@" | head -1 | cut -d@ -f2)
-
-    if [ -z "$LOCAL" ]; then
-        SKIPPED+=("${CNAME} (local image, not from a registry)")
-        continue
-    fi
-
-    CIDS+=("$CID"); NAMES+=("$CNAME"); REFS+=("$REF"); LOCALS+=("$LOCAL")
-done <<< "$PS_OUT"
-
-TOTAL=$(( ${#CIDS[@]} + ${#SKIPPED[@]} + EXCLUDED ))
-
-if [ "${#CIDS[@]}" -eq 0 ]; then
-    ok "$(printf '%d container(s) running, none checkable (%d excluded, %d without a registry image)' \
-        "$TOTAL" "$EXCLUDED" "${#SKIPPED[@]}")"
-fi
+mapfile -t UNIQ < <(printf '%s\n' "${REFS[@]}" | sort -u)
+declare -A IN_USE=()
+for r in "${UNIQ[@]}"; do IN_USE[$r]=1; done
 
 # --------------------------------------------- phase 1: digests, cheap and cached
 
-mapfile -t UNIQ < <(printf '%s\n' "${REFS[@]}" | sort -u)
-
-RESULTS=""
-CACHED=0; QUERIED=0
+# R_DIG: the digest used for this run's comparison; R_SRC: where it came from
+# (cached, queried, stale) or why there is none (ratelimit, deferred, err).
+declare -A R_DIG=() R_CRE=() R_SRC=() R_MSG=()
+CACHED=0; QUERIED=0; TIMED_OUT_RUN=0
 
 TO_QUERY=()
-for ref in "${UNIQ[@]}"; do
-    if line=$(cache_fresh "$ref"); then
-        RESULTS="${RESULTS}${line}"$'\n'
+for r in "${UNIQ[@]}"; do
+    if [[ "${S_DIG[$r]:-}" == sha256:* ]] && [ "${S_ERR[$r]}" = none ] && [ $(( NOW - S_OK[$r] )) -lt "$TTL" ]; then
+        R_DIG[$r]="${S_DIG[$r]}"; R_CRE[$r]="${S_CRE[$r]}"; R_SRC[$r]=cached
         CACHED=$((CACHED + 1))
     else
-        TO_QUERY+=("$ref")
+        TO_QUERY+=("$r")
     fi
 done
+
+# Runs one registry lookup with its own time limit (the smaller of
+# inspectTimeout and what is left of RUN_LIMIT), in a process group of its
+# own that is killed if the lookup times out. Prints its output; returns its
+# exit status (124 or 137: timed out).
+reg_inspect() {  # seconds, format, ref
+    local pid rc
+    timeout -k 5 "$1" "$DOCKER" buildx imagetools inspect --format "$2" "$3" </dev/null 2>&1 &
+    pid=$!
+    wait "$pid"; rc=$?
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then kill -KILL -- "-$pid" 2>/dev/null; fi
+    return "$rc"
+}
+# Kind of a failed lookup: ratelimited, refused, notfound, timeout or other.
+# Only the registry's rate-limit words count as a rate limit, not the digits
+# 429 anywhere in the text (a port, an address, a digest).
+err_kind() {  # rc, output
+    if [ "$1" -eq 124 ] || [ "$1" -eq 137 ]; then echo timeout
+    elif printf '%s\n' "$2" | grep -qiF -e '429 Too Many Requests' -e 'toomanyrequests'; then echo ratelimited
+    elif printf '%s\n' "$2" | grep -qiE '401 Unauthorized|403 Forbidden|unauthorized|denied|no basic auth credentials|authentication required'; then echo refused
+    elif printf '%s\n' "$2" | grep -qiE 'manifest unknown|no such manifest|name unknown|404 Not Found|: not found'; then echo notfound
+    else echo other
+    fi
+}
+last_line() { printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | tail -n 1 | tr -cd '[:print:]' | cut -c1-160; }
 
 # Digest only. This is a single HEAD against the manifest -- asking for the
 # image config here is what makes a sweep expensive, so it is deferred.
-lookup_digest() {
-    local ref="$1" out="$2" raw digest
-    [ -e "$BREAKER" ] && { printf '%s\tSKIP\trate limited earlier this run\n' "$ref" > "$out"; return; }
-    raw=$(timeout "$TIMEOUT" docker buildx imagetools inspect \
-          --format '{{.Manifest.Digest}}' "$ref" 2>&1)
-    digest=$(printf '%s' "$raw" | grep -oE 'sha256:[0-9a-f]{64}' | head -1)
-    if [ -n "$digest" ]; then
-        printf '%s\t%s\t\t%s\n' "$ref" "$digest" "$NOW" > "$out"
-        return
+lookup_digest() {  # ref, out file, seconds
+    local ref="$1" out="$2" raw rc digest kind
+    [ -e "$BREAKER" ] && { printf '%s\tSKIP\n' "$ref" > "$out"; return; }
+    raw="$(reg_inspect "$3" '{{.Manifest.Digest}}' "$ref")"; rc=$?
+    digest="$(printf '%s' "$raw" | grep -oE 'sha256:[0-9a-f]{64}' | head -1)"
+    if [ "$rc" -eq 0 ] && [ -n "$digest" ]; then
+        printf '%s\t%s\n' "$ref" "$digest" > "$out"; return
     fi
-    case "$raw" in
-        *429*|*"Too Many Requests"*|*"toomanyrequests"*)
-            : > "$BREAKER"
-            printf '%s\tRATELIMIT\t%s\n' "$ref" "$(printf '%s' "$raw" | tr '\n\t' '  ' | cut -c1-160)" > "$out"
-            ;;
-        *)
-            printf '%s\tERR\t%s\n' "$ref" "$(printf '%s' "$raw" | tr '\n\t' '  ' | cut -c1-160)" > "$out"
-            ;;
-    esac
+    kind="$(err_kind "$rc" "$raw")"
+    [ "$kind" = ratelimited ] && : > "$BREAKER"
+    printf '%s\tERR\t%s\t%s\n' "$ref" "$kind" "$(last_line "$raw")" > "$out"
+}
+
+# Time left for one more lookup, or nothing when too little is left.
+lookup_secs() {
+    local left=$(( RUN_DEADLINE - $(date +%s) ))
+    [ "$left" -ge 5 ] || return 1
+    [ "$left" -gt "$TIMEOUT" ] && left="$TIMEOUT"
+    printf '%s' "$left"
 }
 
 n=0
-for ref in "${TO_QUERY[@]}"; do
+for r in "${TO_QUERY[@]}"; do
     [ -e "$BREAKER" ] && break
     while [ "$(jobs -rp | wc -l)" -ge "$MAXPAR" ]; do sleep 0.2; done
-    n=$((n + 1))
-    QUERIED=$((QUERIED + 1))
-    lookup_digest "$ref" "${TMP}/d${n}" &
+    [ -e "$BREAKER" ] && break
+    secs="$(lookup_secs)" || { TIMED_OUT_RUN=1; break; }
+    n=$((n + 1)); QUERIED=$((QUERIED + 1))
+    lookup_digest "$r" "${TMP}/d${n}" "$secs" &
 done
 wait
 
-[ "$n" -gt 0 ] && RESULTS="${RESULTS}$(cat "${TMP}"/d* 2>/dev/null)"$'\n'
-
-# Rate limited or cut short by the breaker: a stale answer beats no answer, so
-# fall back to whatever we knew before. Only refs we have never resolved are
-# reported as deferred.
-STALE=0
-FILLED=""
-for ref in "${UNIQ[@]}"; do
-    cur=$(awk -F'\t' -v r="$ref" '$1==r {print $2; exit}' <<< "$RESULTS")
-    case "$cur" in
-        sha256:*) continue ;;                       # already have a real answer
-        ERR)      continue ;;                       # a real failure, not a rate limit
+declare -A ATTEMPT=()
+for ((i = 1; i <= n; i++)); do
+    IFS=$'\t' read -r r what kind msg < "${TMP}/d${i}" 2>/dev/null || continue
+    [ -n "$r" ] || continue
+    case "$what" in
+        sha256:*)
+            ATTEMPT[$r]=ok; R_DIG[$r]="$what"; R_SRC[$r]=queried
+            [ "${S_DIG[$r]:-}" = "$what" ] && [ "${S_CRE[$r]:--}" != "-" ] && R_CRE[$r]="${S_CRE[$r]}"
+            S_DIG[$r]="$what"; S_OK[$r]="$NOW"; S_ERR[$r]=none; S_SINCE[$r]=0
+            [ -n "${R_CRE[$r]:-}" ] || S_CRE[$r]="-"
+            ;;
+        ERR)
+            ATTEMPT[$r]="$kind"; R_MSG[$r]="$msg"
+            if [ -z "${S_OK[$r]+x}" ]; then S_DIG[$r]="-"; S_CRE[$r]="-"; S_OK[$r]=0; S_ERR[$r]=none; S_SINCE[$r]=0; fi
+            if [ "${S_ERR[$r]}" = none ]; then S_SINCE[$r]="$NOW"; fi
+            S_ERR[$r]="$kind"
+            ;;
     esac
-    old=$(cache_any "$ref")
-    if [ -n "$old" ] && [[ "$(printf '%s' "$old" | cut -f2)" == sha256:* ]]; then
-        FILLED="${FILLED}${old}"$'\n'
+done
+
+# No answer this run (rate limited, cut short by the breaker or the time limit):
+# a stale answer beats no answer, so fall back to whatever we knew before. A
+# lookup that failed for another reason is a real failure: unreadable, as before.
+STALE=0
+for r in "${UNIQ[@]}"; do
+    [ -n "${R_SRC[$r]:-}" ] && continue
+    a="${ATTEMPT[$r]:-}"
+    if [ -n "$a" ] && [ "$a" != ratelimited ]; then R_SRC[$r]=err; continue; fi
+    if [[ "${S_DIG[$r]:-}" == sha256:* ]]; then
+        R_DIG[$r]="${S_DIG[$r]}"; R_CRE[$r]="${S_CRE[$r]}"; R_SRC[$r]=stale
         STALE=$((STALE + 1))
-    elif [ -z "$cur" ]; then
-        FILLED="${FILLED}${ref}"$'\tRATELIMIT\tnot attempted; rate limited earlier this run\n'
+    elif [ "$a" = ratelimited ] || [ -e "$BREAKER" ]; then
+        R_SRC[$r]=ratelimit
+    else
+        R_SRC[$r]=deferred
     fi
 done
-if [ -n "$FILLED" ]; then
-    # Drop the placeholder lines the fallback supersedes, then append.
-    RESULTS=$(awk -F'\t' 'NR==FNR {rep[$1]; next} !($1 in rep)' \
-        <(printf '%s' "$FILLED") <(printf '%s' "$RESULTS"))$'\n'"${FILLED}"
-fi
 
 # --------------------------------- phase 2: build dates, only for images that moved
 
-# Which unique refs actually differ from the local digest of a container using them?
 MOVERS=()
-for ref in "${UNIQ[@]}"; do
-    remote=$(awk -F'\t' -v r="$ref" '$1==r {print $2; exit}' <<< "$RESULTS")
-    case "$remote" in ""|ERR|RATELIMIT|SKIP) continue ;; esac
-    have=$(awk -F'\t' -v r="$ref" '$1==r {print $3; exit}' <<< "$RESULTS")
-    [ -n "$have" ] && continue          # created date already known from cache
+for r in "${UNIQ[@]}"; do
+    [ -n "${R_DIG[$r]:-}" ] || continue
+    [ "${R_CRE[$r]:--}" = "-" ] || continue          # created date already known
     for i in "${!REFS[@]}"; do
-        if [ "${REFS[$i]}" = "$ref" ] && [ "${LOCALS[$i]}" != "$remote" ]; then
-            MOVERS+=("$ref"); break
+        if [ "${REFS[$i]}" = "$r" ] && [ "${LOCALS[$i]}" != "${R_DIG[$r]}" ]; then
+            MOVERS+=("$r"); break
         fi
     done
 done
 
-lookup_created() {
-    local ref="$1" out="$2" raw created
+lookup_created() {  # ref, out file, seconds
+    local ref="$1" out="$2" raw rc created
     [ -e "$BREAKER" ] && { : > "$out"; return; }
-    raw=$(timeout "$TIMEOUT" docker buildx imagetools inspect \
-          --format '{{json .Image}}' "$ref" 2>&1)
-    case "$raw" in *429*|*"Too Many Requests"*|*"toomanyrequests"*) : > "$BREAKER"; : > "$out"; return ;; esac
+    raw="$(reg_inspect "$3" '{{json .Image}}' "$ref")"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+        [ "$(err_kind "$rc" "$raw")" = ratelimited ] && : > "$BREAKER"
+        : > "$out"; return
+    fi
     # .Image is a map keyed by platform on multi-arch images and a bare config
     # on single-arch ones; the first "created" is right in both shapes.
-    created=$(printf '%s' "$raw" | grep -oE '"created"[[:space:]]*:[[:space:]]*"[^"]+"' \
-              | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    created="$(printf '%s' "$raw" | grep -oE '"created"[[:space:]]*:[[:space:]]*"[^"]+"' \
+              | head -1 | sed 's/.*"\([^"]*\)"$/\1/')"
+    [[ "$created" =~ ^[0-9][0-9TZ:.+-]{0,39}$ ]] || created=""
     printf '%s\t%s\n' "$ref" "$created" > "$out"
 }
 
 m=0
-for ref in "${MOVERS[@]}"; do
+for r in "${MOVERS[@]}"; do
     [ -e "$BREAKER" ] && break
     while [ "$(jobs -rp | wc -l)" -ge "$MAXPAR" ]; do sleep 0.2; done
+    [ -e "$BREAKER" ] && break
+    secs="$(lookup_secs)" || { TIMED_OUT_RUN=1; break; }
     m=$((m + 1))
-    lookup_created "$ref" "${TMP}/c${m}" &
+    lookup_created "$r" "${TMP}/c${m}" "$secs" &
 done
 wait
+for ((i = 1; i <= m; i++)); do
+    IFS=$'\t' read -r r c < "${TMP}/c${i}" 2>/dev/null || continue
+    [ -n "$r" ] && [ -n "$c" ] || continue
+    R_CRE[$r]="$c"
+    [ "${S_DIG[$r]:-}" = "${R_DIG[$r]}" ] && S_CRE[$r]="$c"
+done
 
-if [ "$m" -gt 0 ]; then
-    CREATED_MAP=$(cat "${TMP}"/c* 2>/dev/null)
-    MERGED=""
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        r=$(printf '%s' "$line" | cut -f1)
-        c=$(awk -F'\t' -v r="$r" '$1==r {print $2; exit}' <<< "$CREATED_MAP")
-        if [ -n "$c" ]; then
-            MERGED="${MERGED}$(printf '%s\t%s\t%s\t%s' \
-                "$r" "$(printf '%s' "$line" | cut -f2)" "$c" "$(printf '%s' "$line" | cut -f4)")"$'\n'
-        else
-            MERGED="${MERGED}${line}"$'\n'
-        fi
-    done <<< "$RESULTS"
-    RESULTS="$MERGED"
-fi
-
-# Only real answers go in the cache; errors and rate limits must not be sticky.
-NEWCACHE=$(awk -F'\t' '$2 ~ /^sha256:/ {print}' <<< "$RESULTS")
+save_state
 
 # ------------------------------------------------------------------ classify
 
-BEHIND=(); PENDING=(); CURRENT=(); PINNED=(); UNCHECKED=(); RATELIMITED=()
+BEHIND=(); PENDING=(); CURRENT=(); PINNED=(); UNCHECKED=(); RATELIMITED=(); DEFERRED=()
 
-for i in "${!CIDS[@]}"; do
+for i in "${!NAMES[@]}"; do
     CNAME="${NAMES[$i]}"; REF="${REFS[$i]}"; LOCAL="${LOCALS[$i]}"
-    TAG=$(image_tag "$REF")
+    TAG="$(image_tag "$REF")"
+    REMOTE="${R_DIG[$REF]:-}"; CREATED="${R_CRE[$REF]:-}"; [ "$CREATED" = "-" ] && CREATED=""
 
-    LINE=$(awk -F'\t' -v r="$REF" '$1==r {print; exit}' <<< "$RESULTS")
-    REMOTE=$(printf '%s' "$LINE" | cut -f2)
-    CREATED=$(printf '%s' "$LINE" | cut -f3)
-
-    case "$REMOTE" in
-        RATELIMIT|SKIP)
-            RATELIMITED+=("${CNAME}")
-            continue ;;
-        ""|ERR)
-            UNCHECKED+=("${CNAME}")
-            diag "${CNAME} (${REF}): registry lookup failed"
-            diag "  ${CREATED:-no detail}"
+    case "${R_SRC[$REF]}" in
+        ratelimit) RATELIMITED+=("$CNAME"); continue ;;
+        deferred)  DEFERRED+=("$CNAME"); continue ;;
+        err)
+            UNCHECKED+=("$CNAME")
+            diag "${CNAME} (${REF}): registry lookup failed (${ATTEMPT[$REF]})"
+            diag "  ${R_MSG[$REF]:-no detail}"
             continue ;;
     esac
 
@@ -393,7 +634,7 @@ for i in "${!CIDS[@]}"; do
 
     AGE_DAYS=""
     if [ -n "$CREATED" ]; then
-        BUILT=$(date -d "$CREATED" +%s 2>/dev/null)
+        BUILT="$(date -d "$CREATED" +%s 2>/dev/null)"
         [ -n "$BUILT" ] && [ "$BUILT" -gt 0 ] && AGE_DAYS=$(( (NOW - BUILT) / 86400 ))
     fi
 
@@ -412,31 +653,60 @@ for i in "${!CIDS[@]}"; do
     diag ""
 done
 
+# A reference with no successful registry answer for staleAfterDays days.
+kind_text() {
+    case "$1" in
+        ratelimited) echo "rate limited" ;; refused) echo "refused" ;; notfound) echo "not found" ;;
+        timeout) echo "timeout" ;; *) echo "other error" ;;
+    esac
+}
+STALE_REFS=()
+if [ "$STALE_DAYS" -gt 0 ] && [ -n "$STATE_DIR" ]; then
+    for r in "${UNIQ[@]}"; do
+        [ -n "${S_ERR[$r]:-}" ] && [ "${S_ERR[$r]}" != none ] || continue
+        if [ "${S_OK[$r]}" -gt 0 ]; then base="${S_OK[$r]}"; since="no registry answer since $(day "${S_OK[$r]}")"
+        else base="${S_SINCE[$r]}"; since="failing since $(day "${S_SINCE[$r]}"), never answered"; fi
+        [ $(( NOW - base )) -ge $(( STALE_DAYS * 86400 )) ] || continue
+        STALE_REFS+=("${r} ($(kind_text "${S_ERR[$r]}"), ${since})")
+        diag "${r}: no successful registry answer for $(( (NOW - base) / 86400 )) days (staleAfterDays ${STALE_DAYS})"
+        diag "  last error: $(kind_text "${S_ERR[$r]}"), errors since $(day "${S_SINCE[$r]}")${R_MSG[$r]:+: ${R_MSG[$r]}}"
+        diag "  Refused: check root's docker login on this host. Rate limited: docker login as root moves the host to a per-account allowance."
+        diag ""
+    done
+fi
+
 # ---------------------------------------------------------------------- verdict
 
 SUMMARY=$(printf '%d checked: %d behind, %d current, %d pinned' \
-    "${#CIDS[@]}" "${#BEHIND[@]}" "${#CURRENT[@]}" "${#PINNED[@]}")
+    "${#NAMES[@]}" "${#BEHIND[@]}" "${#CURRENT[@]}" "${#PINNED[@]}")
 [ "${#PENDING[@]}"     -gt 0 ] && SUMMARY="${SUMMARY}, ${#PENDING[@]} update(s) newer than ${MIN_AGE}d"
 [ "${#RATELIMITED[@]}" -gt 0 ] && SUMMARY="${SUMMARY}, ${#RATELIMITED[@]} deferred (registry rate limit)"
+[ "${#DEFERRED[@]}"    -gt 0 ] && SUMMARY="${SUMMARY}, ${#DEFERRED[@]} deferred (time limit)"
 [ "${#UNCHECKED[@]}"   -gt 0 ] && SUMMARY="${SUMMARY}, ${#UNCHECKED[@]} unreadable"
 [ "$EXCLUDED"          -gt 0 ] && SUMMARY="${SUMMARY}, ${EXCLUDED} excluded"
 [ "${#SKIPPED[@]}"     -gt 0 ] && SUMMARY="${SUMMARY}, ${#SKIPPED[@]} not from a registry"
 SUMMARY="${SUMMARY} [${CACHED} cached, ${QUERIED} queried"
 [ "$STALE" -gt 0 ] && SUMMARY="${SUMMARY}, ${STALE} from stale cache"
-SUMMARY="${SUMMARY}]"
+[ -e "$BREAKER" ] && SUMMARY="${SUMMARY}, rate limited"
+[ "$TIMED_OUT_RUN" -eq 1 ] && SUMMARY="${SUMMARY}, time limit reached"
+SUMMARY="${SUMMARY}]${STATE_NOTE}"
 
+ALERT=""
+if [ "${#STALE_REFS[@]}" -gt 0 ]; then
+    ALERT="No registry answer for ${STALE_DAYS}+ days: $(join '; ' "${STALE_REFS[@]}")"
+fi
 if [ "${#BEHIND[@]}" -gt 0 ]; then
     [ "${#PINNED[@]}"      -gt 0 ] && diag "Pinned, no update path: $(join ', ' "${PINNED[@]}")"
     [ "${#PENDING[@]}"     -gt 0 ] && diag "Update available but younger than ${MIN_AGE} days: $(join ', ' "${PENDING[@]}")"
     [ "${#RATELIMITED[@]}" -gt 0 ] && diag "Deferred to the next run, registry rate limit: $(join ', ' "${RATELIMITED[@]}")"
     [ "${#SKIPPED[@]}"     -gt 0 ] && diag "Not checked: $(join ', ' "${SKIPPED[@]}")"
-    fail "$(printf '%s. Behind: %s' "$SUMMARY" "$(join ', ' "${BEHIND[@]}")")"
+    emit 1 "$(printf '%s. Behind: %s' "$SUMMARY" "$(join ', ' "${BEHIND[@]}")")${ALERT:+. $ALERT}"
 fi
+[ -n "$ALERT" ] && emit 1 "${SUMMARY}. ${ALERT}"
 
-# Rate limiting is a registry telling us to slow down, not a fault on this host.
 # Only a genuine total failure to read anything counts as the check not running.
-if [ "${#UNCHECKED[@]}" -gt 0 ] && [ "${#UNCHECKED[@]}" -eq "${#CIDS[@]}" ]; then
-    fail "Check could not run: no image could be read from any registry (${#CIDS[@]} attempted)"
+if [ "${#UNCHECKED[@]}" -gt 0 ] && [ "${#UNCHECKED[@]}" -eq "${#NAMES[@]}" ]; then
+    emit 1 "Check could not run: no image could be read from any registry (${#NAMES[@]} attempted)"
 fi
 
-ok "$SUMMARY"
+emit 0 "$SUMMARY"

@@ -5,8 +5,8 @@
     "description": "Alerts when a container on a moving tag is behind its registry tag by over N days; containers on pinned tags are reported, never alerted.",
     "uid": "2fcd5983-d1dd-42fd-a459-15cc8ac0af64",
     "hash": "",
-    "version": "1",
-    "timeout": "3600",
+    "version": "2",
+    "timeout": "120",
     "securityLevel": "4",
     "installType": "unix"
   },
@@ -15,7 +15,7 @@
       "name": "minAgeDays",
       "type": "string",
       "direction": "false",
-      "description": "An update does not count until the new image is this many days old. 0 disables.",
+      "description": "An update does not count until the new image is this many days old. 0-365; 0 disables.",
       "defaultVal": "7"
     },
     {
@@ -29,22 +29,29 @@
       "name": "inspectTimeout",
       "type": "string",
       "direction": "false",
-      "description": "Seconds per registry lookup. Safe range 10–60.",
+      "description": "Seconds per registry lookup. 10-60.",
       "defaultVal": "20"
     },
     {
       "name": "maxParallel",
       "type": "string",
       "direction": "false",
-      "description": "Concurrent registry lookups. Clamped 1–8.",
+      "description": "Concurrent registry lookups. 1-8.",
       "defaultVal": "3"
     },
     {
       "name": "cacheHours",
       "type": "string",
       "direction": "false",
-      "description": "Reuse a previous registry lookup for this long. 168 = weekly.",
+      "description": "Reuse a previous registry lookup for this long. 0-720; 168 = weekly.",
       "defaultVal": "12"
+    },
+    {
+      "name": "staleAfterDays",
+      "type": "string",
+      "direction": "false",
+      "description": "Alert on an image reference with no successful registry answer for this many days, naming the last error. 0-365; 0 turns it off.",
+      "defaultVal": "7"
     }
   ],
   "body": "docker-images-monitor-lin.sh"
