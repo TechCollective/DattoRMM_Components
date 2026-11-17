@@ -5,7 +5,7 @@
     "description": "Sets Docker log and build-cache limits, seeds the expected-containers list, and a weekly prune that deletes nothing until the list is reviewed, then waits before removing a stopped container. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "3f5aab29-1ae2-4a8d-9956-7037cb7c1ed8",
     "hash": "",
-    "version": "9",
+    "version": "10",
     "timeout": "900",
     "securityLevel": "5",
     "installType": "unix"
@@ -76,7 +76,7 @@
       "name": "usrPruneImages",
       "type": "map",
       "direction": "false",
-      "description": "After review: Dangling removes untagged images only. All also removes tagged images no container uses, except ones with no registry digest (built or loaded on the host). Use All on CI or GitLab runner hosts.",
+      "description": "After review: Dangling removes untagged images only. All also removes tagged images no container uses, but only those their registry confirms it still has (asked through Docker with root's docker login). Use All on CI or GitLab runner hosts.",
       "defaultVal": "Dangling",
       "options": [
         { "name": "Dangling", "value": "dangling" },

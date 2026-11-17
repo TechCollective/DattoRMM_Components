@@ -22,9 +22,9 @@ first records it as waiting, and removes it only on a run at least
 > only.** Versions up to 8 removed every image no container used. A host that
 > needs the old behaviour, such as a CI or GitLab runner host whose disk fills
 > with pulled images, **must be run with `usrPruneImages` = `All`**, or its
-> images will pile up again. `All` still keeps images that were built or
-> loaded on the host and so cannot be pulled again. See *Images* below,
-> including what `All` does on a host that uses the containerd image store.
+> images will pile up again. From version 10, `All` removes a tagged image
+> only when its registry confirms it still has it, so `All` **contacts
+> registries**. See *Images* below.
 >
 > - **Version 3** added per-container protection and the expected-containers
 >   list.
@@ -100,6 +100,21 @@ first records it as waiting, and removes it only on a run at least
 >   until this component runs on it. Version 9 was run against a live Docker
 >   29 daemon in a sandbox, on both image stores; the Tier 1 test covers it on
 >   the CI runner. It has not yet run through a Datto agent.
+> - **Version 10** changes one rule, for tagged images in `All` mode. Version
+>   9 kept a tagged image unless it had a `RepoDigests` entry, and on the
+>   containerd image store (the default on a fresh Docker 29 install) every
+>   image has one, so version 9 kept every tagged image there and `All` did no
+>   more than `Dangling`. Version 10 asks the image's registry instead: a
+>   tagged image that passed every local check is removed only when its
+>   registry confirms, at that moment, that it still has one of the image's
+>   `repo@sha256` references. Anything short of a confirmed yes keeps it. The
+>   rule is the same on both image stores. **`All` now makes network calls**
+>   (see *Registry lookups* below); `Dangling` still makes none.
+>   `TC_PRUNE_VERSION=10`. The monitor's `PRUNE_MIN_VERSION` stays `9`:
+>   version 9 is safe, only less effective. Version 10 was run against a live
+>   Docker 29 daemon in a sandbox on both image stores, with both lookup
+>   tools; the Tier 1 test covers it on the CI runner. It has not yet run
+>   through a Datto agent.
 
 ## What it does
 
@@ -298,7 +313,8 @@ What earlier versions left on a host, which the monitor flags:
 | 4, 5 | Review gate | A container label can still make it delete a protected container |
 | 6 | The current rules, without a stamp | The monitor cannot tell it from an older one |
 | 7, 8 | Removes a stopped container at the first prune after it is old enough, counting from when it was **created**; removes every image no container uses | A container that crashed minutes ago is removed without warning, with its logs; an image built or loaded on the host, which exists nowhere else, is removed |
-| 9 | Current | |
+| 9 | In `All` mode, keeps every tagged image on the containerd image store | Not unsafe, so the monitor does not flag it: `All` only does no more than `Dangling` there |
+| 10 | Current | |
 
 **Before the list is reviewed:** the prune removes only unused networks and
 build cache older than `usrPruneOlderThanHours`. No container and no image.
@@ -363,18 +379,65 @@ After review, for each image, in this order:
    names it still has). If it has a registry digest, that is printed.
 6. **Tagged, and `usrPruneImages` is `Dangling`: kept.** The output counts
    them.
-7. **Tagged, `All`, and no registry digest** (`RepoDigests` empty: it was
-   built or `docker load`-ed here, so it exists nowhere else): **kept**, and
-   named with that reason.
-8. **Tagged, `All`, and the host uses the containerd image store: kept**,
-   named with the reason. On that store Docker gives every image a
-   `repo@sha256` digest, pulled or not, so a digest does not show the image
-   can be pulled again. See Known limits.
-9. **Tagged, `All`, with a registry digest: removed**, one `docker image rm`
-   per tag, never `--force`, so Docker's own check refuses an image something
-   uses. The output prints each one as
-   `<repo>:<tag> - pull again: <repo>@sha256:<digest>`, which is in the
-   journal, so the image can be pulled back exactly as it was.
+7. **Tagged, `All`, and no registry digest** (`RepoDigests` empty, which on
+   the classic image store means it was built or `docker load`-ed here):
+   **kept**. There is nothing to look up.
+8. **Tagged, `All`: its registry is asked**, one `repo@sha256` reference at a
+   time, until one is confirmed. This is the only step that leaves the host,
+   and it comes after every local check, so an image that would be kept
+   anyway costs no request.
+   - **The registry has it: removed**, one `docker image rm` per tag, never
+     `--force`, so Docker's own check refuses an image something uses. The
+     output prints it as
+     `<repo>:<tag> - its registry has it, pull again: <repo>@sha256:<digest>`,
+     the reference the registry confirmed, which is in the journal, so the
+     image can be pulled back exactly as it was.
+   - **The registry says it does not have it: kept**, as
+     `kept (registry does not have it)`. That is an image built here and never
+     pushed (on the containerd store it has a digest all the same), or one
+     deleted from the registry since.
+   - **Anything else: kept**, as `kept (could not check)`, with the reason:
+     the registry refused access, no answer within 20 seconds, a network or
+     TLS error, a rate limit, or no lookup tool on the host.
+   - **Not reached**, because a limit was hit or a registry rate-limited an
+     earlier lookup: **kept**, as `not checked this run`. The next run tries
+     again.
+
+   None of these makes the prune exit non-zero. One line sums them up:
+
+       Tagged images, registry check: removed 3, kept (registry does not have it) 1, kept (could not check) 0, not checked this run 0. Lookups made: 4.
+
+#### Registry lookups (`All` only)
+
+- **Which registry:** the one each image's `repo@sha256` reference names
+  (Docker Hub for a bare name such as `nginx`), and no other. Only images
+  that passed every local check are looked up; `Dangling` mode makes no
+  network call at all.
+- **How:** with Docker's own client, `docker buildx imagetools inspect --raw
+  <repo>@sha256:<digest>` when the buildx plugin is installed, otherwise
+  `docker manifest inspect <repo>@sha256:<digest>`. Neither downloads the
+  image. If neither works, every tagged image is kept, and the output says
+  why.
+- **Credentials:** the prune handles none. Docker's client reads root's
+  `docker login` (`$DOCKER_CONFIG` if set, otherwise `.docker/config.json` in
+  root's home directory as `/etc/passwd` gives it, so the timer, a Datto job
+  and a root shell use the same file). Run `sudo docker login <registry>` on
+  the host once for a private registry; without it, that registry's images
+  are kept.
+- **Proxy:** Docker's client does not use the Docker daemon's proxy on its
+  own. When the prune's own environment has no proxy, it uses the daemon's
+  (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` as `docker info` shows them) for
+  the lookups. A daemon proxy with a password is not used, because
+  `docker info` hides the password; the lookups then go direct.
+- **Limits, fixed in the script (the settings file cannot change them):**
+  20 seconds per lookup, at most 100 lookups and 300 seconds of lookups in
+  one run. Images not reached are kept as `not checked this run`.
+- **Rate limits:** a `429 Too Many Requests` or `toomanyrequests` answer
+  keeps that image and stops every further lookup for the run.
+- **Cost on Docker Hub:** a lookup reads one manifest, which Docker Hub can
+  count as a pull (100 per 6 hours for an anonymous IP address, 200 for a
+  logged-in personal account, at the time of writing). On a host with many
+  unused Docker Hub images, log root in to Docker Hub.
 
 **If Docker does not return its image list, or the list of which images
 containers use**, no image is removed and the run exits 1.
@@ -409,7 +472,10 @@ orange.
 If Docker is not installed, it exits 0 and changes nothing. That makes it safe
 to target at every Linux device.
 
-It makes no network calls of its own.
+It makes no network calls of its own, with one exception: the prune, with
+`usrPruneImages` = `All`, asks registries whether they still have the tagged
+images it would remove (see *Registry lookups*). With `Dangling`, the
+default, it makes none.
 
 ## Why
 
@@ -472,7 +538,7 @@ re-import creates a second component; see the repo's `tools/README.md`.
 | `usrPruneSchedule` | String | `Sun *-*-* 04:00:00` | A systemd `OnCalendar` expression in the host's local time, checked with `systemd-analyze calendar`. Blank leaves the timer alone. |
 | `usrPruneOlderThanHours` | String | `168` | 24–8760. Only unused items older than this are pruned; a stopped container counts from when it stopped. Saved to `/etc/default/tc-docker-prune`, so the most recent run sets it for the timer. |
 | `usrPruneGraceHours` | String | `144` | 24–8760. How long a stopped container waits in `pending-removal` before the prune may remove it. 144 (6 days) means a weekly timer removes it at the run after the one that recorded it. Saved as `GRACE_HOURS`. |
-| `usrPruneImages` | **Selection** | `Dangling` | `Dangling` removes untagged images only. `All` also removes tagged images no container uses that have a registry digest; images built or loaded on the host are kept. **Use `All` on CI and GitLab runner hosts.** Saved as `PRUNE_IMAGES`. |
+| `usrPruneImages` | **Selection** | `Dangling` | `Dangling` removes untagged images only, and makes no network call. `All` also removes tagged images no container uses, but only those whose registry confirms it still has them; it contacts registries (see *Registry lookups*). **Use `All` on CI and GitLab runner hosts.** Saved as `PRUNE_IMAGES`. |
 | `usrPruneNow` | **Selection** | `No` | `Yes` also runs the prune once, now. |
 
 No customer-specific value is hardcoded. Different hosts get different values
@@ -531,7 +597,8 @@ the daemon unreachable, its container list not coming back (nothing is
 removed then), `pending-removal` not writable (no container removed), its
 image list not coming back (no image removed), a `GRACE_HOURS` or
 `PRUNE_IMAGES` it refuses, a container or image Docker would not remove, or a
-network or build-cache step failing.
+network or build-cache step failing. A registry lookup that fails, times out or is
+rate-limited is not an error: that image is kept and the exit is still `0`.
 
 ## How to tell it worked
 
@@ -560,7 +627,7 @@ A second run says `KEPT` for each key, `no change`,
 A prune after review reports what it recorded, what is waiting, what it
 removed and what it kept:
 
-    tc-docker-prune version 9
+    tc-docker-prune version 10
     Pruning unused items older than 168h. Volumes are never removed.
     Disk before: 30G free, 29% used
     Stopped containers recorded for removal this run (removed 144h from now if still stopped and not protected):
@@ -573,9 +640,10 @@ removed and what it kept:
       shop-db-1 (on the expected list)
       legacy (restart policy unless-stopped)
     Images removed (PRUNE_IMAGES=all): 1
-      registry.example.com/team/app:1.4 - pull again: registry.example.com/team/app@sha256:61488c...
+      registry.example.com/team/app:1.4 - its registry has it, pull again: registry.example.com/team/app@sha256:61488c...
     Images kept that no container uses:
-      local/tool:dev - no registry digest: built or loaded on this host, so it cannot be pulled again
+      registry.example.com/team/tool:dev - its registry does not have registry.example.com/team/tool@sha256:9c1f0e...
+    Tagged images, registry check: removed 1, kept (registry does not have it) 1, kept (could not check) 0, not checked this run 0. Lookups made: 2.
     Networks: nothing to remove
     Build cache: 0B reclaimed
     Disk after:  30G free, 29% used
@@ -623,16 +691,31 @@ Never a customer first.
 - **`pending-removal` is trusted as the prune wrote it.** It is root-only;
   a line that is not well formed is dropped, but a well-formed line edited by
   hand to an older time shortens that container's wait.
-- **On the containerd image store, `All` removes no tagged image.** Docker
-  gives every image a `repo@sha256` digest there, pulled or built, so the
-  prune cannot tell an image it could pull again from one that exists only on
-  the host, and keeps them all, saying so. Docker 29 uses that store on a
-  fresh install (`docker info` shows `driver-type
-  io.containerd.snapshotter.v1`). Such a host needs its tagged images removed
-  by hand, or a later version that can tell them apart.
-- **A registry digest shows an image came from a registry, not that it is
-  still there.** A tag or image deleted from the registry since cannot be
-  pulled again; the printed `repo@sha256` is the reference to ask for.
+- **A registry confirms the image at that moment, not for ever.** It can be
+  deleted from the registry after the prune removed it here. The printed
+  `repo@sha256` is the reference to pull it back by while it exists.
+- **A re-pulled tag may be a newer image than the one removed.** Tags move.
+  Pulling `<repo>:<tag>` gets whatever the tag points at now; pulling the
+  printed `<repo>@sha256:<digest>` gets exactly the image that was removed.
+- **An image in a registry this host cannot log in to is kept**, as `could
+  not check`, on every run. So is one in a registry the host cannot reach.
+  Log root in (`sudo docker login`) or remove such images by hand. Docker Hub
+  refuses access to a repository that does not exist rather than saying it
+  is not there, so an image
+  built here under a bare name (`myapp:dev`) on the containerd store is kept
+  as `could not check`, not as `registry does not have it`, and still costs a
+  lookup each run.
+- **A login kept by a credential helper** (`credsStore` in root's
+  `config.json`) works only if that helper works without a desktop session.
+- **A registry served over plain HTTP** (an `insecure-registries` entry for
+  anything but `localhost` or `127.0.0.1`) cannot be asked: the lookup tools
+  use HTTPS. Its images are kept as `could not check`.
+- **A lookup reads a manifest, which Docker Hub can count as a pull.** At
+  most 100 a run. A lookup that finds the image fetches its manifest; one
+  that does not find it costs a `HEAD` request only with buildx, and two
+  `GET` requests with `docker manifest`.
+- **The time limits are per run, not per host.** A Prune now and the timer
+  running at the same time each get their own 100 lookups.
 - **An untagged image is removed in both modes**, including one pulled by
   digest only. Those can be pulled again by their digest, which is printed.
 - **An unreviewed host gets no image cleanup.** That is deliberate. Its disk
