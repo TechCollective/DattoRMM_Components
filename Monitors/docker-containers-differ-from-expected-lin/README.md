@@ -3,7 +3,8 @@
 A Datto RMM custom monitor for Linux Docker hosts. It compares the containers
 on a host with that host's expected-containers list. It alerts when an
 expected container is stopped or gone, and reports containers that run but
-aren't on the list. It reports the stopped containers the prune has recorded
+aren't on the list, counting their age from when it first saw them. It
+reports the stopped containers the prune has recorded
 and will remove, with the date each one goes, so nobody is surprised when it
 is gone. It also reports a host whose installed weekly prune is out of date,
 because the prune is only replaced when Host Maintenance is run on that host
@@ -42,12 +43,53 @@ again.
 > Tier 1 harness against a live Docker 29 daemon in a sandbox, with the
 > list's modification time set back by the test; not yet through a Datto
 > agent.
+>
+> **Version 7** (2026-11-17) closes five blind spots. **It is no longer
+> read-only:** it keeps `/var/lib/tc-docker/monitor-first-seen` (see
+> [First seen](#first-seen)), so a container that restarts or is redeployed
+> more often than `usrUnlistedAfterHours` is reported instead of being new for
+> ever. **It never starts a stopped Docker**: it asks systemd first, and a
+> stopped `docker.service` with containers on the list is now an alert of its
+> own (`Docker is stopped (docker.service is inactive); its expected
+> containers are not running`), not a Docker it quietly woke up. **A hung
+> daemon gives a result**: every docker command is stopped 40 seconds after the
+> monitor starts (`Check could not run: Docker did not answer within 40
+> seconds`). The usual system directories are appended to `PATH`, and a host
+> with Docker's socket or unit but no `docker` command alerts. And it runs on
+> **bash 4.2** (CentOS 7): an empty list used to crash it there. **Expect new
+> alerts** from hosts whose Docker is stopped with containers on the list, and,
+> after `usrUnlistedAfterHours`, from containers that were only ever "new"
+> because they kept restarting. `PRUNE_MIN_VERSION` stays 9. Exercised through
+> the Tier 1 harness against Docker 29 under systemd 255 in a sandbox
+> (141 steps, including runs under GNU bash 4.2 built from source); not yet
+> through a Datto agent.
 
 ## What it does
 
-**Read-only.** It reads `docker info`, `docker ps`, `docker inspect` and six
-files (and the modification time of the list), and changes nothing. It makes
-no network calls.
+It reads `docker info`, `docker ps`, `docker inspect` and six files (and the
+modification time of the list). It makes no network calls.
+
+**It writes one file**, `/var/lib/tc-docker/monitor-first-seen`, and nothing
+else: when it first saw each running container that is not on the list, so
+that a container restarted or recreated more often than
+`usrUnlistedAfterHours` is still reported once the hours have passed. See
+[First seen](#first-seen). It creates `/var/lib/tc-docker` (root-only, 0700) if
+the prune has not already.
+
+**It never starts Docker.** Where systemd manages `docker.service`, systemd is
+asked first, and no docker command is run while the service is stopped: on
+most installs `docker.socket` keeps listening, and any docker command would
+start Docker again (with every `restart: always` container). This is the same
+`tc-docker running` code Host Maintenance uses.
+
+**It always finishes.** Every docker command one run makes must be done 40
+seconds (`DOCKER_TIMEOUT`) after the monitor started. One that is not is
+stopped with everything it started, and the check says Docker did not answer.
+
+**`PATH`.** `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`
+is appended to whatever `PATH` the agent gives it (appended, never
+prepended), so whether `docker` is found does not depend on the agent's
+`PATH`.
 
 The two list files:
 
@@ -65,12 +107,61 @@ matches.
 |---|---|
 | An expected container exists but **none of its containers is running** | **Stopped.** Alerts, set by `usrMissingAction` |
 | **No container** has an expected key | **Missing.** Alerts, set by `usrMissingAction` |
-| A running container is **not on the list**, has run at least `usrUnlistedAfterHours`, and doesn't match the ignore file | **Unlisted.** Named in the status; alerts only if `usrUnlistedAction` is Alert |
+| A running container is **not on the list**, was first seen running at least `usrUnlistedAfterHours` ago, and doesn't match the ignore file | **Unlisted.** Named in the status; alerts only if `usrUnlistedAction` is Alert. First seen survives restarts and redeploys; see [First seen](#first-seen). |
 | A container, running or stopped, has **Compose labels that are not plain names** | **Unreadable.** Counted in the status (`1 with unreadable Compose labels`) whatever `usrUnlistedAction` says; alerts only if `usrUnlistedAction` is Alert, and then named by container name and short id in the diagnostic. Not age-gated and not matched against the ignore file. |
 | A list line is neither key form | Counted as unreadable list lines in the status |
 | The host's **prune is stale** (see below) | **Stale prune.** Named first in the status; alerts, set by `usrStalePruneAction` (default Alert). Checked **before** the "no list yet" exit, with or without a list. |
 | A stopped container is **waiting to be removed** by the prune (see below) | Named first after a stale prune, with the date it goes: `2 stopped containers will be removed by the prune (name:a from 2026-11-22, name:b from 2026-11-23)`. Alerts, set by `usrPendingRemovalAction` (default Alert). One whose key matches the ignore file is counted, marked `(ignored)`, and never alerts. |
 | The list has **not been reviewed** (no `/etc/tc-docker/reviewed`) | Named in the status with how long it has waited (`list NOT REVIEWED for 16 days`). Alerts if `usrUnreviewedAction` is Alert; under Warn (the default), alerts once it has waited `usrUnreviewedAfterDays` (default 14) or more. **Until review, stopped or missing containers are reported but never alert on their own**, so onboarding a host raises one item, not one per container. |
+
+### First seen
+
+Up to version 6 an unlisted container's age was its `State.StartedAt`. A
+container restarted or recreated more often than `usrUnlistedAfterHours` (a
+nightly redeploy, a crash loop) was therefore "new" on every run and never
+reported. Version 7 remembers instead.
+
+**What it writes.** `/var/lib/tc-docker/monitor-first-seen`, a comment header
+and one line per key:
+
+    name:surprise	1795000000	1795100000
+
+key, first seen, last seen, tab separated, in seconds since 1970. Nothing else
+about the container is stored. Only this monitor writes it.
+
+**The rule**, on each run:
+
+1. For each running, non-transient, unlisted, not-ignored key: if the file has
+   a line for it, its age counts from the earlier of that line's first seen
+   and the container's start; if not, from the container's start (so the first
+   run after the upgrade gives the version 6 result). Its last seen becomes now.
+2. A line whose key is on the list is dropped.
+3. A line whose key has not been seen running for 7 days
+   (`FIRST_SEEN_KEEP_DAYS`) is dropped. A stopped unlisted container is not
+   "seen", so after a week stopped its clock starts again.
+4. The file is written only when this changes it, and not at all while it
+   does not exist and there is nothing to put in it.
+
+**How it is written.** The same way the prune writes its pending-removal file
+in the same directory: the directory is made root-only (0700) if it is not;
+a new file (0600) is created there, written, read back, and renamed over the
+old one, so a reader never sees half a file. A symlink at the file's or the
+directory's path is never followed or written through.
+
+**What it trusts.** Only well-formed lines: a valid key, two whole numbers of
+at most 10 digits, first seen no later than last seen, last seen no more than
+an hour ahead of the clock, and the first such line for each key. Anything
+else is ignored and dropped at the next write.
+
+**When it cannot be written** (a read-only or immutable directory, a full
+disk, a symlink in the way) the check still runs: every age counts from the
+container's start, as in version 6, and the status says so, e.g.
+`first-seen times not saved (no file can be created in /var/lib/tc-docker),
+so unlisted ages count from each container's start`. That is never an alert
+on its own.
+
+Unreadable containers (Compose labels that are not plain names) are not in
+the file: they are reported whatever their age, as before.
 
 ### A list nobody reviews
 
@@ -199,7 +290,7 @@ from the latest release.
 | Field | Value |
 |---|---|
 | Name | `Docker - Containers Differ From Expected [Lin]` |
-| Description | Alerts when an expected Docker container is stopped or gone, a stopped container is waiting to be removed by the prune, the host's prune is out of date, or the list has gone unreviewed for usrUnreviewedAfterDays; reports unlisted containers. Read-only. Healthy when there is no Docker or no list yet, unless its prune is out of date. |
+| Description | Alerts when an expected Docker container is stopped or gone (including when Docker is stopped), Docker does not answer within 40 seconds, a stopped container is waiting to be removed by the prune, the host's prune is out of date, or the list has gone unreviewed for usrUnreviewedAfterDays; reports unlisted containers, aged from when first seen. Never starts a stopped Docker; writes only its first-seen file. |
 | Category | **Monitors** |
 | Script type | Shell (Unix) |
 | Target OS | Linux |
@@ -218,7 +309,7 @@ from the latest release.
 | `usrPendingRemovalAction` | **Selection** | `Alert` | `Alert` / `Warn` / `Ignore`. What a stopped container the prune has recorded for removal does. Warn names it in the status without alerting; Ignore leaves it out. A container whose key matches an ignore pattern is counted but never alerts. |
 | `usrUnreviewedAction` | **Selection** | `Warn` | `Warn` / `Alert` / `Ignore`. What an unreviewed list does. Warn names it in the status, and alerts once it has waited `usrUnreviewedAfterDays`. Alert turns every unreviewed host into a ticket from day one, which suits onboarding a single client, but not turning the monitor on across the whole fleet. |
 | `usrUnreviewedAfterDays` | String | `14` | 0–365. Under Warn, a list still unreviewed this many days after it was created or last changed alerts. `0` never escalates. |
-| `usrUnlistedAfterHours` | String | `24` | 0–8760. A new container only counts as unlisted once it has run this long, which keeps upgrades and short tests quiet. |
+| `usrUnlistedAfterHours` | String | `24` | 0–8760. A new container only counts as unlisted once this long has passed since the monitor first saw it running (a restart or a redeploy does not reset that), which keeps upgrades and short tests quiet. |
 
 No customer-specific value is hardcoded. An invalid value makes it report
 `Check could not run: …` and alert, rather than fall back to a default.
@@ -227,12 +318,17 @@ No customer-specific value is hardcoded. An invalid value makes it report
 
 | Host state | Result |
 |---|---|
-| Docker not installed | **Exit 0**: "Docker is not installed on this host; nothing to check" |
+| No `docker` command (after the `PATH` append), no `/var/run/docker.sock` socket, no loaded `docker.service` | **Exit 0**: "Docker is not installed on this host; nothing to check" |
+| No `docker` command, but `/var/run/docker.sock` is a socket or `docker.service` is loaded | **Exit 1**: "Docker appears to be installed but no docker command was found", the diagnostic saying which was found |
+| systemd says `docker.service` is not active, and the list has entries | **Exit 1**: "Docker is stopped (docker.service is inactive); its expected containers are not running". No docker command is run, so Docker stays stopped. |
+| systemd says `docker.service` is not active, and there is no list or it is empty | **Exit 0**: "Docker is stopped (…); no expected-containers list on this host yet, so nothing is expected to run" (or "…its expected-containers list is empty…") |
+| `docker info` fails, and there is no `docker.service`, no `/var/run/docker.sock` and no list (a docker client with no daemon on this host) | **Exit 0**: "Docker client installed (…) but no Docker daemon on this host (no docker.service, no /var/run/docker.sock); nothing to check" |
 | Docker installed, no list yet, prune current or not installed | **Exit 0**: says Host Maintenance creates it |
-| Prune stale, `usrStalePruneAction` Alert, with or without a list | **Exit 1**, the finding first in the status, and `STALE PRUNE` in the diagnostic saying to run Host Maintenance |
+| Prune stale, `usrStalePruneAction` Alert, with or without a list, and with Docker stopped or absent (the check reads two files and needs no daemon) | **Exit 1**, the finding first in the status, and `STALE PRUNE` in the diagnostic saying to run Host Maintenance. After a `Check could not run: …` it comes second. |
 | Prune stale, `usrStalePruneAction` Warn | **Exit 0**, the finding named in the status; the rest of the result is as before |
 | Prune stale, `usrStalePruneAction` Ignore | **Exit 0**, not named; the check is not made |
-| Daemon unreachable | **Exit 1**: "Check could not run: cannot talk to the Docker daemon", quoting Docker's error in the diagnostic |
+| Daemon should be there (a list, a socket or a `docker.service`) and `docker info` fails | **Exit 1**: "Check could not run: cannot talk to the Docker daemon", quoting Docker's error and systemd's view in the diagnostic |
+| Docker takes the connection and does not answer (`docker info`, `docker ps` or `docker inspect` still running 40 seconds after the monitor started) | **Exit 1** within 45 seconds: "Check could not run: Docker did not answer within 40 seconds". The docker commands it started are stopped (TERM to their own process group from `timeout`, then KILL to whatever is left in it); no docker client is left running, and nothing else is signalled. |
 | Daemon answers `docker info`, but `docker ps` or `docker inspect` fails 3 times | **Exit 1**: "Check could not run: Docker did not return its container list". Never read as "no containers". |
 | Every expected container running, nothing unlisted | **Exit 0**: e.g. `3 expected: 3 running` |
 | Stopped container waiting to be removed, `usrPendingRemovalAction` Alert | **Exit 1**, `N stopped container(s) will be removed by the prune (...)` in the status and a `PENDING` line for each in the diagnostic; exit 0 when every one matches an ignore pattern |
@@ -245,6 +341,7 @@ No customer-specific value is hardcoded. An invalid value makes it report
 | List not reviewed, `usrUnreviewedAction` Ignore | Not mentioned; the rest decides |
 | Reviewed list, expected container stopped or missing, `usrMissingAction` Alert | **Exit 1**, naming them, with a diagnostic saying what to do |
 | Unlisted container, `usrUnlistedAction` Warn | **Exit 0**, naming it in the status |
+| The first-seen file cannot be written | Same result as version 6 (ages from container start), and `first-seen times not saved (<why>)` in the status; never an alert on its own |
 | Unlisted container, `usrUnlistedAction` Alert | **Exit 1** |
 | Container with unreadable Compose labels, `usrUnlistedAction` Warn or Ignore | **Exit 0**, counted in the status |
 | Container with unreadable Compose labels, `usrUnlistedAction` Alert | **Exit 1**, `UNREADABLE  <name> (<short id>)` in the diagnostic |
@@ -299,9 +396,9 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
   (`tc-docker-prune.service.d/`), is judged by the two files alone. The stamp
   is what Host Maintenance wrote, not a checksum: a script someone edited by
   hand and left the stamp on still reads as current.
-- The "Docker is not installed" and "cannot talk to the Docker daemon" exits
-  come before the prune check. A host with no Docker has nothing for a prune to
-  delete, and an unreachable daemon alerts anyway.
+- The "Docker is not installed" and "no docker command" exits come before the
+  prune check: a host with no Docker has nothing for a prune to delete. Every
+  other exit, Docker stopped or unreachable included, carries the prune check.
 - `PRUNE_MIN_VERSION` is a constant in the script, not an input variable, so a
   change to it is a reviewed change to the script.
 - **Pending removals are what the prune recorded at its last run.** A
@@ -318,11 +415,31 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
 - **Hosts already unreviewed for longer than `usrUnreviewedAfterDays` alert
   as soon as version 6 is deployed.** With the default of 14, that is every
   host whose list was created more than two weeks ago and never confirmed.
-- **It wakes a stopped Docker.** It runs `docker info` first, and on a host
-  where `docker.socket` keeps listening while `docker.service` is stopped,
-  that starts Docker. Unchanged in version 6 (Host Maintenance 11 no longer
-  does this; the monitors are a later change). Pause it on a host whose
-  Docker is stopped on purpose.
+- **A Docker stopped on purpose alerts** while the list has entries, until it
+  is started again. The monitor no longer wakes it to find out. Pause the
+  monitor on such a host, or empty its list.
+- **"Stopped" is systemd's word.** Without systemd (or without a
+  `docker.service`), `docker info` is asked, and a daemon that does not answer
+  is an alert unless the host has no socket, no unit and no list. The other
+  Docker monitors still run `docker info` first and can still wake a stopped
+  Docker.
+- **First seen is per key, not per container.** Two different containers
+  that take the same name one after the other share one age. A key that was
+  stopped for more than 7 days, or put on the list, starts again from the
+  start of its container. Deleting the file (or a host rebuilt from scratch)
+  resets every age to the container's start, which is what version 6 did.
+- **First seen trusts the clock.** A clock stepped forward makes containers
+  look older; one stepped back more than an hour drops the lines it cannot
+  believe, and those keys start again from their containers' start.
+- **The 40 seconds are for all docker commands together**, counted from the
+  monitor's start. A daemon that answers, but very slowly (a few hundred
+  containers on an overloaded host), can be reported as not answering.
+  `DOCKER_TIMEOUT` is a constant, not an input variable.
+- **It needs `timeout` from GNU coreutils** (or a BusyBox one that takes
+  `-k`). Without it the check says it could not run.
+- **bash 4.2 or newer.** Every expansion of a possibly empty array is guarded,
+  and Tier 1 runs its main paths under GNU bash 4.2 built from source. bash 4.0
+  and 4.1 have not been tried.
 - **Docker only.** Podman is not handled.
 - It only knows what the list says. A list created while a service was down
   never expects that service. Check the list after the first Host Maintenance
@@ -330,8 +447,8 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
 - It doesn't watch a container's health or resource use. That is the Health
   monitor's job.
 - `date -d` for container age is a GNU spelling. Where it fails, the container
-  counts as just started, so it can't be reported as unlisted. That fails
-  quiet on purpose.
+  counts as just started, so a key with no first-seen line can't be reported
+  as unlisted until its line is old enough. That fails quiet on purpose.
 - **An unreadable container cannot be listed or ignored.** Its key is made
   from its id. Fix the labels, or the image they come from.
 - Under `usrUnlistedAction` Ignore, an unreadable container is still counted
@@ -340,7 +457,10 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
   block marked `tc-docker shared`. All four copies (Host Maintenance carries
   two: the component and the prune script it installs) must stay
   byte-identical; CI's "Shared blocks match" check fails the pull request
-  when they are not.
+  when they are not. Its "is Docker running" code is a third copy of Host
+  Maintenance's `tc-docker running` block, checked the same way. Its first
+  line still says the block is in Host Maintenance and its prune; that line is
+  part of what is compared, so it changes only with all three copies.
 
 ## Open questions
 
