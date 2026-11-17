@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 9: a prune stamped 8 is stale. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. A host without Docker is Tier 2.",
+  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 9: a prune stamped 8 is stale. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. A host without Docker is Tier 2. An unreviewed list is named with its age (the list file's modification time): one day old, it stays exit 0 under Warn; made 15 days old, it alerts under Warn with the default usrUnreviewedAfterDays of 14, and the diagnostic says why and names the review steps; usrUnreviewedAfterDays 0 never escalates; Ignore does not mention it; Alert alerts as before; before review a missing container is still named, not alerted on; a reviewed list 15 days old is healthy; and a usrUnreviewedAfterDays above 365 or not a number is refused.",
   "variables": {},
   "steps": [
     {
@@ -554,6 +554,156 @@
       "type": "command",
       "label": "Stale prune tests: clean up",
       "run": "rm -f /usr/local/sbin/tc-docker-prune /etc/systemd/system/tc-docker-prune.service && echo cleaned",
+      "outputContains": [
+        "cleaned"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Unreviewed list age: tc-plain running, on a list made one day ago (its modification time set back) and not reviewed",
+      "run": "set -e; docker start tc-plain >/dev/null; docker inspect -f '{{.Name}} running={{.State.Running}}' tc-plain; mkdir -p /etc/tc-docker; echo name:tc-plain > /etc/tc-docker/expected-containers; rm -f /etc/tc-docker/reviewed; touch -d '1 day ago' /etc/tc-docker/expected-containers; stat -c 'list modified %y' /etc/tc-docker/expected-containers",
+      "outputContains": [
+        "/tc-plain running=true",
+        "list modified"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unreviewed list one day old, usrUnreviewedAction Warn (default): named with its age, exit 0",
+      "outputContains": [
+        "STATUS=1 expected: 1 running;",
+        "list NOT REVIEWED for 1 day, so no containers or images are pruned"
+      ],
+      "outputNotContains": [
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Unreviewed list age: the list made 15 days old",
+      "run": "touch -d '15 days ago' /etc/tc-docker/expected-containers; stat -c 'list modified %y' /etc/tc-docker/expected-containers",
+      "outputContains": [
+        "list modified"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unreviewed list 15 days old, Warn and usrUnreviewedAfterDays 14 (defaults): alerts, and the diagnostic says why and how to review",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=1 expected: 1 running;",
+        "list NOT REVIEWED for 15 days, so no containers or images are pruned",
+        "NOT REVIEWED for 15 days  - this alerts because the list has gone unreviewed for 14 days or more (usrUnreviewedAfterDays)",
+        "run Show, fix the list (Add, Remove, Accept current), then Confirm reviewed"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unreviewed list 15 days old, usrUnreviewedAfterDays 0: never escalates, exit 0",
+      "variables": {
+        "usrUnreviewedAfterDays": "0"
+      },
+      "outputContains": [
+        "STATUS=1 expected: 1 running;",
+        "list NOT REVIEWED for 15 days, so no containers or images are pruned"
+      ],
+      "outputNotContains": [
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unreviewed list 15 days old, usrUnreviewedAction Ignore: no mention, exit 0",
+      "variables": {
+        "usrUnreviewedAction": "ignore"
+      },
+      "outputContains": [
+        "STATUS=1 expected: 1 running"
+      ],
+      "outputNotContains": [
+        "NOT REVIEWED",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unreviewed list 15 days old, usrUnreviewedAction Alert: alerts as before, whatever its age",
+      "variables": {
+        "usrUnreviewedAction": "alert"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "list NOT REVIEWED for 15 days",
+        "NOT REVIEWED  - run Show, fix the list, then Confirm reviewed"
+      ],
+      "outputNotContains": [
+        "this alerts because"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Unreviewed list age: an entry for a container that does not exist, on a list one day old",
+      "run": "echo name:tc-age-gone >> /etc/tc-docker/expected-containers; touch -d '1 day ago' /etc/tc-docker/expected-containers; tail -n 1 /etc/tc-docker/expected-containers",
+      "outputContains": [
+        "name:tc-age-gone"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Before review a missing container is named but is not an alert of its own (unchanged)",
+      "outputContains": [
+        "1 missing (name:tc-age-gone)",
+        "list NOT REVIEWED for 1 day"
+      ],
+      "outputNotContains": [
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Unreviewed list age: the missing entry gone, the list reviewed, and made 15 days old",
+      "run": "echo name:tc-plain > /etc/tc-docker/expected-containers; echo 'tc-test review' > /etc/tc-docker/reviewed; touch -d '15 days ago' /etc/tc-docker/expected-containers; stat -c 'list modified %y' /etc/tc-docker/expected-containers",
+      "outputContains": [
+        "list modified"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Reviewed list 15 days old: healthy, as before",
+      "outputContains": [
+        "STATUS=1 expected: 1 running"
+      ],
+      "outputNotContains": [
+        "NOT REVIEWED",
+        "Diagnostic"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A usrUnreviewedAfterDays above 365 is refused",
+      "variables": {
+        "usrUnreviewedAfterDays": "366"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: usrUnreviewedAfterDays must be 0-365 (got '366')"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A usrUnreviewedAfterDays that is not a number is refused",
+      "variables": {
+        "usrUnreviewedAfterDays": "two"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: usrUnreviewedAfterDays must be 0-365 (got 'two')"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Unreviewed list age: clean up",
+      "run": "rm -f /etc/tc-docker/expected-containers /etc/tc-docker/reviewed && echo cleaned",
       "outputContains": [
         "cleaned"
       ]

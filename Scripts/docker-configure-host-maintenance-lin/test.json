@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, a stopped container that nothing protects is first recorded in /var/lib/tc-docker/pending-removal (0700 root directory, 0600 file) and left alone; a run inside the grace period leaves it and says until when; a run after it (the record moved back 145 hours) removes it and drops the record. Its age counts from when it stopped: one stopped 29 days ago and one never started, created 30 days ago, are recorded; one created 30 days ago that stopped just now is not (the times are set by stopping Docker and editing config.v2.json). A recorded container added to the list, or started again, loses its record. When the record cannot be written (a read-only bind mount), no container is removed and the exit is 1, through the timer's script and through Prune now; a GRACE_HOURS under 24 written by hand is refused by the prune; and when the review is withdrawn the prune removes nothing and clears the record. Stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep are kept with their images. Images, with a test registry on 127.0.0.1 standing in for a real one: Dangling (and a settings file with no PRUNE_IMAGES) removes the untagged image only; All also removes the tagged image pushed to the registry, printing its repo@sha256 to the journal (and that reference pulls it back), keeps the one built here and says why, and keeps tc.keep; a failing docker image ls removes no image and exits 1. Which store the runner uses decides what All must do: on the classic image store as described; on the containerd image store, where every image has a digest, All keeps every tagged image and says why. The last steps restart Docker on the other store and check All there too, so both stores are covered whichever the runner starts with. The image is pushed to the test registry only on the classic store: on the containerd store it has a repo@sha256 digest without one, and that store's push used HTTPS on Docker 29.4.2 whatever insecure-registries said. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are read from docker.service and its environment file, and flags it cannot resolve skip log rotation with exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, not even a network; Prune now exits 1; and the list is not created, exit 3. Writing daemon.json: the new file is made in the directory of the real target and renamed into place, so it keeps the mode, owner and group of the file it replaces (a 0600 file holding a fake proxy credential stays 0600 with its non-root group; a new file is 0644 root:root) and a symlinked daemon.json stays a symlink while its target changes and Docker restarts with it; a dangling symlink, or a link to a directory, is refused with exit 3 and nothing is created; after a successful Apply, a failed validation and Report mode, no .daemon.json.tc-* file is left in /etc/docker, and one left by a crashed earlier run is removed; Report mode on a host with no /etc/docker does not create it; seven changes in a row leave the newest five backups; and an immutable daemon.json makes the run exit 1 with the file byte-for-byte unchanged, no staging file and no backup.",
+  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. Before the list is reviewed, a prune with no age limit removes no container and no image. After review, a stopped container that nothing protects is first recorded in /var/lib/tc-docker/pending-removal (0700 root directory, 0600 file) and left alone; a run inside the grace period leaves it and says until when; a run after it (the record moved back 145 hours) removes it and drops the record. Its age counts from when it stopped: one stopped 29 days ago and one never started, created 30 days ago, are recorded; one created 30 days ago that stopped just now is not (the times are set by stopping Docker and editing config.v2.json). A recorded container added to the list, or started again, loses its record. When the record cannot be written (a read-only bind mount), no container is removed and the exit is 1, through the timer's script and through Prune now; a GRACE_HOURS under 24 written by hand is refused by the prune; and when the review is withdrawn the prune removes nothing and clears the record. Stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep are kept with their images. Images, with a test registry on 127.0.0.1 standing in for a real one: Dangling (and a settings file with no PRUNE_IMAGES) removes the untagged image only; All also removes the tagged image pushed to the registry, printing its repo@sha256 to the journal (and that reference pulls it back), keeps the one built here and says why, and keeps tc.keep; a failing docker image ls removes no image and exits 1. Which store the runner uses decides what All must do: on the classic image store as described; on the containerd image store, where every image has a digest, All keeps every tagged image and says why. The last steps restart Docker on the other store and check All there too, so both stores are covered whichever the runner starts with. The image is pushed to the test registry only on the classic store: on the containerd store it has a repo@sha256 digest without one, and that store's push used HTTPS on Docker 29.4.2 whatever insecure-registries said. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are read from docker.service and its environment file, and flags it cannot resolve skip log rotation with exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, not even a network; Prune now exits 1; and the list is not created, exit 3. Writing daemon.json: the new file is made in the directory of the real target and renamed into place, so it keeps the mode, owner and group of the file it replaces (a 0600 file holding a fake proxy credential stays 0600 with its non-root group; a new file is 0644 root:root) and a symlinked daemon.json stays a symlink while its target changes and Docker restarts with it; a dangling symlink, or a link to a directory, is refused with exit 3 and nothing is created; after a successful Apply, a failed validation and Report mode, no .daemon.json.tc-* file is left in /etc/docker, and one left by a crashed earlier run is removed; Report mode on a host with no /etc/docker does not create it; seven changes in a row leave the newest five backups; and an immutable daemon.json makes the run exit 1 with the file byte-for-byte unchanged, no staging file and no backup. Docker stopped (docker.service stopped, docker.socket still listening, a restart: always container on the list): the prune service has Requisite=docker.service and After=, not Requires=; starting it, by hand or when the timer itself fires, does not start Docker and does not run the prune, and the timer stays active; the prune run by hand prints one line saying Docker is not running, removes nothing and exits 0; the component in Report, in Apply, and in Apply with Prune now (which does not run, exit 3), and with no list (not created, exit 3) leaves docker.service inactive, and reads Docker's start flags from docker.service; started again, the timer's service runs the prune normally. A changed service file or prune script is rewritten with a daemon-reload and the timer is not restarted (same ActiveEnterTimestamp and NextElapseUSecRealtime, no prune run); a schedule change restarts it. With no docker.service unit (its file, drop-ins and /etc/init.d/docker moved away), the service is written without the dependency lines and says so, and the unit starts and runs the prune; with the unit back, the next run writes them again.",
   "variables": {},
   "steps": [
     {
@@ -512,8 +512,9 @@
         "usrPruneImages": "all"
       },
       "outputContains": [
-        "Prune timer: installed",
-        "images: all"
+        "Prune timer: updated the prune service, script or settings",
+        "images: all",
+        "The timer was not restarted"
       ]
     },
     {
@@ -933,6 +934,270 @@
       ],
       "outputNotContains": [
         "STILL HERE"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: a restart: always container on the list; then docker.service stopped while docker.socket stays listening, as a package install leaves it",
+      "run": "set -e\nprintf '%s\\n' '#!/bin/bash' '# tc-test-dstate LABEL: docker.service and docker.socket as systemctl is-active reports them' 'echo \"$1: docker.service=$(systemctl is-active docker.service) docker.socket=$(systemctl is-active docker.socket)\"' > /usr/local/sbin/tc-test-dstate\nchmod 755 /usr/local/sbin/tc-test-dstate\ndocker run -d --name tc-stop-always --restart always tc-test-listed:1 /bin/sleep 3600 >/dev/null\necho name:tc-stop-always >> /etc/tc-docker/expected-containers\nsed -i 's/^OLDER_THAN_HOURS=.*/OLDER_THAN_HOURS=168/' /etc/default/tc-docker-prune\ngrep -E '^(Requisite|Requires|After)=' /etc/systemd/system/tc-docker-prune.service\ntc-test-dstate before\nsystemctl stop docker.service 2>/dev/null\nsystemctl start docker.socket\ntc-test-dstate stopped",
+      "outputContains": [
+        "Requisite=docker.service",
+        "After=docker.service",
+        "before: docker.service=active docker.socket=active",
+        "stopped: docker.service=inactive docker.socket=active"
+      ],
+      "outputNotContains": [
+        "Requires="
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: starting tc-docker-prune.service does not start Docker, and the unit does not run the prune",
+      "run": "sleep 1; t0=$(date +%s); since=\"$(date -d \"@$t0\" '+%Y-%m-%d %H:%M:%S')\"; inv=$(systemctl show tc-docker-prune.service -p InvocationID --value); tc-test-dstate before; systemctl start tc-docker-prune.service; echo \"systemctl start exit $?\"; sleep 3; tc-test-dstate after; [ \"$(systemctl show tc-docker-prune.service -p InvocationID --value)\" = \"$inv\" ] && echo 'the prune service did not start'; journalctl --sync >/dev/null 2>&1; n=$(journalctl -u tc-docker-prune.service --since \"$since\" -o cat --no-pager | grep -c \"^tc-docker-prune version\"); echo \"prune runs since the step began: $n\"; journalctl -u tc-docker-prune.service --since \"$since\" -o cat --no-pager | tail -n 3",
+      "outputContains": [
+        "before: docker.service=inactive docker.socket=active",
+        "systemctl start exit 1",
+        "after: docker.service=inactive docker.socket=active",
+        "the prune service did not start",
+        "prune runs since the step began: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: the timer itself fires (a test drop-in: 5 s after it starts, no random delay); the prune does not run, Docker stays stopped, and the timer stays active for its next run",
+      "run": "sleep 1; t0=$(date +%s); since=\"$(date -d \"@$t0\" '+%Y-%m-%d %H:%M:%S')\"; inv=$(systemctl show tc-docker-prune.service -p InvocationID --value); tc-test-dstate before; mkdir -p /etc/systemd/system/tc-docker-prune.timer.d; printf '%s\\n' '[Timer]' 'OnActiveSec=5s' 'RandomizedDelaySec=0' > /etc/systemd/system/tc-docker-prune.timer.d/tc-test.conf; systemctl daemon-reload; systemctl restart tc-docker-prune.timer; sleep 15; trig=$(systemctl show tc-docker-prune.timer -p LastTriggerUSec --value); echo \"timer last triggered: $trig\"; [ \"$(date -d \"$trig\" +%s 2>/dev/null || echo 0)\" -ge \"$t0\" ] && echo 'the timer fired during this step'; tc-test-dstate after; [ \"$(systemctl show tc-docker-prune.service -p InvocationID --value)\" = \"$inv\" ] && echo 'the prune service did not start'; journalctl --sync >/dev/null 2>&1; n=$(journalctl -u tc-docker-prune.service --since \"$since\" -o cat --no-pager | grep -c \"^tc-docker-prune version\"); echo \"prune runs since the step began: $n\"; echo \"timer: $(systemctl is-active tc-docker-prune.timer)\"; rm -rf /etc/systemd/system/tc-docker-prune.timer.d; systemctl daemon-reload; systemctl restart tc-docker-prune.timer; echo \"timer without the drop-in: $(systemctl is-active tc-docker-prune.timer), next $(systemctl show tc-docker-prune.timer -p NextElapseUSecRealtime --value)\"",
+      "outputContains": [
+        "before: docker.service=inactive docker.socket=active",
+        "the timer fired during this step",
+        "after: docker.service=inactive docker.socket=active",
+        "the prune service did not start",
+        "prune runs since the step began: 0",
+        "timer: active",
+        "timer without the drop-in: active, next"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: the prune run by hand prints one line saying so, removes nothing, exits 0, and Docker stays stopped",
+      "run": "tc-test-dstate before; /usr/local/sbin/tc-docker-prune; echo \"prune exit $?\"; tc-test-dstate after",
+      "outputContains": [
+        "before: docker.service=inactive docker.socket=active",
+        "Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.",
+        "prune exit 0",
+        "after: docker.service=inactive docker.socket=active"
+      ],
+      "outputNotContains": [
+        "Disk before",
+        "ERROR",
+        "Stopped containers"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Stopped Docker: Report mode",
+      "variables": {
+        "usrMode": "report"
+      },
+      "outputContains": [
+        "read from docker.service, as it would start Docker; Docker is not running",
+        "Mode: report"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: still stopped after Report mode",
+      "run": "tc-test-dstate 'after Report'",
+      "outputContains": [
+        "after Report: docker.service=inactive docker.socket=active"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Stopped Docker: Apply",
+      "outputContains": [
+        "read from docker.service, as it would start Docker; Docker is not running",
+        "Docker host maintenance: done."
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: still stopped after Apply",
+      "run": "tc-test-dstate 'after Apply'",
+      "outputContains": [
+        "after Apply: docker.service=inactive docker.socket=active"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Stopped Docker: Apply with Prune now - the prune does not run, exit 3",
+      "variables": {
+        "usrPruneNow": "yes"
+      },
+      "expectExitCode": 3,
+      "outputContains": [
+        "Prune now: Docker is not running (docker.service is inactive); not run, and Docker was left stopped."
+      ],
+      "outputNotContains": [
+        "tc-docker-prune version",
+        "Disk before"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: still stopped after Prune now; then the list taken away, so the component tries to create one",
+      "run": "tc-test-dstate 'after Prune now'; mv /etc/tc-docker/expected-containers /tmp/tc-ec-stopped && echo moved",
+      "outputContains": [
+        "after Prune now: docker.service=inactive docker.socket=active",
+        "moved"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Stopped Docker: the list is not created, exit 3",
+      "expectExitCode": 3,
+      "outputContains": [
+        "Expected list: Docker is not running (docker.service is inactive), so the list was not created and Docker was left stopped; the next run will try again."
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: still stopped, no list written; the list put back",
+      "run": "tc-test-dstate 'after the list attempt'; test ! -e /etc/tc-docker/expected-containers && echo 'no list written'; mv /tmp/tc-ec-stopped /etc/tc-docker/expected-containers && echo 'list back'",
+      "outputContains": [
+        "after the list attempt: docker.service=inactive docker.socket=active",
+        "no list written",
+        "list back"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Docker started again: the timer's service runs the prune normally, and the restart: always container is back",
+      "run": "systemctl start docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; tc-test-dstate started; t0=$(date +%s); since=\"$(date -d \"@$t0\" '+%Y-%m-%d %H:%M:%S')\"; systemctl start tc-docker-prune.service; echo \"systemctl start exit $?\"; echo \"result: $(systemctl show tc-docker-prune.service -p Result --value)\"; journalctl --sync >/dev/null 2>&1; journalctl -u tc-docker-prune.service --since \"$since\" -o cat --no-pager | grep -E '^(tc-docker-prune version|Pruning|Disk after|Docker is not running)'; docker inspect -f '{{.Name}} running={{.State.Running}}' tc-stop-always",
+      "outputContains": [
+        "started: docker.service=active docker.socket=active",
+        "systemctl start exit 0",
+        "result: success",
+        "tc-docker-prune version",
+        "Pruning unused items older than",
+        "Disk after",
+        "/tc-stop-always running=true"
+      ],
+      "outputNotContains": [
+        "Docker is not running"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Timer rule: the timer and the prune service recorded; then the installed service file and prune script changed by hand, as an older version would have left them",
+      "run": "systemctl show tc-docker-prune.timer -p ActiveEnterTimestamp -p NextElapseUSecRealtime > /tmp/tc-timer-before; systemctl show tc-docker-prune.service -p InvocationID > /tmp/tc-svc-before; cat /tmp/tc-timer-before; echo '# tc-test: changed by hand' >> /etc/systemd/system/tc-docker-prune.service; echo '# tc-test: changed by hand' >> /usr/local/sbin/tc-docker-prune; sleep 1; date +%s > /tmp/tc-timer-t0; echo changed",
+      "outputContains": [
+        "ActiveEnterTimestamp=",
+        "NextElapseUSecRealtime=",
+        "changed"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Timer rule: a changed service or script is rewritten, with a daemon-reload and no timer restart",
+      "outputContains": [
+        "Prune timer: updated the prune service, script or settings",
+        "The timer was not restarted."
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Timer rule: same ActiveEnterTimestamp and NextElapseUSecRealtime, no prune ran, and the hand changes are gone",
+      "run": "systemctl show tc-docker-prune.timer -p ActiveEnterTimestamp -p NextElapseUSecRealtime > /tmp/tc-timer-after; cat /tmp/tc-timer-after; cmp -s /tmp/tc-timer-before /tmp/tc-timer-after && echo 'timer not restarted, next run unchanged'; systemctl show tc-docker-prune.service -p InvocationID | cmp -s - /tmp/tc-svc-before && echo 'no prune ran (same InvocationID)'; t0=$(cat /tmp/tc-timer-t0); since=\"$(date -d \"@$t0\" '+%Y-%m-%d %H:%M:%S')\"; journalctl --sync >/dev/null 2>&1; n=$(journalctl -u tc-docker-prune.service --since \"$since\" -o cat --no-pager | grep -c \"^tc-docker-prune version\"); echo \"prune runs since the step began: $n\"; grep -l 'tc-test: changed by hand' /etc/systemd/system/tc-docker-prune.service /usr/local/sbin/tc-docker-prune || echo 'hand changes gone'",
+      "outputContains": [
+        "timer not restarted, next run unchanged",
+        "no prune ran (same InvocationID)",
+        "prune runs since the step began: 0",
+        "hand changes gone"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Timer rule: a schedule change restarts the timer",
+      "variables": {
+        "usrPruneSchedule": "Sat *-*-* 05:00:00"
+      },
+      "outputContains": [
+        "Prune timer: installed tc-docker-prune.timer (Sat *-*-* 05:00:00"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Timer rule: after the schedule change the timer was restarted and its next run is on a Saturday",
+      "run": "systemctl show tc-docker-prune.timer -p ActiveEnterTimestamp -p NextElapseUSecRealtime > /tmp/tc-timer-sched; cat /tmp/tc-timer-sched; a=$(grep ActiveEnter /tmp/tc-timer-before); b=$(grep ActiveEnter /tmp/tc-timer-sched); [ \"$a\" != \"$b\" ] && echo 'timer restarted'; grep -q '^NextElapseUSecRealtime=Sat ' /tmp/tc-timer-sched && echo 'next run on a Saturday'",
+      "outputContains": [
+        "timer restarted",
+        "next run on a Saturday"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Timer rule: the default schedule back",
+      "outputContains": [
+        "Prune timer: installed tc-docker-prune.timer (Sun *-*-* 04:00:00"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "No docker.service: Docker and its socket stopped, and the docker.service unit file, any drop-ins and /etc/init.d/docker (from which systemd would generate a docker.service) moved away, so systemd has no such unit",
+      "run": "set -e; systemctl stop docker.socket docker.service; f=$(systemctl show docker.service -p FragmentPath --value); test -f \"$f\"; echo \"$f\" > /tmp/tc-unit-path; mv \"$f\" /tmp/tc-docker.service.moved; if [ -d /etc/systemd/system/docker.service.d ]; then mv /etc/systemd/system/docker.service.d /tmp/tc-docker.service.d.moved; fi; if [ -e /etc/init.d/docker ]; then mv /etc/init.d/docker /tmp/tc-initd-docker.moved; fi; systemctl daemon-reload; echo \"docker.service LoadState: $(systemctl show docker.service -p LoadState --value)\"",
+      "outputContains": [
+        "docker.service LoadState: not-found"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "No docker.service: the service is written without the dependency, and the run says so (daemon.json left out: with Docker stopped it needs the unit)",
+      "variables": {
+        "usrLogMaxSize": "",
+        "usrLogMaxFile": "",
+        "usrBuildCacheMax": ""
+      },
+      "outputContains": [
+        "Prune timer: this host has no docker.service unit, so tc-docker-prune.service is written without a dependency on it; the prune checks for itself whether Docker is running.",
+        "Prune timer: updated the prune service, script or settings"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "No docker.service: no Requisite or After line, and the unit starts and runs the prune, which finds no Docker answering",
+      "run": "grep -E '^(Requisite|Requires|After)=' /etc/systemd/system/tc-docker-prune.service || echo 'no dependency lines'; sleep 1; t0=$(date +%s); since=\"$(date -d \"@$t0\" '+%Y-%m-%d %H:%M:%S')\"; systemctl start tc-docker-prune.service; echo \"systemctl start exit $?\"; journalctl --sync >/dev/null 2>&1; n=$(journalctl -u tc-docker-prune.service --since \"$since\" -o cat --no-pager | grep -c \"^tc-docker-prune version\"); echo \"prune runs since the step began: $n\"; journalctl -u tc-docker-prune.service --since \"$since\" -o cat --no-pager | grep -E '^(tc-docker-prune version|ERROR)'; true",
+      "outputContains": [
+        "no dependency lines",
+        "prune runs since the step began: 1",
+        "ERROR: the Docker daemon is not reachable"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "No docker.service: the unit put back and Docker started",
+      "run": "set -e; mv /tmp/tc-docker.service.moved \"$(cat /tmp/tc-unit-path)\"; if [ -d /tmp/tc-docker.service.d.moved ]; then mv /tmp/tc-docker.service.d.moved /etc/systemd/system/docker.service.d; fi; if [ -e /tmp/tc-initd-docker.moved ]; then mv /tmp/tc-initd-docker.moved /etc/init.d/docker; fi; rm -f /tmp/tc-unit-path; systemctl daemon-reload; systemctl reset-failed docker.service docker.socket tc-docker-prune.service 2>/dev/null || true; systemctl start docker.socket docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; tc-test-dstate back",
+      "outputContains": [
+        "back: docker.service=active docker.socket=active"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "No docker.service: with the unit back, the next run writes the dependency again",
+      "outputContains": [
+        "Prune timer: updated the prune service, script or settings"
+      ],
+      "outputNotContains": [
+        "no docker.service unit"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker tests: clean up - Requisite back in the service, the test container and its list entry gone",
+      "run": "grep -E '^(Requisite|After)=' /etc/systemd/system/tc-docker-prune.service; docker rm -f tc-stop-always >/dev/null && echo 'tc-stop-always removed'; sed -i '/^name:tc-stop-always$/d' /etc/tc-docker/expected-containers; rm -f /usr/local/sbin/tc-test-dstate /tmp/tc-timer-before /tmp/tc-timer-after /tmp/tc-timer-sched /tmp/tc-svc-before /tmp/tc-timer-t0",
+      "outputContains": [
+        "Requisite=docker.service",
+        "After=docker.service",
+        "tc-stop-always removed"
       ]
     },
     {
