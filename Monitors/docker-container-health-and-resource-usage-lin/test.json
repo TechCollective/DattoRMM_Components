@@ -1,0 +1,659 @@
+{
+ "platforms": [
+  "linux"
+ ],
+ "description": "On a runner with Docker and systemd. Exited containers: one OOM-killed (16 MiB limit, a shell that allocates) always alerts, worded as an out-of-memory kill; docker stop giving 143 (sleep behind --init) and 137 (a shell as PID 1 that ignores TERM) is named in the status under usrStoppedExitAction Warn and alerts under Alert; exit code 1 alerts as before; usrIncludeLogs Yes puts the last log lines in the diagnostic and says so in the status. Baseline age: saved state an hour old gives the restart-loop alert; made 7 hours old, the run takes a new baseline, raises no restart alert, resets breach streaks and says so. The state directory /var/lib/tc-docker-monitor: a pre-made symlink there is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the state file is replaced, its target untouched. usrExclude starting with - is a pattern. A docker shim that never answers (also one that ignores TERM, and one that hangs only docker stats) gives 'Docker did not answer within 60 seconds', exit 1, inside 90 seconds, nothing left running and a sibling in the caller's process group untouched. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found through the appended PATH. GNU bash 4.2 runs the main paths without an unbound-variable crash.",
+ "steps": [
+  {
+   "type": "command",
+   "label": "Test helpers: tc-test-run (runs the monitor the way the harness does, timed, under /bin/bash or bash 4.2), tc-test-left, tc-test-dstate, tc-test-state, tc-test-clean; a tiny local image tc-test-base:1; one running container tc-run1",
+   "run": "set -e\nM=\"$PWD/Monitors/docker-container-health-and-resource-usage-lin/docker-container-health-and-resource-usage-lin.sh\"\ntest -f \"$M\"\ncat > /usr/local/bin/tc-test-run <<'EOF'\n#!/bin/bash\n# tc-test-run [--bash42] [VAR=value...]: run the monitor as the harness does (a clean\n# environment and the agent's root PATH); print its output, exit code and seconds taken.\nb=/bin/bash; if [ \"${1:-}\" = --bash42 ]; then b=/opt/tc-bash42/bin/bash; shift; fi\nt0=$(date +%s)\nenv -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \"$@\" \"$b\" \"@MONITOR@\"\nrc=$?\nsecs=$(( $(date +%s) - t0 ))\necho \"exit $rc after $secs seconds, under $(\"$b\" -c 'echo \"bash $BASH_VERSION\"')\"\n[ \"$secs\" -lt 90 ] && echo \"result inside 90 seconds\"\nexit 0\nEOF\nsed -i \"s|@MONITOR@|$M|\" /usr/local/bin/tc-test-run\ncat > /usr/local/bin/tc-test-left <<'EOF'\n#!/bin/bash\n# tc-test-left: any docker shim process still running, from ps.\nsleep 1\necho \"--- ps -eo pid,ppid,pgid,etime,args, docker shims and their children:\"\nps -eo pid,ppid,pgid,etime,args | grep -E '[/]usr/local/sbin/docker|[s]leep 600|[t]c-test-shim' || echo \"no docker client or shim process left\"\nEOF\ncat > /usr/local/bin/tc-test-dstate <<'EOF'\n#!/bin/bash\n# tc-test-dstate LABEL: what systemd says about Docker.\necho \"$1: systemctl is-active docker.service docker.socket -> $(systemctl is-active docker.service docker.socket | paste -sd' ')\"\nEOF\ncat > /usr/local/bin/tc-test-state <<'EOF'\n#!/bin/bash\n# tc-test-state: the state directory and the state file, or that they are not there.\nd=/var/lib/tc-docker-monitor; f=$d/monitor-state.tsv\nls -lad \"$d\" 2>&1\nif [ -f \"$f\" ] && [ ! -L \"$f\" ]; then echo \"--- $f (now $(date +%s)):\"; ls -la \"$f\"; cat \"$f\"; else echo \"(no state file)\"; fi\nEOF\ncat > /usr/local/bin/tc-test-clean <<'EOF'\n#!/bin/bash\n# tc-test-clean: remove every container except tc-run1, and the monitor's state.\nfor c in $(docker ps -aq --no-trunc); do\n    [ \"$(docker inspect -f '{{.Name}}' \"$c\")\" = /tc-run1 ] || docker rm -f \"$c\" >/dev/null\ndone\nrm -rf /var/lib/tc-docker-monitor\ndocker ps -a --format '{{.Names}} {{.Status}}' | sort\nEOF\nchmod 755 /usr/local/bin/tc-test-run /usr/local/bin/tc-test-left /usr/local/bin/tc-test-dstate /usr/local/bin/tc-test-state /usr/local/bin/tc-test-clean\n# A tiny image built here (sh, sleep, true and their libraries), so no registry is needed.\nr=$(mktemp -d); mkdir -p \"$r/bin\"\nfor b in /bin/sh /bin/sleep /bin/true; do\n    cp \"$(readlink -f \"$b\")\" \"$r/bin/$(basename \"$b\")\"\n    for l in $(ldd \"$b\" | grep -oE '/[^ ]+'); do mkdir -p \"$r$(dirname \"$l\")\"; cp -L \"$l\" \"$r$l\" 2>/dev/null || true; done\ndone\ntar -C \"$r\" -c . | docker import - tc-test-base:1 >/dev/null; rm -rf \"$r\"\ndocker run --rm tc-test-base:1 /bin/sh -c 'echo \"tc-test-base:1 runs\"'\nfor c in $(docker ps -aq); do docker rm -f \"$c\" >/dev/null; done\nrm -rf /var/lib/tc-docker-monitor\ndocker run -d --name tc-run1 tc-test-base:1 /bin/sleep 86400 >/dev/null\necho \"helpers installed for $M\"\n",
+   "outputContains": [
+    "tc-test-base:1 runs",
+    "helpers installed for"
+   ],
+   "timeoutSeconds": 180
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: build GNU bash 4.2 from the GNU release (sha256 checked) into /opt/tc-bash42; it has the bug: an empty array is unbound under set -u",
+   "run": "set -e\nd=$(mktemp -d); cd \"$d\"\nfor u in https://ftp.gnu.org/gnu/bash/bash-4.2.tar.gz https://ftpmirror.gnu.org/bash/bash-4.2.tar.gz; do\n  curl -fsSL --retry 3 -o bash-4.2.tar.gz \"$u\" && break\ndone\necho 'a27a1179ec9c0830c65c6aa5d7dab60f7ce1a2a608618570f96bfa72e95ab3d8  bash-4.2.tar.gz' | sha256sum -c -\ntar xzf bash-4.2.tar.gz\ncd bash-4.2\n# 2011 C: -std=gnu89 goes in CC so it also reaches the build-time tools (CC_FOR_BUILD), which a\n# newer gcc defaulting to C23 otherwise refuses; the old-style warnings stay warnings.\nW='-O1 -fpermissive -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-return-mismatch'\ngcc --version | head -n 1\nCC='gcc -std=gnu89' CFLAGS=\"$W\" CFLAGS_FOR_BUILD=\"$W\" ./configure --without-bash-malloc --disable-nls >configure.log 2>&1 || { tail -n 30 configure.log; exit 1; }\nmake -j\"$(nproc)\" >make.log 2>&1 || { grep -m 20 'error:' make.log; tail -n 30 make.log; exit 1; }\ninstall -D -m 755 bash /opt/tc-bash42/bin/bash\n/opt/tc-bash42/bin/bash -c 'echo \"built bash $BASH_VERSION\"'\n/opt/tc-bash42/bin/bash -c 'set -u; a=(); echo \"${a[@]}\"' 2>&1 || true",
+   "outputContains": [
+    "built bash 4.2.0",
+    "a[@]: unbound variable"
+   ],
+   "timeoutSeconds": 900
+  },
+  {
+   "type": "runComponent",
+   "label": "Healthy: one running container, first run, no state yet",
+   "outputContains": [
+    "STATUS=All 1 running container(s) within thresholds"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "State: /var/lib/tc-docker-monitor made root-only, the state file root-only, well-formed lines",
+   "run": "tc-test-state",
+   "outputContains": [
+    "drwx------ 2 root root",
+    "-rw------- 1 root root",
+    "tc-run1\t0\t0\t"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: the healthy run",
+   "run": "tc-test-run --bash42",
+   "outputContains": [
+    "STATUS=All 1 running container(s) within thresholds",
+    "exit 0 after",
+    "under bash 4.2.0"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "OOM: tc-oom, memory limit 16 MiB and no swap, runs a shell that doubles a string until the kernel kills it",
+   "run": "docker run --name tc-oom -m 16m --memory-swap 16m tc-test-base:1 /bin/sh -c 'a=xxxxxxxxxxxxxxxx; while :; do a=\"$a$a\"; done'; docker inspect -f 'tc-oom: exit {{.State.ExitCode}} OOMKilled {{.State.OOMKilled}}' tc-oom",
+   "outputContains": [
+    "tc-oom: exit 137 OOMKilled true"
+   ],
+   "timeoutSeconds": 120
+  },
+  {
+   "type": "runComponent",
+   "label": "OOM-killed: always an alert, worded as such (usrStoppedExitAction Warn, the default)",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker: tc-oom: killed for running out of memory (OOM)",
+    "exit code 137",
+    "tc-oom exit=137 OOM-killed"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "OOM-killed, usrStoppedExitAction Alert: the same alert",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker: tc-oom: killed for running out of memory (OOM)"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ],
+   "variables": {
+    "usrStoppedExitAction": "Alert"
+   }
+  },
+  {
+   "type": "command",
+   "label": "OOM: clean up",
+   "run": "tc-test-clean",
+   "outputContains": [
+    "tc-run1 Up"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "docker stop: tc-stop143 (sleep behind docker's init, which passes TERM on, so it exits 143) and tc-stop137 (a shell as PID 1 ignores TERM, so docker stop KILLs it: 137)",
+   "run": "set -e; docker run -d --init --name tc-stop143 tc-test-base:1 /bin/sleep 600 >/dev/null; docker run -d --name tc-stop137 tc-test-base:1 /bin/sh -c 'sleep 600' >/dev/null; sleep 1; docker stop -t 2 tc-stop143 tc-stop137 >/dev/null; docker inspect -f '{{.Name}}: exit {{.State.ExitCode}} OOMKilled {{.State.OOMKilled}}' tc-stop143 tc-stop137",
+   "outputContains": [
+    "/tc-stop143: exit 143 OOMKilled false",
+    "/tc-stop137: exit 137 OOMKilled false"
+   ],
+   "timeoutSeconds": 60
+  },
+  {
+   "type": "runComponent",
+   "label": "docker stop, usrStoppedExitAction Warn (default): named in the status, exit 0",
+   "outputContains": [
+    "; note: ",
+    "tc-stop143 stopped (exit 143)",
+    "tc-stop137 stopped (exit 137)"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable",
+    "Docker: "
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "docker stop, usrStoppedExitAction Alert: alerts for both",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker: 2 container problems",
+    "tc-stop143: stopped by a signal (exit code 143, as docker stop gives)",
+    "tc-stop137: stopped by a signal (exit code 137, as docker stop gives)"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable",
+    "OOM"
+   ],
+   "variables": {
+    "usrStoppedExitAction": "Alert"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "A bad usrStoppedExitAction is refused",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: usrStoppedExitAction must be warn or alert, got 'sometimes'"
+   ],
+   "variables": {
+    "usrStoppedExitAction": "sometimes"
+   }
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: docker stop under Alert",
+   "run": "tc-test-run --bash42 usrStoppedExitAction=alert",
+   "outputContains": [
+    "STATUS=Docker: 2 container problems",
+    "exit 1 after",
+    "under bash 4.2.0"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "docker stop: clean up",
+   "run": "tc-test-clean",
+   "outputContains": [
+    "tc-run1 Up"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Exit code 1: tc-exit1 prints a log line and exits 1",
+   "run": "docker run --name tc-exit1 tc-test-base:1 /bin/sh -c 'echo tc-test log line; exit 1'; docker inspect -f 'tc-exit1: exit {{.State.ExitCode}}' tc-exit1",
+   "outputContains": [
+    "tc-exit1: exit 1"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Exit code 1: an alert, as before",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker: tc-exit1: exited with code 1"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable",
+    "log lines",
+    "tc-test log line"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Exit code 1 under usrStoppedExitAction Warn is still an alert",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker: tc-exit1: exited with code 1"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ],
+   "variables": {
+    "usrStoppedExitAction": "Warn"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "usrIncludeLogs Yes: the status says logs were included, and they are in the diagnostic",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker: tc-exit1: exited with code 1",
+    "last 20 log lines of 1 container(s) included in the diagnostic",
+    "--- tc-exit1 ---",
+    "tc-test log line"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ],
+   "variables": {
+    "usrIncludeLogs": "Yes"
+   }
+  },
+  {
+   "type": "runComponent",
+   "label": "usrIncludeLogs No (default): no logs, nothing said about them",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker: tc-exit1"
+   ],
+   "outputNotContains": [
+    "log lines",
+    "tc-test log line"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Exit code 1: clean up",
+   "run": "tc-test-clean",
+   "outputContains": [
+    "tc-run1 Up"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Baseline age: tc-loop restarts every second (restart: always); wait for 3 restarts; first run records a baseline",
+   "run": "docker run -d --name tc-loop --restart always tc-test-base:1 /bin/sh -c 'sleep 1; exit 3' >/dev/null; for i in $(seq 60); do n=$(docker inspect -f '{{.RestartCount}}' tc-loop); [ \"$n\" -ge 3 ] && break; sleep 1; done; echo \"tc-loop restarts: $n\"; [ \"$n\" -ge 3 ] && echo 'at least 3 restarts'",
+   "outputContains": [
+    "at least 3 restarts"
+   ],
+   "timeoutSeconds": 120
+  },
+  {
+   "type": "command",
+   "label": "Baseline age: the saved state, an hour old, has tc-loop at 0 restarts (control: a baseline young enough is used)",
+   "run": "set -e; f=/var/lib/tc-docker-monitor/monitor-state.tsv; mkdir -p -m 700 /var/lib/tc-docker-monitor; t=$(( $(date +%s) - 3600 )); printf 'tc-loop\\t0\\t0\\t%s\\ntc-run1\\t0\\t1\\t%s\\n' \"$t\" \"$t\" > $f; touch -d @$t $f; tc-test-state",
+   "outputContains": [
+    "tc-loop\t0\t0\t"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Saved state 1 hour old: the restart delta alerts, as before",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker: tc-loop: restarted",
+    "times since the previous check"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable",
+    "new baseline"
+   ],
+   "variables": {
+    "usrExitedWindowMin": "0"
+   }
+  },
+  {
+   "type": "command",
+   "label": "Baseline age: the saved state made 7 hours old (its times and the file's), tc-loop at 0 restarts and tc-run1 with a breach streak of 1",
+   "run": "set -e; f=/var/lib/tc-docker-monitor/monitor-state.tsv; t=$(( $(date +%s) - 25200 )); printf 'tc-loop\\t0\\t0\\t%s\\ntc-run1\\t0\\t1\\t%s\\n' \"$t\" \"$t\" > $f; touch -d @$t $f; tc-test-state",
+   "outputContains": [
+    "tc-run1\t0\t1\t"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Saved state 7 hours old: a new baseline, no restart alert, and the status says so",
+   "outputContains": [
+    "new baseline taken (previous run 7 h ago, more than 6 h), so no restart alert and no breach streak this run"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable",
+    "restarted"
+   ],
+   "variables": {
+    "usrExitedWindowMin": "0"
+   }
+  },
+  {
+   "type": "command",
+   "label": "Baseline age: the new baseline was saved, with tc-run1's streak reset to 0 and tc-loop's current count",
+   "run": "tc-test-state",
+   "outputContains": [
+    "tc-run1\t0\t0\t"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Baseline age: clean up",
+   "run": "tc-test-clean",
+   "outputContains": [
+    "tc-run1 Up"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "State directory a symlink: /var/lib/tc-docker-monitor points at /tmp/tc-elsewhere (another user could have made it)",
+   "run": "set -e; rm -rf /var/lib/tc-docker-monitor /tmp/tc-elsewhere; mkdir /tmp/tc-elsewhere; chmod 755 /tmp/tc-elsewhere; ln -s /tmp/tc-elsewhere /var/lib/tc-docker-monitor; ls -la /var/lib/tc-docker-monitor /tmp/tc-elsewhere",
+   "outputContains": [
+    "/var/lib/tc-docker-monitor -> /tmp/tc-elsewhere"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Symlink: not followed, the check still runs, the status says no saved state",
+   "outputContains": [
+    "STATUS=All 1 running container(s) within thresholds",
+    "no saved state (/var/lib/tc-docker-monitor is a symlink)"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Symlink: nothing written through it, its target still 0755 and empty",
+   "run": "ls -la /var/lib/tc-docker-monitor /tmp/tc-elsewhere; [ -z \"$(ls -A /tmp/tc-elsewhere)\" ] && echo 'target empty'; stat -c 'target mode %a' /tmp/tc-elsewhere",
+   "outputContains": [
+    "target empty",
+    "target mode 755"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "State directory not owned by root: a real directory owned by nobody",
+   "run": "set -e; rm -f /var/lib/tc-docker-monitor; mkdir -m 755 /var/lib/tc-docker-monitor; chown 65534:65534 /var/lib/tc-docker-monitor; ls -lad /var/lib/tc-docker-monitor",
+   "outputContains": [
+    "/var/lib/tc-docker-monitor"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Wrong owner: not used, the check still runs, the status says why",
+   "outputContains": [
+    "STATUS=All 1 running container(s) within thresholds",
+    "no saved state (/var/lib/tc-docker-monitor is not owned by root)"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Wrong owner: nothing written in it, owner and mode unchanged",
+   "run": "ls -la /var/lib/tc-docker-monitor; [ -z \"$(ls -A /var/lib/tc-docker-monitor)\" ] && echo 'directory empty'; stat -c 'owner %u mode %a' /var/lib/tc-docker-monitor",
+   "outputContains": [
+    "directory empty",
+    "owner 65534 mode 755"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "State: back to a root-owned directory, with a symlink where the state file goes",
+   "run": "set -e; rm -rf /var/lib/tc-docker-monitor; mkdir -m 755 /var/lib/tc-docker-monitor; echo sentinel > /tmp/tc-target; ln -s /tmp/tc-target /var/lib/tc-docker-monitor/monitor-state.tsv; ls -la /var/lib/tc-docker-monitor",
+   "outputContains": [
+    "monitor-state.tsv -> /tmp/tc-target"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "A symlink at the state file: not read; replaced by a real file",
+   "outputContains": [
+    "STATUS=All 1 running container(s) within thresholds"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable",
+    "no saved state"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "The symlink's target is untouched; the state file is now a root-only regular file; the directory made 0700",
+   "run": "cat /tmp/tc-target; tc-test-state",
+   "outputContains": [
+    "sentinel",
+    "drwx------ 2 root root",
+    "-rw------- 1 root root",
+    "tc-run1\t0\t0\t"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "usrExclude starting with -: a pattern, not a grep option",
+   "outputContains": [
+    "STATUS=Docker is running but no containers are running on this host; 1 excluded by usrExclude"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable",
+    "not a valid"
+   ],
+   "variables": {
+    "usrExclude": "-run1"
+   }
+  },
+  {
+   "type": "command",
+   "label": "Hung daemon: a docker shim first on PATH that takes every command and never answers",
+   "run": "set -e; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; echo \"$real\" > /var/tmp/tc-docker-real; printf '%s\\n' '#!/bin/sh' '# tc-test-shim: takes the command and never answers' 'sleep 600' > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; echo 'hang shim installed'",
+   "outputContains": [
+    "hang shim installed"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Hung daemon, with a sibling process in the caller's process group: result inside 90 seconds, exit 1, nothing left running, the sibling untouched",
+   "run": "sleep 900 & sib=$!; tc-test-run; tc-test-left; kill -0 \"$sib\" && echo \"sibling $sib in the caller's process group still running\"; kill \"$sib\"",
+   "outputContains": [
+    "STATUS=Check could not run: Docker did not answer within 60 seconds",
+    "exit 1 after",
+    "result inside 90 seconds",
+    "no docker client or shim process left",
+    "in the caller's process group still running"
+   ],
+   "timeoutSeconds": 180
+  },
+  {
+   "type": "runComponent",
+   "label": "Hung daemon, as the harness runs it: exit 1, and the diagnostic says what was stopped",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: Docker did not answer within 60 seconds",
+    "docker info had not finished 60 seconds after this monitor started",
+    "nothing else was signalled"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Hung daemon: nothing left running after that run",
+   "run": "tc-test-left",
+   "outputContains": [
+    "no docker client or shim process left"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: a hung daemon",
+   "run": "tc-test-run --bash42; tc-test-left",
+   "outputContains": [
+    "Docker did not answer within 60 seconds",
+    "exit 1 after",
+    "result inside 90 seconds",
+    "under bash 4.2.0",
+    "no docker client or shim process left"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ],
+   "timeoutSeconds": 180
+  },
+  {
+   "type": "command",
+   "label": "Hung daemon that ignores TERM: a shim that traps TERM and loops",
+   "run": "printf '%s\\n' '#!/bin/sh' '# tc-test-shim: ignores TERM and never answers' \"trap '' TERM\" 'while :; do sleep 1; done' > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; cat /usr/local/sbin/docker",
+   "outputContains": [
+    "trap '' TERM"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "A shim that ignores TERM: killed with what is left of its group; inside 90 seconds, nothing left",
+   "run": "tc-test-run; tc-test-left",
+   "outputContains": [
+    "Docker did not answer within 60 seconds",
+    "exit 1 after",
+    "result inside 90 seconds",
+    "no docker client or shim process left"
+   ],
+   "timeoutSeconds": 180
+  },
+  {
+   "type": "command",
+   "label": "Hung stats: a shim that passes everything but docker stats to Docker",
+   "run": "real=$(cat /var/tmp/tc-docker-real); printf '%s\\n' '#!/bin/sh' '# tc-test-shim: docker stats never answers' \"[ \\\"\\$1\\\" = stats ] && exec sleep 600\" \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; docker info --format 'docker info still answers: {{.ServerVersion}}'",
+   "outputContains": [
+    "docker info still answers"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Hung stats: exit 1, and the diagnostic says it was docker stats",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: Docker did not answer within 60 seconds",
+    "docker stats had not finished"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Hung stats: nothing left running",
+   "run": "tc-test-left",
+   "outputContains": [
+    "no docker client or shim process left"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Shims removed: Docker answers again",
+   "run": "rm -f /usr/local/sbin/docker; hash -r; docker ps >/dev/null && echo 'docker ps answers again'",
+   "outputContains": [
+    "docker ps answers again"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Stopped Docker: a shim on PATH records any docker command; docker.service stopped while docker.socket keeps listening",
+   "run": "set -e; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; printf '%s\\n' '#!/bin/sh' '# tc-test-shim: records every docker command' 'echo \"$*\" >> /var/tmp/tc-docker-calls' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; : > /var/tmp/tc-docker-calls; tc-test-dstate before; systemctl stop docker.service 2>/dev/null; tc-test-dstate stopped; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"",
+   "outputContains": [
+    "before: systemctl is-active docker.service docker.socket -> active active",
+    "stopped: systemctl is-active docker.service docker.socket -> inactive active",
+    "docker commands run: 0"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Docker stopped: exit 0, says so, and runs no docker command",
+   "outputContains": [
+    "STATUS=Docker is stopped (docker.service is inactive); nothing to check"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "bash 4.2: Docker stopped",
+   "run": "tc-test-run --bash42",
+   "outputContains": [
+    "STATUS=Docker is stopped (docker.service is inactive); nothing to check",
+    "exit 0 after",
+    "under bash 4.2.0"
+   ],
+   "outputNotContains": [
+    "stopped unexpectedly",
+    "failed before it could measure",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Stopped Docker: still stopped, and no docker command was run; then Docker started again, and tc-run1 with it",
+   "run": "tc-test-dstate after; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"; rm -f /usr/local/sbin/docker /var/tmp/tc-docker-calls; hash -r; systemctl start docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; docker start tc-run1 >/dev/null; tc-test-dstate restarted",
+   "outputContains": [
+    "after: systemctl is-active docker.service docker.socket -> inactive active",
+    "docker commands run: 0",
+    "restarted: systemctl is-active docker.service docker.socket -> active active"
+   ],
+   "timeoutSeconds": 120
+  },
+  {
+   "type": "runComponent",
+   "label": "Docker answers again: healthy",
+   "outputContains": [
+    "STATUS=All 1 running container(s) within thresholds"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "No docker command, but Docker's socket is there: the client moved out of every PATH directory",
+   "run": "set -e; real=$(command -v docker); echo \"$real\" > /var/tmp/tc-docker-real; mv \"$real\" /var/tmp/tc-docker-cli.moved; hash -r; command -v docker || echo 'no docker command'; test -S /var/run/docker.sock && echo '/var/run/docker.sock is a socket'",
+   "outputContains": [
+    "no docker command",
+    "/var/run/docker.sock is a socket"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Socket present, no docker command: exit 1",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker appears to be installed but no docker command was found"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "PATH: the docker client in /snap/bin only, which the harness PATH does not reach and the monitor's appended PATH does",
+   "run": "set -e; mkdir -p /snap/bin; mv /var/tmp/tc-docker-cli.moved /snap/bin/docker; env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -c 'command -v docker || echo \"not on the harness PATH\"'",
+   "outputContains": [
+    "not on the harness PATH"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Docker only on the appended PATH: found, and the check runs as usual",
+   "outputContains": [
+    "STATUS=All 1 running container(s) within thresholds"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "PATH: the client put back where it was",
+   "run": "set -e; mv /snap/bin/docker \"$(cat /var/tmp/tc-docker-real)\"; rm -f /var/tmp/tc-docker-real; hash -r; docker ps --format '{{.Names}}'",
+   "outputContains": [
+    "tc-run1"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Back to normal",
+   "outputContains": [
+    "STATUS=All 1 running container(s) within thresholds"
+   ]
+  }
+ ]
+}

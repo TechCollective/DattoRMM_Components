@@ -1,0 +1,92 @@
+{
+  "general": {
+    "name": "Docker - Container Health and Resource Usage [Lin]",
+    "category": "monitors",
+    "description": "Alerts when a container is unhealthy, restart-looping, OOM-killed, exited non-zero, or over CPU/memory thresholds, or Docker does not answer. Read-only; never starts a stopped Docker. https://github.com/TechCollective/DattoRMM_Components",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "120",
+    "securityLevel": "4",
+    "installType": "unix"
+  },
+  "body": "docker-container-health-and-resource-usage-lin.sh",
+  "variables": [
+    {
+      "name": "usrCpuThreshold",
+      "type": "string",
+      "direction": "false",
+      "description": "Percent of the container's own CPU allowance (not of one core). 1-100.",
+      "defaultVal": "90"
+    },
+    {
+      "name": "usrMemThreshold",
+      "type": "string",
+      "direction": "false",
+      "description": "Percent of the container's memory limit (of host RAM when it has none). 1-100.",
+      "defaultVal": "90"
+    },
+    {
+      "name": "usrConsecutive",
+      "type": "string",
+      "direction": "false",
+      "description": "Runs in a row a container must breach CPU or memory before it alerts. 1-10.",
+      "defaultVal": "2"
+    },
+    {
+      "name": "usrCheckHealth",
+      "type": "map",
+      "direction": "false",
+      "description": "An unhealthy healthcheck: Alert, Warn (named in the status only) or Ignore.",
+      "defaultVal": "Alert",
+      "options": [
+        { "name": "Alert", "value": "alert" },
+        { "name": "Warn", "value": "warn" },
+        { "name": "Ignore", "value": "ignore" }
+      ]
+    },
+    {
+      "name": "usrRestartThreshold",
+      "type": "string",
+      "direction": "false",
+      "description": "Restarts since the previous run that alert. 1 or more.",
+      "defaultVal": "3"
+    },
+    {
+      "name": "usrExitedWindowMin",
+      "type": "string",
+      "direction": "false",
+      "description": "Minutes a non-zero exit is reported for. 0 turns the exited-container check off.",
+      "defaultVal": "60"
+    },
+    {
+      "name": "usrStoppedExitAction",
+      "type": "map",
+      "direction": "false",
+      "description": "A container that exited 143 or 137 without being OOM-killed (usually docker stop): Warn (named in the status only) or Alert. OOM kills always alert.",
+      "defaultVal": "Warn",
+      "options": [
+        { "name": "Warn", "value": "warn" },
+        { "name": "Alert", "value": "alert" }
+      ]
+    },
+    {
+      "name": "usrExclude",
+      "type": "string",
+      "direction": "false",
+      "description": "Extended regex matched against container names (running and exited); matches are skipped. e.g. ^(ci-|tmp-)",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrIncludeLogs",
+      "type": "map",
+      "direction": "false",
+      "description": "Yes adds the last 20 log lines of up to 3 alerting containers to the diagnostic, and says so in the status. Logs can carry secrets.",
+      "defaultVal": "No",
+      "options": [
+        { "name": "No", "value": "no" },
+        { "name": "Yes", "value": "yes" }
+      ]
+    }
+  ]
+}
