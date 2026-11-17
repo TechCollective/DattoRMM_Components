@@ -12,7 +12,10 @@
 #   - a running container not on the list, running for
 #     usrUnlistedAfterHours or more, and not ignored       -> usrUnlistedAction
 #   - a list no person has confirmed yet                   -> usrUnreviewedAction
-#     (until it is, the weekly prune removes no containers or images)
+#     (until it is, the weekly prune removes no containers or images). Under
+#     Warn, a list unreviewed for usrUnreviewedAfterDays or more alerts (0 never
+#     does); its age is the list file's modification time, and an age that
+#     cannot be read does not alert.
 #
 #   - a container whose Compose labels are not plain names  -> usrUnlistedAction
 #     (it has no key, so it can never be listed; the label is never printed)
@@ -78,6 +81,7 @@ PRUNE_CONF="/etc/default/tc-docker-prune"
 PENDING_FILE="/var/lib/tc-docker/pending-removal"
 
 usrUnlistedAfterHours="${usrUnlistedAfterHours:-24}"
+usrUnreviewedAfterDays="$(printf '%s' "${usrUnreviewedAfterDays-14}" | tr -d '[:space:]')"
 usrUnlistedAction="$(printf '%s' "${usrUnlistedAction:-warn}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 usrMissingAction="$(printf '%s' "${usrMissingAction:-alert}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 usrUnreviewedAction="$(printf '%s' "${usrUnreviewedAction:-warn}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
@@ -85,6 +89,9 @@ usrStalePruneAction="$(printf '%s' "${usrStalePruneAction:-alert}" | tr -d '[:sp
 usrPendingRemovalAction="$(printf '%s' "${usrPendingRemovalAction:-alert}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 [[ "$usrUnlistedAfterHours" =~ ^[0-9]+$ ]] && [ "$usrUnlistedAfterHours" -le 8760 ] \
     || emit 1 "Check could not run: usrUnlistedAfterHours must be 0-8760 (got '$usrUnlistedAfterHours')"
+[[ "$usrUnreviewedAfterDays" =~ ^[0-9]{1,3}$ ]] && [ $((10#$usrUnreviewedAfterDays)) -le 365 ] \
+    || emit 1 "Check could not run: usrUnreviewedAfterDays must be 0-365 (got '$usrUnreviewedAfterDays')"
+usrUnreviewedAfterDays=$((10#$usrUnreviewedAfterDays))
 case "$usrUnlistedAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrUnlistedAction must be alert, warn or ignore (got '$usrUnlistedAction')" ;; esac
 case "$usrMissingAction"  in alert|warn) ;;        *) emit 1 "Check could not run: usrMissingAction must be alert or warn (got '$usrMissingAction')" ;; esac
 case "$usrUnreviewedAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrUnreviewedAction must be alert, warn or ignore (got '$usrUnreviewedAction')" ;; esac
@@ -285,8 +292,24 @@ fi
 [ "$IGNORED" -gt 0 ] && SUMMARY="$SUMMARY; $IGNORED ignored"
 [ "${#BAD[@]}" -gt 0 ] && SUMMARY="$SUMMARY; ${#BAD[@]} unreadable list line(s)"
 UNREVIEWED=0; tc_reviewed || UNREVIEWED=1
+# How long the list has gone unreviewed: the age of the list file (it is
+# created unreviewed, and Update Expected Containers rewrites it on Add, Remove
+# and Accept current). -1 when it cannot be read; that never escalates.
+UNREVIEWED_DAYS=-1; UNREVIEWED_ESCALATE=0
 if [ "$UNREVIEWED" -eq 1 ] && [ "$usrUnreviewedAction" != "ignore" ]; then
-    SUMMARY="$SUMMARY; list NOT REVIEWED, so no containers or images are pruned"
+    mtime="$(stat -c %Y -- "$EXPECTED_FILE" 2>/dev/null)" || mtime=""
+    if [[ "$mtime" =~ ^[0-9]{1,12}$ ]] && [ "$mtime" -le "$NOW" ]; then
+        UNREVIEWED_DAYS=$(( (NOW - mtime) / 86400 ))
+    fi
+    if [ "$UNREVIEWED_DAYS" -lt 0 ]; then FOR=""
+    elif [ "$UNREVIEWED_DAYS" -eq 0 ]; then FOR=" for less than a day"
+    elif [ "$UNREVIEWED_DAYS" -eq 1 ]; then FOR=" for 1 day"
+    else FOR=" for $UNREVIEWED_DAYS days"; fi
+    SUMMARY="$SUMMARY; list NOT REVIEWED$FOR, so no containers or images are pruned"
+    if [ "$usrUnreviewedAction" = "warn" ] && [ "$usrUnreviewedAfterDays" -gt 0 ] \
+       && [ "$UNREVIEWED_DAYS" -ge "$usrUnreviewedAfterDays" ]; then
+        UNREVIEWED_ESCALATE=1
+    fi
 fi
 
 # Stopped containers the prune has recorded and will remove. Read only while
@@ -354,6 +377,7 @@ if [ $(( ${#STOPPED[@]} + ${#MISSING[@]} )) -gt 0 ] && [ "$usrMissingAction" = "
 if [ "${#UNLISTED[@]}" -gt 0 ] && [ "$usrUnlistedAction" = "alert" ]; then ALERT=1; fi
 if [ "${#UNREADABLE[@]}" -gt 0 ] && [ "$usrUnlistedAction" = "alert" ]; then ALERT=1; fi
 if [ "$UNREVIEWED" -eq 1 ] && [ "$usrUnreviewedAction" = "alert" ]; then ALERT=1; fi
+if [ "$UNREVIEWED_ESCALATE" -eq 1 ]; then ALERT=1; fi
 if [ -n "$STALE_STATUS" ] && [ "$usrStalePruneAction" = "alert" ]; then ALERT=1; fi
 if [ $(( PENDING_ALERTABLE + PENDING_BAD )) -gt 0 ] && [ "$usrPendingRemovalAction" = "alert" ]; then ALERT=1; fi
 
@@ -370,7 +394,11 @@ if [ "$ALERT" -eq 1 ]; then
     for k in ${UNLISTED[@]+"${UNLISTED[@]}"}; do diag "UNLISTED  $k  - add it to the list, add an ignore pattern, or remove the container"; done
     for k in ${UNREADABLE[@]+"${UNREADABLE[@]}"}; do diag "UNREADABLE  $k  - its Compose labels are not plain names, so it cannot be listed and is never pruned; find out where it came from"; done
     for k in ${BAD[@]+"${BAD[@]}"}; do diag "BAD LINE  $k  - not name:<name> or compose:<project>/<service>"; done
-    [ "$UNREVIEWED" -eq 1 ] && diag "NOT REVIEWED  - run Show, fix the list, then Confirm reviewed. Until then the prune removes no containers or images."
+    if [ "$UNREVIEWED_ESCALATE" -eq 1 ]; then
+        diag "NOT REVIEWED for $UNREVIEWED_DAYS days  - this alerts because the list has gone unreviewed for $usrUnreviewedAfterDays days or more (usrUnreviewedAfterDays). Until it is reviewed, the prune removes no containers or images on this host, and stopped or missing containers do not alert. Review it with Docker - Update Expected Containers [Lin]: run Show, fix the list (Add, Remove, Accept current), then Confirm reviewed."
+    elif [ "$UNREVIEWED" -eq 1 ]; then
+        diag "NOT REVIEWED  - run Show, fix the list, then Confirm reviewed. Until then the prune removes no containers or images."
+    fi
     diag ""
     diag "Change the list with Docker - Update Expected Containers [Lin] (usrAction add, remove, accept-current, add-ignore)."
     diag "List: $EXPECTED_FILE   Ignore patterns: $IGNORE_FILE"

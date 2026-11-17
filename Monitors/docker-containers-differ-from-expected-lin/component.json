@@ -2,10 +2,10 @@
   "general": {
     "name": "Docker - Containers Differ From Expected [Lin]",
     "category": "monitors",
-    "description": "Alerts when an expected Docker container is stopped or gone, a stopped container is waiting to be removed by the prune, or the host's prune is out of date; reports unlisted containers. Read-only. Healthy when there is no Docker or no list yet, unless its prune is out of date. https://github.com/TechCollective/DattoRMM_Components",
+    "description": "Alerts when an expected Docker container is stopped or gone, a stopped container is waiting to be removed by the prune, the host's prune is out of date, or the list has gone unreviewed for usrUnreviewedAfterDays; reports unlisted containers. Read-only. Healthy when there is no Docker or no list yet, unless its prune is out of date. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "",
     "hash": "",
-    "version": "5",
+    "version": "6",
     "timeout": "120",
     "securityLevel": "4",
     "installType": "unix"
@@ -70,13 +70,20 @@
       "name": "usrUnreviewedAction",
       "type": "map",
       "direction": "false",
-      "description": "What a list nobody has confirmed yet does: Warn (named in the status), Alert, or Ignore. Until review, stopped or missing containers do not alert.",
+      "description": "What a list nobody has confirmed yet does: Warn (named in the status, and an alert once the list is usrUnreviewedAfterDays old), Alert, or Ignore. Until review, stopped or missing containers do not alert.",
       "defaultVal": "Warn",
       "options": [
         { "name": "Warn", "value": "warn" },
         { "name": "Alert", "value": "alert" },
         { "name": "Ignore", "value": "ignore" }
       ]
+    },
+    {
+      "name": "usrUnreviewedAfterDays",
+      "type": "string",
+      "direction": "false",
+      "description": "0-365. Under usrUnreviewedAction Warn, a list still unreviewed this many days after it was created or last changed alerts. 0 never alerts.",
+      "defaultVal": "14"
     }
   ]
 }

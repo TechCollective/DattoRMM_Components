@@ -29,11 +29,25 @@ again.
 > pending-removal files written by the test; not yet through a Datto agent.
 > **Expect a wave of stale-prune alerts when version 5 goes out;** consider
 > `usrStalePruneAction` = Warn until Host Maintenance 9 has reached every host.
+>
+> **Version 6** (2026-11-17) stops an unreviewed list being silent for ever.
+> Under `usrUnreviewedAction` Warn (the default), a list still unreviewed
+> `usrUnreviewedAfterDays` (default **14**) days after it was created or last
+> changed now **alerts**, and the status says how long it has waited:
+> `list NOT REVIEWED for 16 days, so no containers or images are pruned`.
+> **Every host whose list is already unreviewed for 14 days or more alerts as
+> soon as version 6 is deployed.** Expect one alert per such host; set
+> `usrUnreviewedAfterDays` higher, or `0` to turn this off, if they cannot be
+> reviewed straight away. `PRUNE_MIN_VERSION` stays 9. Exercised through the
+> Tier 1 harness against a live Docker 29 daemon in a sandbox, with the
+> list's modification time set back by the test; not yet through a Datto
+> agent.
 
 ## What it does
 
 **Read-only.** It reads `docker info`, `docker ps`, `docker inspect` and six
-files, and changes nothing. It makes no network calls.
+files (and the modification time of the list), and changes nothing. It makes
+no network calls.
 
 The two list files:
 
@@ -56,7 +70,34 @@ matches.
 | A list line is neither key form | Counted as unreadable list lines in the status |
 | The host's **prune is stale** (see below) | **Stale prune.** Named first in the status; alerts, set by `usrStalePruneAction` (default Alert). Checked **before** the "no list yet" exit, with or without a list. |
 | A stopped container is **waiting to be removed** by the prune (see below) | Named first after a stale prune, with the date it goes: `2 stopped containers will be removed by the prune (name:a from 2026-11-22, name:b from 2026-11-23)`. Alerts, set by `usrPendingRemovalAction` (default Alert). One whose key matches the ignore file is counted, marked `(ignored)`, and never alerts. |
-| The list has **not been reviewed** (no `/etc/tc-docker/reviewed`) | Named in the status; alerts only if `usrUnreviewedAction` is Alert. **Until review, stopped or missing containers are reported but never alert**, so onboarding a host raises one item, not one per container. |
+| The list has **not been reviewed** (no `/etc/tc-docker/reviewed`) | Named in the status with how long it has waited (`list NOT REVIEWED for 16 days`). Alerts if `usrUnreviewedAction` is Alert; under Warn (the default), alerts once it has waited `usrUnreviewedAfterDays` (default 14) or more. **Until review, stopped or missing containers are reported but never alert on their own**, so onboarding a host raises one item, not one per container. |
+
+### A list nobody reviews
+
+Until a person confirms a host's list (Docker - Update Expected Containers
+[Lin], **Confirm reviewed**), the prune removes no containers and no images on
+it, and this monitor does not alert on its stopped or missing containers. With
+`usrUnreviewedAction` Warn and nothing more, such a host would stay quiet for
+ever and never get its images cleaned up. So under Warn, once the list has
+gone unreviewed for `usrUnreviewedAfterDays` days (default 14), the monitor
+alerts. `0` turns this off. Alert alerts from the first day, as before; Ignore
+says nothing, as before.
+
+**How long** is the age of `/etc/tc-docker/expected-containers`: its
+modification time. Host Maintenance writes it once when it creates the list,
+and Update Expected Containers rewrites it on every Add, Remove or Accept
+current, so the count is from the list's creation or its last change.
+An age that cannot be read (the file's time is in the future, or `stat`
+fails) is left out of the status and never escalates.
+
+The status says it in whole days: `list NOT REVIEWED for less than a day`,
+`for 1 day`, `for 16 days`. On the alert the diagnostic says why it alerts now
+and how to clear it:
+
+    NOT REVIEWED for 16 days  - this alerts because the list has gone unreviewed for 14 days or more (usrUnreviewedAfterDays). Until it is reviewed, the prune removes no containers or images on this host, and stopped or missing containers do not alert. Review it with Docker - Update Expected Containers [Lin]: run Show, fix the list (Add, Remove, Accept current), then Confirm reviewed.
+
+Stopped and missing containers on such a list are named in the status and the
+diagnostic, as before, but are not alerts of their own.
 
 ### Containers waiting to be removed
 
@@ -158,7 +199,7 @@ from the latest release.
 | Field | Value |
 |---|---|
 | Name | `Docker - Containers Differ From Expected [Lin]` |
-| Description | Alerts when an expected Docker container is stopped or gone, a stopped container is waiting to be removed by the prune, or the host's prune is out of date; reports unlisted containers. Read-only. Healthy when there is no Docker or no list yet, unless its prune is out of date. |
+| Description | Alerts when an expected Docker container is stopped or gone, a stopped container is waiting to be removed by the prune, the host's prune is out of date, or the list has gone unreviewed for usrUnreviewedAfterDays; reports unlisted containers. Read-only. Healthy when there is no Docker or no list yet, unless its prune is out of date. |
 | Category | **Monitors** |
 | Script type | Shell (Unix) |
 | Target OS | Linux |
@@ -175,7 +216,8 @@ from the latest release.
 | `usrUnlistedAction` | **Selection** | `Warn` | `Warn` / `Alert` / `Ignore`. Starts at Warn on purpose; see Open questions. |
 | `usrStalePruneAction` | **Selection** | `Alert` | `Alert` / `Warn` / `Ignore`. What a stale prune does. Warn names it in the status without alerting; Ignore turns the prune check off. Starts at Alert on purpose: a host on an old prune can still delete containers a reviewed list would protect. |
 | `usrPendingRemovalAction` | **Selection** | `Alert` | `Alert` / `Warn` / `Ignore`. What a stopped container the prune has recorded for removal does. Warn names it in the status without alerting; Ignore leaves it out. A container whose key matches an ignore pattern is counted but never alerts. |
-| `usrUnreviewedAction` | **Selection** | `Warn` | `Warn` / `Alert` / `Ignore`. What an unreviewed list does. Alert turns every unreviewed host into a ticket, which suits onboarding a single client, but not turning the monitor on across the whole fleet. |
+| `usrUnreviewedAction` | **Selection** | `Warn` | `Warn` / `Alert` / `Ignore`. What an unreviewed list does. Warn names it in the status, and alerts once it has waited `usrUnreviewedAfterDays`. Alert turns every unreviewed host into a ticket from day one, which suits onboarding a single client, but not turning the monitor on across the whole fleet. |
+| `usrUnreviewedAfterDays` | String | `14` | 0–365. Under Warn, a list still unreviewed this many days after it was created or last changed alerts. `0` never escalates. |
 | `usrUnlistedAfterHours` | String | `24` | 0–8760. A new container only counts as unlisted once it has run this long, which keeps upgrades and short tests quiet. |
 
 No customer-specific value is hardcoded. An invalid value makes it report
@@ -197,8 +239,10 @@ No customer-specific value is hardcoded. An invalid value makes it report
 | Stopped container waiting to be removed, `usrPendingRemovalAction` Warn | **Exit 0**, named in the status |
 | Stopped container waiting to be removed, `usrPendingRemovalAction` Ignore | **Exit 0**, not named |
 | `pending-removal` has lines that are not well formed | Counted in the status, never shown; **exit 1** under Alert, with `BAD PENDING` and the line numbers in the diagnostic |
-| List not reviewed, `usrUnreviewedAction` Warn | **Exit 0**, with `list NOT REVIEWED` in the status, even when stopped containers are listed |
-| List not reviewed, `usrUnreviewedAction` Alert | **Exit 1** |
+| List not reviewed, `usrUnreviewedAction` Warn, list younger than `usrUnreviewedAfterDays` (or that is `0`, or its age cannot be read) | **Exit 0**, with `list NOT REVIEWED for <n> days` in the status, even when stopped containers are listed |
+| List not reviewed, `usrUnreviewedAction` Warn, list `usrUnreviewedAfterDays` old or more | **Exit 1**, the same status, and a `NOT REVIEWED for <n> days` diagnostic saying why it alerts and naming the review steps |
+| List not reviewed, `usrUnreviewedAction` Alert | **Exit 1**, whatever its age |
+| List not reviewed, `usrUnreviewedAction` Ignore | Not mentioned; the rest decides |
 | Reviewed list, expected container stopped or missing, `usrMissingAction` Alert | **Exit 1**, naming them, with a diagnostic saying what to do |
 | Unlisted container, `usrUnlistedAction` Warn | **Exit 0**, naming it in the status |
 | Unlisted container, `usrUnlistedAction` Alert | **Exit 1** |
@@ -267,6 +311,18 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
   prune refuses that value it removes nothing, and the date shown is wrong.
 - **The pending-removal file is trusted as the prune wrote it.** It is
   root-only. A well-formed line edited by hand is believed.
+- **The unreviewed age restarts when the list changes.** It is the list
+  file's modification time, so an Add or Remove without Confirm reviewed, or
+  an edit over SSH, starts the count again. Touching the file silences the
+  escalation for another `usrUnreviewedAfterDays`.
+- **Hosts already unreviewed for longer than `usrUnreviewedAfterDays` alert
+  as soon as version 6 is deployed.** With the default of 14, that is every
+  host whose list was created more than two weeks ago and never confirmed.
+- **It wakes a stopped Docker.** It runs `docker info` first, and on a host
+  where `docker.socket` keeps listening while `docker.service` is stopped,
+  that starts Docker. Unchanged in version 6 (Host Maintenance 11 no longer
+  does this; the monitors are a later change). Pause it on a host whose
+  Docker is stopped on purpose.
 - **Docker only.** Podman is not handled.
 - It only knows what the list says. A list created while a service was down
   never expects that service. Check the list after the first Host Maintenance
