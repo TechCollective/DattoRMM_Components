@@ -771,12 +771,15 @@
     {
       "type": "command",
       "label": "Images tests: clean up - test containers and images gone, the registry stopped, the image setting back",
-      "run": "tc-test-images registry stop; docker rm -f tc-age-stopped tc-age-fresh tc-age-never >/dev/null; for i in $(docker image ls -q --filter label=tc.nonce; docker image ls -q --filter dangling=true --filter label=tc.nonce; docker image ls -q --filter dangling=true); do docker image rm -f $i >/dev/null 2>&1; done; sed -i '/^name:tc-age-stopped$/d' /etc/tc-docker/expected-containers; rm -rf /tmp/tc-test-registry /tmp/tc-untagged-id /tmp/tc-all.out /tmp/tc-prune.out; sed -i 's/^PRUNE_IMAGES=.*/PRUNE_IMAGES=dangling/' /etc/default/tc-docker-prune; tc-test-images restore; docker image inspect -f 'tc-test-listed:1 back for the steps after' tc-test-listed:1; docker ps -a --format '{{.Names}}' | grep -c tc-age || echo 'no tc-age containers'",
+      "run": "tc-test-images registry stop; docker rm -f tc-age-stopped tc-age-fresh tc-age-never >/dev/null; for i in $(docker image ls -q --filter label=tc.nonce; docker image ls -q --filter dangling=true --filter label=tc.nonce; docker image ls -q --filter dangling=true); do docker image rm -f $i >/dev/null 2>&1; done; sed -i '/^name:tc-age-stopped$/d' /etc/tc-docker/expected-containers; rm -rf /tmp/tc-test-registry /tmp/tc-untagged-id /tmp/tc-all.out /tmp/tc-prune.out; sed -i 's/^PRUNE_IMAGES=.*/PRUNE_IMAGES=dangling/' /etc/default/tc-docker-prune; rm -rf /etc/docker/certs.d/tc-registry.test:5055; rmdir /etc/docker/certs.d 2>/dev/null; echo \"left in /etc/docker: $(ls -A /etc/docker | tr '\\n' ' ')\"; tc-test-images restore; docker image inspect -f 'tc-test-listed:1 back for the steps after' tc-test-listed:1; docker ps -a --format '{{.Names}}' | grep -c tc-age || echo 'no tc-age containers'",
       "timeoutSeconds": 180,
       "outputContains": [
         "test registry stopped",
         "tc-test-listed:1 back for the steps after",
         "no tc-age containers"
+      ],
+      "outputNotContains": [
+        "certs.d"
       ]
     },
     {
@@ -1482,7 +1485,7 @@
       "type": "command",
       "timeoutSeconds": 240,
       "label": "The other image store (last, as it changes the image store): Docker restarted on whichever store it is not using; the test registry started again",
-      "run": "set -e\ncp -p /etc/docker/daemon.json /tmp/tc-store-daemon.json\nbefore=$(tc-test-images store)\nif [ \"$before\" = containerd ]; then on=False; want=classic; else on=True; want=containerd; fi\npython3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d.setdefault('features', {})['containerd-snapshotter'] = $on; json.dump(d, open(p, 'w'), indent=2)\"\nsystemctl restart docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done\nstore=$(tc-test-images store); echo \"image store: $store\"\n[ \"$store\" = \"$want\" ] && echo \"switched from the $before store to the $store store\"\ntc-test-images registry start",
+      "run": "set -e\ncp -p /etc/docker/daemon.json /tmp/tc-store-daemon.json\nbefore=$(tc-test-images store)\nif [ \"$before\" = containerd ]; then on=False; want=classic; else on=True; want=containerd; fi\npython3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d.setdefault('features', {})['containerd-snapshotter'] = $on; json.dump(d, open(p, 'w'), indent=2)\"\nsystemctl restart docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done\nstore=$(tc-test-images store); echo \"image store: $store\"\n[ \"$store\" = \"$want\" ] && echo \"switched from the $before store to the $store store\"\nmkdir -p /etc/docker/certs.d/tc-registry.test:5055 && cp /etc/tc-test-pki/ca.crt /etc/docker/certs.d/tc-registry.test:5055/ca.crt\ntc-test-images registry start",
       "outputContains": [
         "switched from the",
         "test registry answers on https://tc-registry.test:5055"
@@ -1665,7 +1668,7 @@
     {
       "type": "command",
       "label": "The other image store: clean up - daemon.json as it was, Docker restarted, the registry stopped, the test CA and name gone",
-      "run": "cp -p /tmp/tc-store-daemon.json /etc/docker/daemon.json; rm -f /tmp/tc-store-daemon.json; tc-test-images registry stop; rm -rf /tmp/tc-test-registry /tmp/tc-test-registry.pid /etc/tc-test-pki /etc/docker/certs.d/tc-registry.test:5055; rm -f /usr/local/share/ca-certificates/tc-test-ca.crt; update-ca-certificates --fresh >/dev/null 2>&1; sed -i '/ tc-registry.test$/d' /etc/hosts; grep -c tc-registry.test /etc/hosts || echo 'test name gone'; systemctl restart docker.service && docker info --format 'docker up again: {{.ServerVersion}}'",
+      "run": "cp -p /tmp/tc-store-daemon.json /etc/docker/daemon.json; rm -f /tmp/tc-store-daemon.json; tc-test-images registry stop; rm -rf /tmp/tc-test-registry /tmp/tc-test-registry.pid /etc/tc-test-pki /etc/docker/certs.d/tc-registry.test:5055; rmdir /etc/docker/certs.d 2>/dev/null; rm -f /usr/local/share/ca-certificates/tc-test-ca.crt; update-ca-certificates --fresh >/dev/null 2>&1; sed -i '/ tc-registry.test$/d' /etc/hosts; grep -c tc-registry.test /etc/hosts || echo 'test name gone'; systemctl restart docker.service && docker info --format 'docker up again: {{.ServerVersion}}'",
       "outputContains": [
         "test registry stopped",
         "test name gone",
