@@ -2,9 +2,48 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 9: a prune stamped 8 is stale. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. A host without Docker is Tier 2. An unreviewed list is named with its age (the list file's modification time): one day old, it stays exit 0 under Warn; made 15 days old, it alerts under Warn with the default usrUnreviewedAfterDays of 14, and the diagnostic says why and names the review steps; usrUnreviewedAfterDays 0 never escalates; Ignore does not mention it; Alert alerts as before; before review a missing container is still named, not alerted on; a reviewed list 15 days old is healthy; and a usrUnreviewedAfterDays above 365 or not a number is refused.",
+  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 9: a prune stamped 8 is stale. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. An unreviewed list is named with its age (the list file's modification time): one day old, it stays exit 0 under Warn; made 15 days old, it alerts under Warn with the default usrUnreviewedAfterDays of 14, and the diagnostic says why and names the review steps; usrUnreviewedAfterDays 0 never escalates; Ignore does not mention it; Alert alerts as before; before review a missing container is still named, not alerted on; a reviewed list 15 days old is healthy; and a usrUnreviewedAfterDays above 365 or not a number is refused. Version 7: a running unlisted container's age counts from when the monitor first saw it, kept in /var/lib/tc-docker/monitor-first-seen (root-only), so recreating or restarting it does not reset the clock; the first run without the file gives the version 6 result; time is made to pass by editing the file; a key put on the list, or not seen for 7 days, is dropped (6 days is kept); malformed lines are ignored and dropped, the first good line per key is used; an unwritable directory (chattr +i) or a symlink in the file's place falls back to the container's start time and says so, and the symlink's target is untouched. A docker shim that never answers (also one that ignores TERM, and one that hangs only the listing) gives 'Docker did not answer within 40 seconds', exit 1, inside 60 seconds, with no shim process left and a sibling in the caller's process group untouched. With docker.service stopped and docker.socket listening, no docker command is run (a recording shim proves it) and Docker stays stopped: an expected list alerts, no list or an empty list is healthy, and a stale prune is still reported first. A client with no unit, no socket and no list is healthy; with a list it cannot talk to the daemon. No docker command: healthy when nothing of Docker is there, exit 1 when its socket is. A client only in /snap/bin is found through the appended PATH. GNU bash 4.2 is built from source and the monitor's main paths, starting with an empty list and nothing else, run under it without an unbound-variable crash.",
   "variables": {},
   "steps": [
+    {
+      "type": "command",
+      "label": "Test helpers: tc-test-run (runs the monitor the way the harness does, timed, under /bin/bash or bash 4.2), tc-test-fs (the first-seen file), tc-test-dstate (systemd's view of Docker), tc-test-left (docker shim processes still running)",
+      "run": "set -e\nM=\"$PWD/Monitors/docker-containers-differ-from-expected-lin/docker-containers-differ-from-expected-lin.sh\"\ntest -f \"$M\"\ncat > /usr/local/bin/tc-test-run <<'EOF'\n#!/bin/bash\n# tc-test-run [--bash42] [VAR=value...]: run the monitor as the harness does (a clean\n# environment and the agent's root PATH), with /bin/bash or GNU bash 4.2; print its\n# output, its exit code and how long it took.\nb=/bin/bash; if [ \"${1:-}\" = --bash42 ]; then b=/opt/tc-bash42/bin/bash; shift; fi\nt0=$(date +%s)\nenv -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \"$@\" \"$b\" \"@MONITOR@\"\nrc=$?\nsecs=$(( $(date +%s) - t0 ))\necho \"exit $rc after $secs seconds, under $(\"$b\" -c 'echo \"bash $BASH_VERSION\"')\"\n[ \"$secs\" -lt 60 ] && echo \"result inside 60 seconds\"\nexit 0\nEOF\nsed -i \"s|@MONITOR@|$M|\" /usr/local/bin/tc-test-run\ncat > /usr/local/bin/tc-test-fs <<'EOF'\n#!/bin/bash\n# tc-test-fs: the first-seen file's lines (comments left out), or that there is none.\nf=/var/lib/tc-docker/monitor-first-seen\nif [ -e \"$f\" ] || [ -L \"$f\" ]; then echo \"--- $f (now $(date +%s)):\"; grep -v '^#' \"$f\" || echo \"(no entries)\"; else echo \"(no first-seen file)\"; fi\nEOF\ncat > /usr/local/bin/tc-test-dstate <<'EOF'\n#!/bin/bash\n# tc-test-dstate LABEL: what systemd says about Docker.\necho \"$1: systemctl is-active docker.service docker.socket -> $(systemctl is-active docker.service docker.socket | paste -sd' ')\"\nEOF\ncat > /usr/local/bin/tc-test-left <<'EOF'\n#!/bin/bash\n# tc-test-left: any docker shim process still running, from ps.\nsleep 1\necho \"--- ps -eo pid,ppid,pgid,etime,args, docker shims and their children:\"\nps -eo pid,ppid,pgid,etime,args | grep -E '[/]usr/local/sbin/docker|[s]leep 600|[t]c-test-shim' || echo \"no docker client or shim process left\"\nEOF\nchmod 755 /usr/local/bin/tc-test-run /usr/local/bin/tc-test-fs /usr/local/bin/tc-test-dstate /usr/local/bin/tc-test-left\ngrep -c \"$M\" /usr/local/bin/tc-test-run >/dev/null && echo \"helpers installed for $M\"",
+      "outputContains": [
+        "helpers installed for"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "bash 4.2: build GNU bash 4.2 from the GNU release (sha256 checked) into /opt/tc-bash42; it has the bug: an empty array is unbound under set -u",
+      "run": "set -e\nd=$(mktemp -d); cd \"$d\"\nfor u in https://ftp.gnu.org/gnu/bash/bash-4.2.tar.gz https://ftpmirror.gnu.org/bash/bash-4.2.tar.gz; do\n  curl -fsSL --retry 3 -o bash-4.2.tar.gz \"$u\" && break\ndone\necho 'a27a1179ec9c0830c65c6aa5d7dab60f7ce1a2a608618570f96bfa72e95ab3d8  bash-4.2.tar.gz' | sha256sum -c -\ntar xzf bash-4.2.tar.gz\ncd bash-4.2\nCFLAGS='-O1 -std=gnu89 -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types' ./configure --without-bash-malloc --disable-nls >configure.log 2>&1 || { tail -n 30 configure.log; exit 1; }\nmake -j\"$(nproc)\" >make.log 2>&1 || { tail -n 30 make.log; exit 1; }\ninstall -D -m 755 bash /opt/tc-bash42/bin/bash\n/opt/tc-bash42/bin/bash -c 'echo \"built bash $BASH_VERSION\"'\n/opt/tc-bash42/bin/bash -c 'set -u; a=(); echo \"${a[@]}\"' 2>&1 || true",
+      "outputContains": [
+        "built bash 4.2.0",
+        "a[@]: unbound variable"
+      ],
+      "timeoutSeconds": 900
+    },
+    {
+      "type": "command",
+      "label": "bash 4.2, empty everything: an empty expected list (reviewed), no ignore file, no pending-removal file, no prune, no first-seen file, no containers",
+      "run": "set -e; mkdir -p /etc/tc-docker; : > /etc/tc-docker/expected-containers; echo 'tc-test review' > /etc/tc-docker/reviewed; echo \"containers on this runner: $(docker ps -aq | wc -l)\"; tc-test-run --bash42",
+      "outputContains": [
+        "STATUS=0 expected: 0 running",
+        "exit 0 after",
+        "under bash 4.2.0"
+      ],
+      "outputNotContains": [
+        "unbound variable",
+        "stopped unexpectedly"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Empty list, /bin/bash: the same result",
+      "outputContains": [
+        "STATUS=0 expected: 0 running"
+      ]
+    },
     {
       "type": "command",
       "label": "One running container on a reviewed list",
@@ -61,6 +100,21 @@
         "/zz",
         "2020-01-01T00:00:00Z",
         "stopped-old"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "bash 4.2: the unreadable-label alert",
+      "run": "tc-test-run --bash42 usrUnlistedAction=alert",
+      "outputContains": [
+        "1 with unreadable Compose labels",
+        "UNREADABLE  innocent (",
+        "exit 1 after",
+        "under bash 4.2.0"
+      ],
+      "outputNotContains": [
+        "unbound variable",
+        "stopped unexpectedly"
       ]
     },
     {
@@ -192,6 +246,21 @@
       ],
       "outputNotContains": [
         "name:tc-plain from"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "bash 4.2: two pending removals, Alert",
+      "run": "tc-test-run --bash42",
+      "outputContains": [
+        "STATUS=2 stopped containers will be removed by the prune",
+        "PENDING   name:tc-pend-a",
+        "exit 1 after",
+        "under bash 4.2.0"
+      ],
+      "outputNotContains": [
+        "unbound variable",
+        "stopped unexpectedly"
       ]
     },
     {
@@ -335,6 +404,21 @@
     },
     {
       "type": "command",
+      "label": "bash 4.2: a stale prune",
+      "run": "tc-test-run --bash42",
+      "outputContains": [
+        "STATUS=prune on this host is version 3, older than 9",
+        "STALE PRUNE",
+        "exit 1 after",
+        "under bash 4.2.0"
+      ],
+      "outputNotContains": [
+        "unbound variable",
+        "stopped unexpectedly"
+      ]
+    },
+    {
+      "type": "command",
       "label": "Stale prune: stamped 06 (a leading zero is not octal, and 6 is below 9)",
       "run": "mkdir -p /usr/local/sbin && printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=06' 'exit 0' > /usr/local/sbin/tc-docker-prune && chmod 755 /usr/local/sbin/tc-docker-prune && head -n 4 /usr/local/sbin/tc-docker-prune"
     },
@@ -463,6 +547,20 @@
         "STALE PRUNE",
         "older than",
         "Diagnostic"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "bash 4.2: no list yet",
+      "run": "tc-test-run --bash42",
+      "outputContains": [
+        "STATUS=No expected-containers list on this host yet",
+        "exit 0 after",
+        "under bash 4.2.0"
+      ],
+      "outputNotContains": [
+        "unbound variable",
+        "stopped unexpectedly"
       ]
     },
     {
@@ -598,6 +696,21 @@
       ]
     },
     {
+      "type": "command",
+      "label": "bash 4.2: an unreviewed list that escalates",
+      "run": "tc-test-run --bash42",
+      "outputContains": [
+        "list NOT REVIEWED for 15 days",
+        "NOT REVIEWED for 15 days  - this alerts",
+        "exit 1 after",
+        "under bash 4.2.0"
+      ],
+      "outputNotContains": [
+        "unbound variable",
+        "stopped unexpectedly"
+      ]
+    },
+    {
       "type": "runComponent",
       "label": "Unreviewed list 15 days old, usrUnreviewedAfterDays 0: never escalates, exit 0",
       "variables": {
@@ -709,11 +822,607 @@
       ]
     },
     {
-      "type": "runComponent",
-      "tier": 2,
-      "label": "Host without Docker says so and is healthy",
+      "type": "command",
+      "label": "First seen: tc-plain on a reviewed list, and tc-unl, a running container not on it; no first-seen file yet",
+      "run": "set -e; echo name:tc-plain > /etc/tc-docker/expected-containers; echo 'tc-test review' > /etc/tc-docker/reviewed; rm -f /var/lib/tc-docker/monitor-first-seen; docker run -d --name tc-unl tc-test-sleep:1 /bin/sleep 3600 >/dev/null; docker inspect -f 'tc-unl started {{.State.StartedAt}}' tc-unl; tc-test-fs",
       "outputContains": [
-        "Docker is not installed"
+        "tc-unl started",
+        "(no first-seen file)"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "First run with no first-seen file, usrUnlistedAfterHours 1: counted from the container's start, as version 6 did, so new",
+      "variables": {
+        "usrUnlistedAfterHours": "1"
+      },
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 with unreadable Compose labels; 1 new, under 1h"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "First run, usrUnlistedAfterHours 0: unlisted at once, as version 6 did",
+      "variables": {
+        "usrUnlistedAfterHours": "0"
+      },
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 unlisted (name:tc-unl); 1 with unreadable Compose labels"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: the file now has tc-unl, first seen = its start time, root-only; then tc-unl recreated (a redeploy: a new container, started later)",
+      "run": "set -e; tc-test-fs; f=$(awk -F'\\t' '$1 == \"name:tc-unl\" {print $2}' /var/lib/tc-docker/monitor-first-seen); s=$(date -d \"$(docker inspect -f '{{.State.StartedAt}}' tc-unl)\" +%s); [ \"$f\" = \"$s\" ] && echo \"first seen = start time ($f)\"; echo \"$f\" > /var/tmp/tc-fs-first; stat -c 'file mode %a owner %U' /var/lib/tc-docker/monitor-first-seen; stat -c 'directory mode %a owner %U' /var/lib/tc-docker; sleep 2; docker rm -f tc-unl >/dev/null; docker run -d --name tc-unl tc-test-sleep:1 /bin/sleep 3600 >/dev/null; docker inspect -f 'tc-unl recreated, started {{.State.StartedAt}}' tc-unl",
+      "outputContains": [
+        "name:tc-unl",
+        "first seen = start time",
+        "file mode 600 owner root",
+        "directory mode 700 owner root",
+        "tc-unl recreated"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Recreated inside the window: still new, under 1h",
+      "variables": {
+        "usrUnlistedAfterHours": "1"
+      },
+      "outputContains": [
+        "1 new, under 1h"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: unchanged by the recreate, although the new container started later",
+      "run": "set -e; tc-test-fs; f=$(awk -F'\\t' '$1 == \"name:tc-unl\" {print $2}' /var/lib/tc-docker/monitor-first-seen); [ \"$f\" = \"$(cat /var/tmp/tc-fs-first)\" ] && echo \"first seen unchanged: $f\"; s=$(date -d \"$(docker inspect -f '{{.State.StartedAt}}' tc-unl)\" +%s); [ \"$s\" -gt \"$f\" ] && echo \"the new container started $((s - f)) s later\"",
+      "outputContains": [
+        "first seen unchanged",
+        "the new container started"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: time passes - its first-seen time set two hours back in the file",
+      "run": "set -e; t=$(( $(date +%s) - 7200 )); sed -i -E \"s/^(name:tc-unl\\t)[0-9]+/\\1$t/\" /var/lib/tc-docker/monitor-first-seen; tc-test-fs; grep -q \"^name:tc-unl\"$'\\t'\"$t\"$'\\t' /var/lib/tc-docker/monitor-first-seen && echo 'first seen is now two hours ago'",
+      "outputContains": [
+        "first seen is now two hours ago"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "First seen two hours ago, though the container started seconds ago: unlisted (Warn, exit 0)",
+      "variables": {
+        "usrUnlistedAfterHours": "1"
+      },
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 unlisted (name:tc-unl); 1 with unreadable Compose labels"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "The same under usrUnlistedAction Alert: alerts, the diagnostic names it",
+      "expectExitCode": 1,
+      "variables": {
+        "usrUnlistedAfterHours": "1",
+        "usrUnlistedAction": "Alert"
+      },
+      "outputContains": [
+        "1 unlisted (name:tc-unl)",
+        "UNLISTED  name:tc-unl  - add it to the list"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: a crash loop - tc-unl restarted",
+      "run": "set -e; docker restart -t 1 tc-unl >/dev/null; docker inspect -f 'tc-unl restarted, started {{.State.StartedAt}}' tc-unl; tc-test-fs",
+      "outputContains": [
+        "tc-unl restarted"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Restarted: still unlisted, counted from first seen",
+      "variables": {
+        "usrUnlistedAfterHours": "1"
+      },
+      "outputContains": [
+        "1 unlisted (name:tc-unl)"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "bash 4.2: the same run",
+      "run": "tc-test-run --bash42 usrUnlistedAfterHours=1; tc-test-fs",
+      "outputContains": [
+        "1 unlisted (name:tc-unl)",
+        "exit 0 after",
+        "under bash 4.2.0"
+      ],
+      "outputNotContains": [
+        "unbound variable",
+        "stopped unexpectedly"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: tc-unl added to the list",
+      "run": "echo name:tc-unl >> /etc/tc-docker/expected-containers; cat /etc/tc-docker/expected-containers; tc-test-fs",
+      "outputContains": [
+        "name:tc-unl"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "On the list: healthy",
+      "variables": {
+        "usrUnlistedAfterHours": "1"
+      },
+      "outputContains": [
+        "STATUS=2 expected: 2 running; 1 with unreadable Compose labels"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: a key on the list is dropped from the file",
+      "run": "tc-test-fs; grep -q 'name:tc-unl' /var/lib/tc-docker/monitor-first-seen || echo 'name:tc-unl dropped'",
+      "outputContains": [
+        "name:tc-unl dropped"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: tc-unl off the list again and stopped; entries for it (last seen 7 days and a minute ago) and for name:tc-gone (last seen 6 days ago)",
+      "run": "set -e; echo name:tc-plain > /etc/tc-docker/expected-containers; docker stop -t 1 tc-unl >/dev/null; n=$(date +%s); printf 'name:tc-unl\\t%s\\t%s\\nname:tc-gone\\t%s\\t%s\\n' $((n - 700000)) $((n - 7*86400 - 60)) $((n - 700000)) $((n - 6*86400)) >> /var/lib/tc-docker/monitor-first-seen; tc-test-fs",
+      "outputContains": [
+        "name:tc-unl",
+        "name:tc-gone"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Nothing unlisted running: healthy",
+      "variables": {
+        "usrUnlistedAfterHours": "1"
+      },
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 with unreadable Compose labels"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: not seen for 7 days is dropped; 6 days is kept",
+      "run": "tc-test-fs; grep -q 'name:tc-unl' /var/lib/tc-docker/monitor-first-seen || echo 'name:tc-unl dropped (not seen for 7 days)'; grep -q 'name:tc-gone' /var/lib/tc-docker/monitor-first-seen && echo 'name:tc-gone kept (not seen for 6 days)'",
+      "outputContains": [
+        "name:tc-unl dropped",
+        "name:tc-gone kept"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: malformed lines - tc-unl running again; the file has one good line for it (first seen two hours ago) among lines that are not well formed, and a later good duplicate",
+      "run": "set -e; docker start tc-unl >/dev/null; n=$(date +%s); { echo '# tc-test header'; printf 'name:tc-unl\\t1\\t2\\textra\\n'; printf 'bad key\\t1\\t2\\n'; printf 'name:tc-x\\tabc\\t%s\\n' $n; printf 'name:tc-y\\t%s\\t%s\\n' $n $((n - 10)); printf 'name:tc-z\\t1\\t99999999999\\n'; printf 'name:tc-unl\\t%s\\t%s\\n' $((n - 7200)) $((n - 60)); printf 'name:tc-unl\\t5\\t%s\\n' $((n - 60)); echo 'garbage'; } > /var/lib/tc-docker/monitor-first-seen; chmod 600 /var/lib/tc-docker/monitor-first-seen; tc-test-fs",
+      "outputContains": [
+        "bad key",
+        "garbage"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Malformed lines ignored, the first good line used: unlisted, though tc-unl started seconds ago",
+      "variables": {
+        "usrUnlistedAfterHours": "1"
+      },
+      "outputContains": [
+        "1 unlisted (name:tc-unl)"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: only well-formed lines are kept, each key once",
+      "run": "tc-test-fs; f=$(awk -F'\\t' '$1 == \"name:tc-unl\" {print $2}' /var/lib/tc-docker/monitor-first-seen); a=$(( $(date +%s) - f )); [ \"$a\" -ge 7200 ] && [ \"$a\" -lt 8000 ] && echo 'tc-unl first seen two hours ago (the first good line)'; echo \"tc-unl lines: $(grep -c '^name:tc-unl' /var/lib/tc-docker/monitor-first-seen)\"",
+      "outputContains": [
+        "tc-unl first seen two hours ago",
+        "tc-unl lines: 1"
+      ],
+      "outputNotContains": [
+        "bad key",
+        "abc",
+        "garbage",
+        "extra",
+        "99999999999",
+        "name:tc-y",
+        "name:tc-x",
+        "name:tc-z"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: the state directory made unwritable (chattr +i)",
+      "run": "sleep 1; chattr +i /var/lib/tc-docker && lsattr -d /var/lib/tc-docker; touch /var/lib/tc-docker/tc-test 2>/dev/null || echo 'root cannot create a file there'",
+      "outputContains": [
+        "root cannot create a file there"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unwritable: the check still runs, ages count from container start (tc-unl is new again), and the status says why",
+      "variables": {
+        "usrUnlistedAfterHours": "1"
+      },
+      "outputContains": [
+        "1 new, under 1h",
+        "first-seen times not saved (no file can be created in /var/lib/tc-docker), so unlisted ages count from each container's start"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "bash 4.2: the same run",
+      "run": "tc-test-run --bash42 usrUnlistedAfterHours=1",
+      "outputContains": [
+        "first-seen times not saved (no file can be created in /var/lib/tc-docker)",
+        "exit 0 after",
+        "under bash 4.2.0"
+      ],
+      "outputNotContains": [
+        "unbound variable",
+        "stopped unexpectedly"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: writable again, and a symlink where the file should be",
+      "run": "set -e; chattr -i /var/lib/tc-docker; rm -f /var/lib/tc-docker/monitor-first-seen; echo 'tc-test target' > /root/tc-fs-target; ln -s /root/tc-fs-target /var/lib/tc-docker/monitor-first-seen; ls -l /var/lib/tc-docker/monitor-first-seen",
+      "outputContains": [
+        "-> /root/tc-fs-target"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A symlink is never followed or written through: ages from container start, and the status says why",
+      "variables": {
+        "usrUnlistedAfterHours": "1"
+      },
+      "outputContains": [
+        "1 new, under 1h",
+        "first-seen times not saved (/var/lib/tc-docker/monitor-first-seen is not a regular file)"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "First seen: the symlink's target is untouched; clean up",
+      "run": "cat /root/tc-fs-target; rm -f /var/lib/tc-docker/monitor-first-seen /root/tc-fs-target /var/tmp/tc-fs-first; docker rm -f tc-unl >/dev/null && echo cleaned",
+      "outputContains": [
+        "tc-test target",
+        "cleaned"
+      ],
+      "outputNotContains": [
+        "name:tc-unl"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Hung daemon: a docker shim first on PATH that takes every command and never answers",
+      "run": "set -e; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; echo \"$real\" > /var/tmp/tc-docker-real; printf '%s\\n' '#!/bin/sh' '# tc-test-shim: takes the command and never answers' 'sleep 600' > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; echo 'hang shim installed'",
+      "outputContains": [
+        "hang shim installed"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Hung daemon, run with a sibling process in the caller's process group: result block inside 60 seconds, exit 1, no shim process left, the sibling untouched",
+      "run": "sleep 900 & sib=$!; tc-test-run; tc-test-left; kill -0 \"$sib\" && echo \"sibling $sib in the caller's process group still running\"; kill \"$sib\"",
+      "outputContains": [
+        "STATUS=Check could not run: Docker did not answer within 40 seconds",
+        "exit 1 after",
+        "result inside 60 seconds",
+        "no docker client or shim process left",
+        "in the caller's process group still running"
+      ],
+      "timeoutSeconds": 150
+    },
+    {
+      "type": "runComponent",
+      "label": "Hung daemon, as the harness runs it: exit 1, and the diagnostic says what was stopped",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: Docker did not answer within 40 seconds",
+        "docker info had not finished 40 seconds after this monitor started",
+        "nothing else was signalled"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Hung daemon: nothing left running after that run",
+      "run": "tc-test-left",
+      "outputContains": [
+        "no docker client or shim process left"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "bash 4.2: a hung daemon",
+      "run": "tc-test-run --bash42; tc-test-left",
+      "outputContains": [
+        "Docker did not answer within 40 seconds",
+        "exit 1 after",
+        "result inside 60 seconds",
+        "under bash 4.2.0",
+        "no docker client or shim process left"
+      ],
+      "outputNotContains": [
+        "unbound variable",
+        "stopped unexpectedly"
+      ],
+      "timeoutSeconds": 150
+    },
+    {
+      "type": "command",
+      "label": "Hung daemon that ignores TERM: a shim that traps TERM and loops",
+      "run": "printf '%s\\n' '#!/bin/sh' '# tc-test-shim: ignores TERM and never answers' \"trap '' TERM\" 'while :; do sleep 1; done' > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; cat /usr/local/sbin/docker",
+      "outputContains": [
+        "trap '' TERM"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "A shim that ignores TERM: its bash parent dies on TERM, and what is left of the group is killed; inside 60 seconds, nothing left",
+      "run": "tc-test-run; tc-test-left",
+      "outputContains": [
+        "Docker did not answer within 40 seconds",
+        "exit 1 after",
+        "result inside 60 seconds",
+        "no docker client or shim process left"
+      ],
+      "timeoutSeconds": 150
+    },
+    {
+      "type": "command",
+      "label": "Hung listing: a shim that passes docker info to Docker and never answers anything else",
+      "run": "real=$(cat /var/tmp/tc-docker-real); printf '%s\\n' '#!/bin/sh' '# tc-test-shim: docker info answers, docker ps and inspect never do' \"[ \\\"\\$1\\\" = info ] && exec $real \\\"\\$@\\\"\" 'sleep 600' > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; docker info --format 'docker info still answers: {{.ServerVersion}}'",
+      "outputContains": [
+        "docker info still answers"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Hung listing: exit 1, and the diagnostic says it was the listing",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: Docker did not answer within 40 seconds",
+        "Listing the containers (docker ps, docker inspect) had not finished"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Hung listing: nothing left running",
+      "run": "tc-test-left",
+      "outputContains": [
+        "no docker client or shim process left"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon there but not answering at once (as before): a shim whose docker info fails",
+      "run": "printf '%s\\n' '#!/bin/sh' '# tc-test-shim: Docker refuses' 'echo \"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\" >&2' 'exit 1' > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; docker info; echo \"docker info exit $?\"",
+      "outputContains": [
+        "docker info exit 1"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon should be there and does not answer: exit 1, as before, with Docker's error in the diagnostic",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: cannot talk to the Docker daemon",
+        "docker info said: Cannot connect to the Docker daemon"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Shims removed: Docker answers again",
+      "run": "rm -f /usr/local/sbin/docker; hash -r; docker ps >/dev/null && echo 'docker ps answers again'",
+      "outputContains": [
+        "docker ps answers again"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: tc-plain on the list; a shim on PATH records any docker command; docker.service stopped while docker.socket keeps listening",
+      "run": "set -e; echo name:tc-plain > /etc/tc-docker/expected-containers; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; printf '%s\\n' '#!/bin/sh' '# tc-test-shim: records every docker command' 'echo \"$*\" >> /var/tmp/tc-docker-calls' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; : > /var/tmp/tc-docker-calls; tc-test-dstate before; systemctl stop docker.service 2>/dev/null; tc-test-dstate stopped; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"",
+      "outputContains": [
+        "before: systemctl is-active docker.service docker.socket -> active active",
+        "stopped: systemctl is-active docker.service docker.socket -> inactive active",
+        "docker commands run: 0"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, expected list: exit 1, and no docker command run",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Docker is stopped (docker.service is inactive); its expected containers are not running",
+        "This monitor ran no docker command"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: still stopped, and the monitor ran no docker command",
+      "run": "tc-test-dstate after; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"",
+      "outputContains": [
+        "after: systemctl is-active docker.service docker.socket -> inactive active",
+        "docker commands run: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "bash 4.2: Docker stopped, expected list",
+      "run": "tc-test-run --bash42; tc-test-dstate after; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"",
+      "outputContains": [
+        "Docker is stopped (docker.service is inactive); its expected containers are not running",
+        "exit 1 after",
+        "under bash 4.2.0",
+        "after: systemctl is-active docker.service docker.socket -> inactive active",
+        "docker commands run: 0"
+      ],
+      "outputNotContains": [
+        "unbound variable",
+        "stopped unexpectedly"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: no list, and a version 3 prune installed",
+      "run": "set -e; rm -f /etc/tc-docker/expected-containers; mkdir -p /usr/local/sbin; printf '%s\\n' '#!/bin/bash' 'TC_PRUNE_VERSION=3' 'exit 0' > /usr/local/sbin/tc-docker-prune; chmod 755 /usr/local/sbin/tc-docker-prune; tc-test-dstate before",
+      "outputContains": [
+        "before: systemctl is-active docker.service docker.socket -> inactive active"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, a stale prune: still reported, first, and alerts",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=prune on this host is version 3, older than 9; Docker is stopped (docker.service is inactive); no expected-containers list on this host yet",
+        "STALE PRUNE"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, no list (stale prune ignored): exit 0, and says so",
+      "variables": {
+        "usrStalePruneAction": "Ignore"
+      },
+      "outputContains": [
+        "STATUS=Docker is stopped (docker.service is inactive); no expected-containers list on this host yet, so nothing is expected to run"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: an empty list, no prune",
+      "run": "rm -f /usr/local/sbin/tc-docker-prune; : > /etc/tc-docker/expected-containers; tc-test-dstate before",
+      "outputContains": [
+        "inactive active"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker stopped, an empty list: exit 0, nothing is expected to run",
+      "outputContains": [
+        "STATUS=Docker is stopped (docker.service is inactive); its expected-containers list is empty, so nothing is expected to run"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: still stopped and no docker command run by any of those runs; then Docker started again, and tc-plain with it",
+      "run": "tc-test-dstate after; echo \"docker commands run: $(wc -l < /var/tmp/tc-docker-calls)\"; rm -f /usr/local/sbin/docker /var/tmp/tc-docker-calls; hash -r; echo name:tc-plain > /etc/tc-docker/expected-containers; systemctl start docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; docker start tc-plain innocent >/dev/null; tc-test-dstate restarted",
+      "outputContains": [
+        "after: systemctl is-active docker.service docker.socket -> inactive active",
+        "docker commands run: 0",
+        "restarted: systemctl is-active docker.service docker.socket -> active active"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "No daemon here: docker.socket and docker.service stopped, the docker.service unit, its drop-ins and /etc/init.d/docker moved away, no /var/run/docker.sock, no list (a host with only the docker client)",
+      "run": "set -e; systemctl stop docker.socket docker.service; f=$(systemctl show docker.service -p FragmentPath --value); test -f \"$f\"; echo \"$f\" > /var/tmp/tc-unit-path; mv \"$f\" /var/tmp/tc-docker.service.moved; if [ -d /etc/systemd/system/docker.service.d ]; then mv /etc/systemd/system/docker.service.d /var/tmp/tc-docker.service.d.moved; fi; if [ -e /etc/init.d/docker ]; then mv /etc/init.d/docker /var/tmp/tc-initd-docker.moved; fi; systemctl daemon-reload; rm -f /var/run/docker.sock /etc/tc-docker/expected-containers; echo \"docker.service LoadState: $(systemctl show docker.service -p LoadState --value)\"; test -S /var/run/docker.sock || echo 'no /var/run/docker.sock'; tc-test-dstate before",
+      "outputContains": [
+        "docker.service LoadState: not-found",
+        "no /var/run/docker.sock",
+        "before: systemctl is-active docker.service docker.socket -> inactive inactive"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Client only, no daemon, no list: exit 0, says so",
+      "outputContains": [
+        "STATUS=Docker client installed (",
+        "but no Docker daemon on this host (no docker.service, no /var/run/docker.sock); nothing to check"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Client only: nothing was started",
+      "run": "tc-test-dstate after; test -S /var/run/docker.sock || echo 'still no /var/run/docker.sock'",
+      "outputContains": [
+        "after: systemctl is-active docker.service docker.socket -> inactive inactive",
+        "still no /var/run/docker.sock"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Client only, but a list on this host: a daemon should be here",
+      "run": "echo name:tc-plain > /etc/tc-docker/expected-containers"
+    },
+    {
+      "type": "runComponent",
+      "label": "A list but no daemon: exit 1, cannot talk to the Docker daemon",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: cannot talk to the Docker daemon"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "No docker command at all: the client moved out of every PATH directory; no socket, no unit, no list",
+      "run": "set -e; real=$(command -v docker); echo \"$real\" > /var/tmp/tc-docker-real; mv \"$real\" /var/tmp/tc-docker-cli.moved; rm -f /etc/tc-docker/expected-containers; hash -r; command -v docker || echo 'no docker command'",
+      "outputContains": [
+        "no docker command"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker not installed: exit 0, as before",
+      "outputContains": [
+        "STATUS=Docker is not installed on this host; nothing to check"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "No docker command, but Docker itself back: the unit put back and Docker started (its socket is there)",
+      "run": "set -e; mv /var/tmp/tc-docker.service.moved \"$(cat /var/tmp/tc-unit-path)\"; if [ -d /var/tmp/tc-docker.service.d.moved ]; then mv /var/tmp/tc-docker.service.d.moved /etc/systemd/system/docker.service.d; fi; if [ -e /var/tmp/tc-initd-docker.moved ]; then mv /var/tmp/tc-initd-docker.moved /etc/init.d/docker; fi; rm -f /var/tmp/tc-unit-path; systemctl daemon-reload; systemctl reset-failed docker.service docker.socket 2>/dev/null || true; systemctl start docker.socket docker.service; tc-test-dstate back; test -S /var/run/docker.sock && echo '/var/run/docker.sock is a socket'; command -v docker || echo 'still no docker command'",
+      "outputContains": [
+        "back: systemctl is-active docker.service docker.socket -> active active",
+        "/var/run/docker.sock is a socket",
+        "still no docker command"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Socket present, no docker command: exit 1",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Docker appears to be installed but no docker command was found"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "PATH: the docker client in /snap/bin only, which the harness PATH does not reach and the monitor's appended PATH does; tc-plain running on the list",
+      "run": "set -e; mkdir -p /snap/bin; mv /var/tmp/tc-docker-cli.moved /snap/bin/docker; env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -c 'command -v docker || echo \"not on the harness PATH\"'; /snap/bin/docker start tc-plain innocent >/dev/null; echo name:tc-plain > /etc/tc-docker/expected-containers",
+      "outputContains": [
+        "not on the harness PATH"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Docker only on the appended PATH: found, and the check runs as usual",
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 with unreadable Compose labels"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "PATH: the client put back where it was",
+      "run": "set -e; mv /snap/bin/docker \"$(cat /var/tmp/tc-docker-real)\"; rm -f /var/tmp/tc-docker-real; hash -r; docker ps --format '{{.Names}}' | sort | paste -sd' '",
+      "outputContains": [
+        "tc-plain"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Back to normal",
+      "outputContains": [
+        "STATUS=1 expected: 1 running; 1 with unreadable Compose labels"
       ]
     }
   ]

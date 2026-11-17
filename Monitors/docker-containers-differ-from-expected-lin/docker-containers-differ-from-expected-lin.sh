@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Docker - Containers Differ From Expected [Lin]
 #
-# Datto RMM custom monitor. Runs as root. Read-only; changes nothing.
+# Datto RMM custom monitor. Runs as root. It changes one file only: its own
+# record of when each unlisted container was first seen,
+# /var/lib/tc-docker/monitor-first-seen (see "First seen" below). It never runs
+# a command that would start Docker, and every docker command it runs is
+# stopped if Docker has not answered DOCKER_TIMEOUT seconds after the monitor
+# started.
 #
 # Compares the containers on this host with its expected-containers list,
 # /etc/tc-docker/expected-containers (created by "Docker - Configure Host
@@ -9,8 +14,9 @@
 #
 #   - an expected container that is stopped or gone      -> usrMissingAction
 #     (reported, but not alerted on, while the list is unreviewed)
-#   - a running container not on the list, running for
-#     usrUnlistedAfterHours or more, and not ignored       -> usrUnlistedAction
+#   - a running container not on the list, first seen
+#     usrUnlistedAfterHours or more ago, and not ignored   -> usrUnlistedAction
+#     (first seen: see below; a restart or a redeploy does not reset it)
 #   - a list no person has confirmed yet                   -> usrUnreviewedAction
 #     (until it is, the weekly prune removes no containers or images). Under
 #     Warn, a list unreviewed for usrUnreviewedAfterDays or more alerts (0 never
@@ -35,10 +41,37 @@
 #     "no list yet" exit, because hosts on versions 1 and 2 have no list.
 #
 # Compose one-offs, --rm containers and anything matching /etc/tc-docker/ignore
-# are never "unlisted". A host without Docker, or without a list yet, is healthy
-# and says so (unless its prune is stale). A daemon that cannot be reached, or that does not return its
-# container list, is an alert: not knowing is the failure this monitor exists
-# to catch.
+# are never "unlisted". A daemon that cannot be reached, that does not answer
+# within DOCKER_TIMEOUT seconds, or that does not return its container list, is
+# an alert: not knowing is the failure this monitor exists to catch. Before any
+# docker command, and in this order:
+#
+#   - no docker command (PATH plus the usual system directories)
+#       but /var/run/docker.sock is a socket or docker.service is loaded -> alert
+#       otherwise: Docker is not installed                              -> healthy
+#   - the stale-prune check (two files; it needs no daemon)
+#   - systemd says docker.service is not active (no docker command is run, so a
+#     socket-activated Docker stays stopped):
+#       with entries on the expected list                                -> alert
+#       with no list, or an empty one                                    -> healthy
+#   - docker info fails, and there is no docker.service, no socket and no list
+#     (a docker client with no daemon on this host)                      -> healthy
+#   - docker info fails otherwise                                        -> alert
+#   - no list yet                                                        -> healthy
+# A stale prune is reported on each of these, and alerts under Alert.
+#
+# First seen. The age of an unlisted container is counted from the first time
+# this monitor saw its key running, not from the container's own start, so a
+# container restarted or recreated more often than usrUnlistedAfterHours (a
+# nightly redeploy, a crash loop) is still reported once the hours have passed.
+# /var/lib/tc-docker/monitor-first-seen holds key, first seen and last seen
+# (seconds since 1970) for each running, unlisted, not-ignored key. A key with
+# no entry starts at its container's start time. An entry is dropped once its
+# key is on the list or has not been seen running for FIRST_SEEN_KEEP_DAYS. The
+# file is root-only, replaced by renaming a new file into place, never followed
+# through a symlink, and only its well-formed lines are read. If it cannot be
+# written, ages count from each container's start (as before version 7) and the
+# status says so; the check itself still runs.
 
 set -u
 EMITTED=0
@@ -69,6 +102,12 @@ trap on_exit EXIT
 DIAG=""
 diag() { DIAG="${DIAG}${1}"$'\n'; }
 
+# One PATH rule, whatever PATH the agent gives the script: the usual system
+# directories are appended (never prepended, so what the agent's PATH finds
+# first still wins), so whether docker is found does not depend on the agent.
+PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+export PATH
+
 # The oldest prune this monitor accepts: the version of "Docker - Configure Host
 # Maintenance [Lin]" that installed /usr/local/sbin/tc-docker-prune (it stamps
 # TC_PRUNE_VERSION=<its own version> at the top of the script). Raise this when a
@@ -79,6 +118,15 @@ PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
 PRUNE_UNIT="/etc/systemd/system/tc-docker-prune.service"
 PRUNE_CONF="/etc/default/tc-docker-prune"
 PENDING_FILE="/var/lib/tc-docker/pending-removal"
+FIRST_SEEN_DIR="/var/lib/tc-docker"
+FIRST_SEEN_FILE="$FIRST_SEEN_DIR/monitor-first-seen"
+FIRST_SEEN_KEEP_DAYS=7
+DOCKER_SOCK="/var/run/docker.sock"
+# Every docker command of one run must have finished this many seconds after the
+# monitor started; whatever is still running then is stopped, and the check
+# says Docker did not answer. With the 5 seconds timeout(1) allows after TERM
+# before KILL, the result block is out well within 60 seconds.
+DOCKER_TIMEOUT=40
 
 usrUnlistedAfterHours="${usrUnlistedAfterHours:-24}"
 usrUnreviewedAfterDays="$(printf '%s' "${usrUnreviewedAfterDays-14}" | tr -d '[:space:]')"
@@ -97,15 +145,53 @@ case "$usrMissingAction"  in alert|warn) ;;        *) emit 1 "Check could not ru
 case "$usrUnreviewedAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrUnreviewedAction must be alert, warn or ignore (got '$usrUnreviewedAction')" ;; esac
 case "$usrStalePruneAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrStalePruneAction must be alert, warn or ignore (got '$usrStalePruneAction')" ;; esac
 case "$usrPendingRemovalAction" in alert|warn|ignore) ;; *) emit 1 "Check could not run: usrPendingRemovalAction must be alert, warn or ignore (got '$usrPendingRemovalAction')" ;; esac
-for t in awk grep sed date xargs; do
+for t in awk grep sed date xargs sort timeout; do
     command -v "$t" >/dev/null 2>&1 || emit 1 "Check could not run: required tool '$t' is missing"
 done
+timeout -k 1 10 true >/dev/null 2>&1 \
+    || emit 1 "Check could not run: this host's timeout command does not take -k (GNU coreutils timeout is needed)"
+START="$(date +%s)"
+[[ "$START" =~ ^[0-9]+$ ]] || emit 1 "Check could not run: date +%s does not give the time in seconds"
+DOCKER_DEADLINE=$(( START + DOCKER_TIMEOUT ))
+
+# Runs $1 (shell code) in a new bash under timeout(1), with the rest of the
+# arguments as $1..., and returns its exit status: 124 or 137 when it was still
+# running DOCKER_TIMEOUT seconds after the monitor started. timeout(1) puts the
+# command in a process group of its own, whose id is timeout's own pid, and
+# signals that group only (TERM; KILL 5 seconds later if its child is still
+# there). Once it has timed out, whatever is left in that group (a docker client
+# that ignored TERM after the bash above it died) is sent KILL here. Nothing
+# else is ever signalled: not the monitor's own process group, not its parent.
+bounded() {
+    local code=$1 left pid rc
+    shift
+    left=$(( DOCKER_DEADLINE - $(date +%s) ))
+    [ "$left" -ge 1 ] || left=1
+    timeout -k 5 "$left" "${BASH:-bash}" -c "$code" tc-docker-monitor "$@" &
+    pid=$!
+    wait "$pid"; rc=$?
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+        kill -KILL -- "-$pid" 2>/dev/null
+    fi
+    return "$rc"
+}
+systemd_up() { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; }
+# docker.service is a unit systemd knows (a unit file, or generated from /etc/init.d/docker).
+docker_unit_loaded() {
+    systemd_up || return 1
+    [ "$(timeout -k 2 10 systemctl show docker.service -p LoadState 2>/dev/null)" = "LoadState=loaded" ]
+}
 
 DOCKER="$(command -v docker 2>/dev/null || true)"
-[ -n "$DOCKER" ] || emit 0 "Docker is not installed on this host; nothing to check"
-if ! err="$("$DOCKER" info 2>&1 >/dev/null)"; then
-    diag "docker info said: $(printf '%s' "$err" | tail -n 2)"
-    emit 1 "Check could not run: cannot talk to the Docker daemon"
+if [ -z "$DOCKER" ]; then
+    seen=""
+    [ -S "$DOCKER_SOCK" ] && seen="$DOCKER_SOCK is a socket"
+    docker_unit_loaded && seen="${seen:+$seen and }docker.service is loaded"
+    if [ -n "$seen" ]; then
+        diag "No docker command was found in $PATH, but $seen, so Docker looks installed here. Find where its client went (a package removed only the CLI, a snap or a custom path) and put docker on one of those directories."
+        emit 1 "Docker appears to be installed but no docker command was found"
+    fi
+    emit 0 "Docker is not installed on this host; nothing to check"
 fi
 
 # >>> tc-docker shared: identical in every tc-docker component; change them together.
@@ -178,6 +264,36 @@ tc_ignored() {
 tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # <<< tc-docker shared
 
+# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# Whether the Docker daemon is running, found out without starting it. Where
+# systemd manages docker.service, systemd is asked, and no docker command is run
+# unless the service is active: on most installs docker.socket stays listening
+# while the service is stopped, and any docker command (docker info, docker ps)
+# would start Docker again, with every restart: always container. Elsewhere
+# docker info is asked. Returns 0 running and answering; 1 stopped (systemd says
+# docker.service is not active); 2 not answering (docker info failed). Sets
+# DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
+# options only, so systemd 219 understands them.
+DOCKER_STATE=""
+tc_docker_running() {
+    local load state
+    DOCKER_STATE=""
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        load="$(systemctl show docker.service -p LoadState 2>/dev/null)"
+        if [ "$load" = "LoadState=loaded" ] && ! systemctl is-active --quiet docker.service 2>/dev/null; then
+            state="$(systemctl is-active docker.service 2>/dev/null)"
+            DOCKER_STATE="docker.service is ${state:-not active}"
+            return 1
+        fi
+    fi
+    if ! "$DOCKER" info >/dev/null 2>&1; then
+        DOCKER_STATE="docker info did not answer"
+        return 2
+    fi
+    return 0
+}
+# <<< tc-docker running
+
 # A prune installed by an older Host Maintenance. Reads two files and nothing
 # else. STALE_STATUS is the status text ("" when nothing is stale or the action
 # is ignore); STALE_DIAG the diagnostic lines for an alert.
@@ -224,46 +340,117 @@ stale_prune_check() {
     fi
     [ "${#found[@]}" -gt 0 ] || return 0
     local f
-    for f in "${found[@]}"; do STALE_STATUS="${STALE_STATUS:+$STALE_STATUS; }$f"; done
+    for f in ${found[@]+"${found[@]}"}; do STALE_STATUS="${STALE_STATUS:+$STALE_STATUS; }$f"; done
     STALE_DIAG+=("             Run Docker - Configure Host Maintenance [Lin] on this host to install the current prune. Until then the old prune's rules apply.")
 }
+# Before any docker command and before the "no list" exit: it reads two files and
+# needs no daemon, so a host with an old prune is reported while Docker is stopped,
+# and hosts on versions 1 and 2 have no list and are the ones it exists to find.
 [ "$usrStalePruneAction" = "ignore" ] || stale_prune_check
 
-# Before the "no list" exit: hosts on versions 1 and 2 have no list, and they are
-# the ones this check exists to find.
+# The exits before the container list. emit_early puts a stale prune first and
+# alerts for it under Alert; emit_failed is for "Check could not run", which
+# stays first, with a stale prune after it.
+stale_diag() {
+    local line
+    [ "$usrStalePruneAction" = "alert" ] || return 0
+    for line in ${STALE_DIAG[@]+"${STALE_DIAG[@]}"}; do diag "$line"; done
+}
+emit_early() {  # exit code, status
+    local rc=$1 msg=$2
+    if [ -n "$STALE_STATUS" ]; then
+        msg="$STALE_STATUS; $msg"
+        if [ "$usrStalePruneAction" = "alert" ]; then stale_diag; rc=1; fi
+    fi
+    emit "$rc" "$msg"
+}
+emit_failed() {  # status
+    stale_diag
+    emit 1 "$1${STALE_STATUS:+; $STALE_STATUS}"
+}
+docker_hung() {  # what was running
+    diag "$1 had not finished $DOCKER_TIMEOUT seconds after this monitor started, so it was stopped: timeout(1) sent TERM to the process group of the docker commands this run started, then anything left in that group was sent KILL; nothing else was signalled."
+    diag "A Docker daemon that accepts connections but does not answer is the usual cause. Look at dockerd: systemctl status docker; journalctl -u docker."
+    emit_failed "Check could not run: Docker did not answer within $DOCKER_TIMEOUT seconds"
+}
+LIST_ENTRIES=0
+[ -e "$EXPECTED_FILE" ] && LIST_ENTRIES="$(tc_list "$EXPECTED_FILE" | grep -c .)"
+
+# Is Docker running? Asked without starting it: tc_docker_running asks systemd
+# first and runs docker info only when docker.service is active (or not
+# managed by systemd). Run under the time limit, in a bash of its own.
+STATE="$(bounded "$(declare -f tc_docker_running)"$'\n''DOCKER=$1; tc_docker_running; rc=$?; printf "%s" "$DOCKER_STATE"; exit "$rc"' "$DOCKER")"
+case $? in
+    0) ;;
+    1)  # systemd says docker.service is not active; no docker command was run.
+        if [ "$LIST_ENTRIES" -gt 0 ]; then
+            diag "Docker is stopped: systemd says ${STATE:-docker.service is not active}. This monitor ran no docker command, so it did not start it (any docker command would, through docker.socket)."
+            diag "The $LIST_ENTRIES container(s) on $EXPECTED_FILE are not running. If Docker was stopped on purpose, this alert is expected until it is started again; otherwise: systemctl start docker."
+            emit_early 1 "Docker is stopped (${STATE:-docker.service is not active}); its expected containers are not running"
+        fi
+        if [ -e "$EXPECTED_FILE" ]; then
+            emit_early 0 "Docker is stopped (${STATE:-docker.service is not active}); its expected-containers list is empty, so nothing is expected to run"
+        fi
+        emit_early 0 "Docker is stopped (${STATE:-docker.service is not active}); no expected-containers list on this host yet, so nothing is expected to run"
+        ;;
+    2)  # docker info failed.
+        if [ ! -e "$EXPECTED_FILE" ] && [ ! -S "$DOCKER_SOCK" ] && ! docker_unit_loaded; then
+            emit_early 0 "Docker client installed ($DOCKER) but no Docker daemon on this host (no docker.service, no $DOCKER_SOCK); nothing to check"
+        fi
+        # Asked once more for Docker's own words. Safe: systemd does not say
+        # docker.service is stopped, so this cannot be what starts it.
+        err="$(bounded '"$1" info 2>&1 >/dev/null' "$DOCKER")"
+        case $? in 124|137) docker_hung "docker info" ;; esac
+        diag "docker info said: $(printf '%s' "$err" | tail -n 2 | tr -cd '[:print:]\n' | cut -c1-300)"
+        if systemd_up; then
+            diag "systemd: docker.service is $(timeout -k 2 10 systemctl is-active docker.service 2>/dev/null || true), docker.socket is $(timeout -k 2 10 systemctl is-active docker.socket 2>/dev/null || true)."
+        else
+            diag "systemd does not manage this host."
+        fi
+        [ -S "$DOCKER_SOCK" ] && diag "$DOCKER_SOCK is a socket." || diag "$DOCKER_SOCK is not a socket."
+        emit_failed "Check could not run: cannot talk to the Docker daemon"
+        ;;
+    124|137) docker_hung "docker info" ;;
+    *) emit_failed "Check could not run: asking whether Docker is running failed unexpectedly" ;;
+esac
+
 if [ ! -e "$EXPECTED_FILE" ]; then
     NO_LIST="No expected-containers list on this host yet; Docker - Configure Host Maintenance [Lin] creates it"
     if [ -n "$STALE_STATUS" ]; then
-        if [ "$usrStalePruneAction" = "alert" ]; then
-            for line in "${STALE_DIAG[@]}"; do diag "$line"; done
-            emit 1 "$STALE_STATUS; ${NO_LIST,}"
-        fi
-        emit 0 "$STALE_STATUS; ${NO_LIST,}"
+        emit_early 0 "${NO_LIST,}"
     fi
     emit 0 "$NO_LIST"
 fi
 
 mapfile -t EXPECTED < <(tc_list "$EXPECTED_FILE")
 BAD=()
-for k in "${EXPECTED[@]}"; do [[ "$k" =~ $KEY_RE ]] || BAD+=("$k"); done
+declare -A LISTED=()
+for k in ${EXPECTED[@]+"${EXPECTED[@]}"}; do
+    if [[ "$k" =~ $KEY_RE ]]; then LISTED[$k]=1; else BAD+=("$k"); fi
+done
 
-if ! ROWS="$(tc_containers)"; then
-    diag "docker ps or docker inspect failed 3 times in a row, so the containers on this host are unknown."
-    emit 1 "Check could not run: Docker did not return its container list"
-fi
+ROWS="$(bounded "$(declare -f tc_containers)"$'\n''DOCKER=$1; tc_containers' "$DOCKER")"
+case $? in
+    0) ;;
+    124|137) docker_hung "Listing the containers (docker ps, docker inspect)" ;;
+    *)  diag "docker ps or docker inspect failed 3 times in a row, so the containers on this host are unknown."
+        emit_failed "Check could not run: Docker did not return its container list" ;;
+esac
 NOW="$(date +%s)"
 MIN_AGE=$(( usrUnlistedAfterHours * 3600 ))
 
 RUNNING=(); STOPPED=(); MISSING=()
-for k in "${EXPECTED[@]}"; do
+for k in ${EXPECTED[@]+"${EXPECTED[@]}"}; do
     [[ "$k" =~ $KEY_RE ]] || continue
     if   printf '%s\n' "$ROWS" | awk -F'\t' -v k="$k" '$2 == k && $4 == "true" {f=1} END {exit !f}'; then RUNNING+=("$k")
     elif printf '%s\n' "$ROWS" | awk -F'\t' -v k="$k" '$2 == k {f=1} END {exit !f}'; then STOPPED+=("$k")
     else MISSING+=("$k"); fi
 done
 
-UNLISTED=(); UNREADABLE=(); YOUNG=0; IGNORED=0
-declare -A SEEN=()
+# The running, non-transient, unlisted, not-ignored keys, each with its
+# container's start time (the first container of a key, as before).
+UNREADABLE=(); IGNORED=0; CAND=()
+declare -A SEEN=() STARTED=()
 while IFS=$'\t' read -r id key name running _policy _created started _keep transient; do
     [ -n "$id" ] || continue
     # Compose labels that are not plain names: counted whatever the state, age
@@ -272,23 +459,114 @@ while IFS=$'\t' read -r id key name running _policy _created started _keep trans
     [ "$running" = "true" ] && [ "$transient" = "n" ] || continue
     [ -n "${SEEN[$key]:-}" ] && continue
     SEEN[$key]=1
-    printf '%s\n' "${EXPECTED[@]}" | grep -qxF -- "$key" && continue
+    [ -n "${LISTED[$key]:-}" ] && continue
     if tc_ignored "$key"; then IGNORED=$((IGNORED + 1)); continue; fi
-    s="$(date -d "$started" +%s 2>/dev/null || echo "$NOW")"
-    if [ $(( NOW - s )) -lt "$MIN_AGE" ]; then YOUNG=$((YOUNG + 1)); continue; fi
-    UNLISTED+=("$key")
+    s="$(date -d "$started" +%s 2>/dev/null)" || s=""
+    [[ "$s" =~ ^[0-9]{1,10}$ ]] || s="$NOW"
+    CAND+=("$key"); STARTED[$key]="$s"
 done <<<"$ROWS"
+
+# ---- first seen: /var/lib/tc-docker/monitor-first-seen (see the top)
+# The well-formed lines of the file, key<TAB>first<TAB>last, first <= last, last
+# no more than an hour ahead of now, each key once. Nothing else is trusted.
+first_seen_lines() {
+    { [ -f "$FIRST_SEEN_FILE" ] && [ ! -L "$FIRST_SEEN_FILE" ] && [ -r "$FIRST_SEEN_FILE" ]; } || return 0
+    awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" -v now="$NOW" '
+        /^#/ { next }
+        NF == 3 && $1 ~ keyre && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && length($2) <= 10 && length($3) <= 10 \
+            && $2 + 0 <= $3 + 0 && $3 + 0 <= now + 3600 && !seen[$1]++ { print $1, $2 + 0, $3 + 0 }' "$FIRST_SEEN_FILE"
+}
+# Replaces the file with a header and $1 (lines ending in newlines): a new file
+# in the same root-only directory, checked, then renamed over the old one. A
+# symlink is never followed or written through. Returns 1, with FIRST_SEEN_WHY
+# set, when it cannot.
+FIRST_SEEN_WHY=""
+first_seen_text() {
+    printf '%s\n' "# Running containers not on the expected list, as Docker - Containers Differ From" \
+        "# Expected [Lin] has seen them, so that a restart or a redeploy does not reset how" \
+        "# long one has been there. Written by that monitor; do not edit." \
+        "# key<TAB>first seen<TAB>last seen (seconds since 1970). A key is dropped once it is" \
+        "# on the list, or has not been seen running for $FIRST_SEEN_KEEP_DAYS days."
+    printf '%s' "$1"
+}
+first_seen_write() {
+    local tmp body
+    body="$(first_seen_text "$1"; echo x)"; body="${body%x}"
+    if [ -L "$FIRST_SEEN_DIR" ] || { [ -e "$FIRST_SEEN_DIR" ] && [ ! -d "$FIRST_SEEN_DIR" ]; }; then
+        FIRST_SEEN_WHY="$FIRST_SEEN_DIR is not a directory"; return 1
+    fi
+    if [ -L "$FIRST_SEEN_FILE" ] || { [ -e "$FIRST_SEEN_FILE" ] && [ ! -f "$FIRST_SEEN_FILE" ]; }; then
+        FIRST_SEEN_WHY="$FIRST_SEEN_FILE is not a regular file"; return 1
+    fi
+    if ! mkdir -p -- "$FIRST_SEEN_DIR" 2>/dev/null; then
+        FIRST_SEEN_WHY="$FIRST_SEEN_DIR cannot be created"; return 1
+    fi
+    if [ "$(stat -c '%u:%g:%a' -- "$FIRST_SEEN_DIR" 2>/dev/null)" != "0:0:700" ] \
+       && ! { chown 0:0 -- "$FIRST_SEEN_DIR" && chmod 700 -- "$FIRST_SEEN_DIR"; } 2>/dev/null; then
+        FIRST_SEEN_WHY="$FIRST_SEEN_DIR cannot be made root-only"; return 1
+    fi
+    if ! tmp="$(mktemp "$FIRST_SEEN_DIR/.monitor-first-seen.XXXXXX" 2>/dev/null)"; then
+        FIRST_SEEN_WHY="no file can be created in $FIRST_SEEN_DIR"; return 1
+    fi
+    # Compared after writing: a full disk can leave a short file.
+    if ! printf '%s' "$body" >"$tmp" 2>/dev/null || [ "$(cat -- "$tmp")" != "$(printf '%s' "$body")" ] \
+       || ! chmod 600 -- "$tmp" 2>/dev/null; then
+        rm -f -- "$tmp"; FIRST_SEEN_WHY="writing it failed"; return 1
+    fi
+    if ! mv -fT -- "$tmp" "$FIRST_SEEN_FILE" 2>/dev/null; then
+        rm -f -- "$tmp"; FIRST_SEEN_WHY="the new file could not be renamed into place"; return 1
+    fi
+    return 0
+}
+declare -A FS_FIRST=() FS_LAST=() FROM=()
+while IFS=$'\t' read -r k f l; do
+    [ -n "$k" ] || continue
+    FS_FIRST[$k]="$f"; FS_LAST[$k]="$l"
+done <<<"$(first_seen_lines)"
+FS_BODY=""
+for k in ${CAND[@]+"${CAND[@]}"}; do
+    f="${STARTED[$k]}"
+    if [ -n "${FS_FIRST[$k]:-}" ] && [ "${FS_FIRST[$k]}" -lt "$f" ]; then f="${FS_FIRST[$k]}"; fi
+    FROM[$k]="$f"
+    FS_BODY="${FS_BODY}${k}"$'\t'"${f}"$'\t'"${NOW}"$'\n'
+done
+for k in ${FS_FIRST[@]+"${!FS_FIRST[@]}"}; do
+    [ -n "${FROM[$k]:-}" ] && continue                      # seen this run
+    [ -n "${LISTED[$k]:-}" ] && continue                    # on the list now
+    l="${FS_LAST[$k]}"
+    [ $(( NOW - l )) -ge $(( FIRST_SEEN_KEEP_DAYS * 86400 )) ] && continue   # not seen for the keep period
+    FS_BODY="${FS_BODY}${k}"$'\t'"${FS_FIRST[$k]}"$'\t'"${l}"$'\n'
+done
+[ -z "$FS_BODY" ] || FS_BODY="$(printf '%s' "$FS_BODY" | LC_ALL=C sort)"$'\n'
+# Written when there is something to keep or an old file to replace, and only
+# when that changes it.
+if { [ -n "$FS_BODY" ] || [ -e "$FIRST_SEEN_FILE" ] || [ -L "$FIRST_SEEN_FILE" ]; } \
+   && ! { [ -f "$FIRST_SEEN_FILE" ] && [ ! -L "$FIRST_SEEN_FILE" ] \
+          && [ "$(cat -- "$FIRST_SEEN_FILE" 2>/dev/null)" = "$(first_seen_text "$FS_BODY")" ]; }; then
+    if ! first_seen_write "$FS_BODY"; then
+        # Not saved, so not trusted either: every age counts from its container's start.
+        for k in ${CAND[@]+"${CAND[@]}"}; do FROM[$k]="${STARTED[$k]}"; done
+    fi
+fi
+
+UNLISTED=(); YOUNG=0
+for k in ${CAND[@]+"${CAND[@]}"}; do
+    f="${FROM[$k]}"
+    if [ $(( NOW - f )) -lt "$MIN_AGE" ]; then YOUNG=$((YOUNG + 1)); continue; fi
+    UNLISTED+=("$k")
+done
 
 join() { local IFS=','; printf '%s' "$*" | sed 's/,/, /g'; }
 
 SUMMARY="$(( ${#EXPECTED[@]} - ${#BAD[@]} )) expected: ${#RUNNING[@]} running"
-[ "${#STOPPED[@]}" -gt 0 ] && SUMMARY="$SUMMARY, ${#STOPPED[@]} stopped ($(join "${STOPPED[@]}"))"
-[ "${#MISSING[@]}" -gt 0 ] && SUMMARY="$SUMMARY, ${#MISSING[@]} missing ($(join "${MISSING[@]}"))"
+[ "${#STOPPED[@]}" -gt 0 ] && SUMMARY="$SUMMARY, ${#STOPPED[@]} stopped ($(join ${STOPPED[@]+"${STOPPED[@]}"}))"
+[ "${#MISSING[@]}" -gt 0 ] && SUMMARY="$SUMMARY, ${#MISSING[@]} missing ($(join ${MISSING[@]+"${MISSING[@]}"}))"
 if [ "${#UNLISTED[@]}" -gt 0 ] && [ "$usrUnlistedAction" != "ignore" ]; then
-    SUMMARY="$SUMMARY; ${#UNLISTED[@]} unlisted ($(join "${UNLISTED[@]}"))"
+    SUMMARY="$SUMMARY; ${#UNLISTED[@]} unlisted ($(join ${UNLISTED[@]+"${UNLISTED[@]}"}))"
 fi
 [ "${#UNREADABLE[@]}" -gt 0 ] && SUMMARY="$SUMMARY; ${#UNREADABLE[@]} with unreadable Compose labels"
 [ "$YOUNG" -gt 0 ] && SUMMARY="$SUMMARY; $YOUNG new, under ${usrUnlistedAfterHours}h"
+[ -n "$FIRST_SEEN_WHY" ] && SUMMARY="$SUMMARY; first-seen times not saved ($FIRST_SEEN_WHY), so unlisted ages count from each container's start"
 [ "$IGNORED" -gt 0 ] && SUMMARY="$SUMMARY; $IGNORED ignored"
 [ "${#BAD[@]}" -gt 0 ] && SUMMARY="$SUMMARY; ${#BAD[@]} unreadable list line(s)"
 UNREVIEWED=0; tc_reviewed || UNREVIEWED=1
@@ -359,8 +637,8 @@ PENDING_STATUS=""
 if [ "${#PENDING[@]}" -gt 0 ]; then
     if [ "${#PENDING[@]}" -eq 1 ]; then PENDING_STATUS="1 stopped container will be removed by the prune"
     else PENDING_STATUS="${#PENDING[@]} stopped containers will be removed by the prune"; fi
-    shown=("${PENDING[@]:0:5}")
-    PENDING_STATUS="$PENDING_STATUS ($(join "${shown[@]}")$([ "${#PENDING[@]}" -gt 5 ] && echo " and $(( ${#PENDING[@]} - 5 )) more"))"
+    shown=(${PENDING[@]+"${PENDING[@]:0:5}"})
+    PENDING_STATUS="$PENDING_STATUS ($(join ${shown[@]+"${shown[@]}"})$([ "${#PENDING[@]}" -gt 5 ] && echo " and $(( ${#PENDING[@]} - 5 )) more"))"
 fi
 if [ "$PENDING_BAD" -gt 0 ]; then
     PENDING_STATUS="${PENDING_STATUS:+$PENDING_STATUS; }pending-removal file has $PENDING_BAD unreadable line(s)"
@@ -383,7 +661,7 @@ if [ $(( PENDING_ALERTABLE + PENDING_BAD )) -gt 0 ] && [ "$usrPendingRemovalActi
 
 if [ "$ALERT" -eq 1 ]; then
     if [ -n "$STALE_STATUS" ] && [ "$usrStalePruneAction" = "alert" ]; then
-        for k in "${STALE_DIAG[@]}"; do diag "$k"; done
+        for k in ${STALE_DIAG[@]+"${STALE_DIAG[@]}"}; do diag "$k"; done
     fi
     if [ "$usrPendingRemovalAction" = "alert" ]; then
         for k in ${PENDING_DIAG[@]+"${PENDING_DIAG[@]}"}; do diag "$k"; done
