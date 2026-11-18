@@ -5,7 +5,7 @@
     "description": "Seeds the expected-containers list and installs a weekly prune that deletes nothing until the list is reviewed, then waits before removing a stopped container. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "3f5aab29-1ae2-4a8d-9956-7037cb7c1ed8",
     "hash": "",
-    "version": "16",
+    "version": "17",
     "timeout": "900",
     "securityLevel": "5",
     "installType": "unix"
@@ -43,17 +43,6 @@
       "direction": "false",
       "description": "24-8760. After review, a stopped container the prune would remove is first recorded, and only removed by a run this many hours later, if still stopped and unprotected. 144 = 6 days, so a weekly timer removes it on its next run.",
       "defaultVal": "144"
-    },
-    {
-      "name": "usrPruneImages",
-      "type": "map",
-      "direction": "false",
-      "description": "After review: Dangling removes untagged images only. All also removes tagged images no container uses, but only those their registry confirms it still has (asked through Docker with root's docker login). Use All on CI or GitLab runner hosts.",
-      "defaultVal": "Dangling",
-      "options": [
-        { "name": "Dangling", "value": "dangling" },
-        { "name": "All", "value": "all" }
-      ]
     },
     {
       "name": "usrPruneNow",
