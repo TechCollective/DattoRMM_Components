@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. The prune refuses an age limit under 24 hours, so the tests make their containers and images 30 days old rather than lower it (a container by stopping Docker and editing config.v2.json; an image by loading a docker save archive written by hand, with the date in it). Before the list is reviewed, the prune removes no container and no image. After review, a stopped container that nothing protects is first recorded in /var/lib/tc-docker/pending-removal (0700 root directory, 0600 file) and left alone; a run inside the grace period leaves it and says until when; a run after it (the record moved back 145 hours) removes it and drops the record. Its age counts from when it stopped: one stopped 29 days ago and one never started, created 30 days ago, are recorded; one created 30 days ago that stopped just now is not (the times are set by stopping Docker and editing config.v2.json). A recorded container added to the list, or started again, loses its record. When the record cannot be written (a read-only bind mount), no container is removed and the exit is 1, through the timer's script and through Prune now; a GRACE_HOURS under 24 written by hand is refused by the prune; an OLDER_THAN_HOURS that is 0, 23, 8761, empty, not a number, quoted or followed by anything is refused too, with nothing at all recorded or removed and exit 1, while 8760 and 24 are used; the settings file is read as text and never run (commands on other lines, a command substitution or an arithmetic subscript as a value: nothing runs, and such a value is refused), and the last line for a name wins; and when the review is withdrawn the prune removes nothing and clears the record. Stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep are kept with their images. Images, with a test registry on 127.0.0.1 standing in for a real one: Dangling (and a settings file with no PRUNE_IMAGES) removes the untagged image only; All also removes the tagged image pushed to the registry, printing its repo@sha256 to the journal (and that reference pulls it back), keeps the one built here and says why, and keeps tc.keep; a failing docker image ls removes no image and exits 1. Which store the runner uses decides what All must do: on the classic image store as described; on the containerd image store, where every image has a digest, All keeps every tagged image and says why. The last steps restart Docker on the other store and check All there too, so both stores are covered whichever the runner starts with. The image is pushed to the test registry only on the classic store: on the containerd store it has a repo@sha256 digest without one, and that store's push used HTTPS on Docker 29.4.2 whatever insecure-registries said. Bad input is refused with exit 2 before anything is written. A host without Docker is Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, and does not reach its network or build-cache step; Prune now exits 1; and the list is not created, exit 3. Docker stopped (docker.service stopped, docker.socket still listening, a restart: always container on the list): the prune service has Requisite=docker.service and After=, not Requires=; starting it, by hand or when the timer itself fires, does not start Docker and does not run the prune, and the timer stays active; the prune run by hand prints one line saying Docker is not running, removes nothing and exits 0; the component in Report and in Apply (exit 0: neither needs Docker), in Apply with Prune now (which does not run, exit 3), and with no list (not created, exit 3) leaves docker.service inactive; started again, the timer's service runs the prune normally. A changed service file or prune script is rewritten with a daemon-reload and the timer is not restarted (same ActiveEnterTimestamp and NextElapseUSecRealtime, no prune run); a schedule change restarts it. With no docker.service unit (its file, drop-ins and /etc/init.d/docker moved away), the service is written without the dependency lines and says so, and the unit starts and runs the prune; with the unit back, the next run writes them again. Version 13: the installed prune reads the pending-removal file with the shared tc_pending_lines and has no parser of its own; and a pending-removal file with a comment, a blank line, a malformed line, a CRLF line and a second line for the same container gives what version 12 gave: two unreadable lines counted and dropped, the first line for the container used, nothing removed early, and the file written again clean. Version 14: the installed prune writes pending-removal with tc_state_write, the function in the block marked tc-docker state that the three Docker monitors share (a step reads the installed prune for it). A /var/lib/tc-docker that is not owned by root is not used and not taken over, and a symlink in the record's place is not followed, written through or replaced: either way no container is removed and the prune exits 1; with the record a regular file again, the same prune removes the container whose record is due. The script's opening comment is short and points to the README (a step reads it). Version 15: the daemon.json part is in Docker - Configure Daemon Limits [Lin], with its tests. Here, a step reads the script for what is left of it (nothing: no python3, none of the four input variables); Apply, a job that still passes those four variables (with values version 14 refused), and every other run in this spec leave daemon.json as it was, with no backup and no staging file beside it.",
+  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. The prune refuses an age limit under 24 hours, so the tests make their containers and images 30 days old rather than lower it (a container by stopping Docker and editing config.v2.json; an image by loading a docker save archive written by hand, with the date in it). Before the list is reviewed, the prune removes no container and no image. After review, a stopped container that nothing protects is first recorded in /var/lib/tc-docker/pending-removal (0700 root directory, 0600 file) and left alone; a run inside the grace period leaves it and says until when; a run after it (the record moved back 145 hours) removes it and drops the record. Its age counts from when it stopped: one stopped 29 days ago and one never started, created 30 days ago, are recorded; one created 30 days ago that stopped just now is not (the times are set by stopping Docker and editing config.v2.json). A recorded container added to the list, or started again, loses its record. When the record cannot be written (a read-only bind mount), no container is removed and the exit is 1, through the timer's script and through Prune now; a GRACE_HOURS under 24 written by hand is refused by the prune; an OLDER_THAN_HOURS that is 0, 23, 8761, empty, not a number, quoted or followed by anything is refused too, with nothing at all recorded or removed and exit 1, while 8760 and 24 are used; the settings file is read as text and never run (commands on other lines, a command substitution or an arithmetic subscript as a value: nothing runs, and such a value is refused, except in a PRUNE_IMAGES line, which is only named as no longer used), and the last line for a name wins; and when the review is withdrawn the prune removes nothing and clears the record. Stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep are kept with their images. Images: the untagged image built 30 days ago is removed and named, one made just now is kept, and the tagged ones (one labelled tc.keep) are kept, and a docker shim that records the prune's docker commands shows none that could reach a registry; a failing docker image ls removes no image and exits 1. The last steps restart Docker on the other image store and check the same there, so both stores are covered whichever the runner starts with. Bad input is refused with exit 2 before anything is written. A host without Docker is Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, and does not reach its network or build-cache step; Prune now exits 1; and the list is not created, exit 3. Docker stopped (docker.service stopped, docker.socket still listening, a restart: always container on the list): the prune service has Requisite=docker.service and After=, not Requires=; starting it, by hand or when the timer itself fires, does not start Docker and does not run the prune, and the timer stays active; the prune run by hand prints one line saying Docker is not running, removes nothing and exits 0; the component in Report and in Apply (exit 0: neither needs Docker), in Apply with Prune now (which does not run, exit 3), and with no list (not created, exit 3) leaves docker.service inactive; started again, the timer's service runs the prune normally. A changed service file or prune script is rewritten with a daemon-reload and the timer is not restarted (same ActiveEnterTimestamp and NextElapseUSecRealtime, no prune run); a schedule change restarts it. With no docker.service unit (its file, drop-ins and /etc/init.d/docker moved away), the service is written without the dependency lines and says so, and the unit starts and runs the prune; with the unit back, the next run writes them again. Version 13: the installed prune reads the pending-removal file with the shared tc_pending_lines and has no parser of its own; and a pending-removal file with a comment, a blank line, a malformed line, a CRLF line and a second line for the same container gives what version 12 gave: two unreadable lines counted and dropped, the first line for the container used, nothing removed early, and the file written again clean. Version 14: the installed prune writes pending-removal with tc_state_write, the function in the block marked tc-docker state that the three Docker monitors share (a step reads the installed prune for it). A /var/lib/tc-docker that is not owned by root is not used and not taken over, and a symlink in the record's place is not followed, written through or replaced: either way no container is removed and the prune exits 1; with the record a regular file again, the same prune removes the container whose record is due. The script's opening comment is short and points to the README (a step reads it). Version 15: the daemon.json part is in Docker - Configure Daemon Limits [Lin], with its tests. Here, a step reads the script for what is left of it (nothing: no python3, none of the four input variables); Apply, a job that still passes those four variables (with values version 14 refused), and every other run in this spec leave daemon.json as it was, with no backup and no staging file beside it. Version 16: there is no All mode. A step reads the script for what is left of it (nothing: no usrPruneImages, no PRUNE_IMAGES written, no registry lookup code); the settings file has no PRUNE_IMAGES line; one left in it (all, dangling, ALL, a value version 15 refused, a command substitution) is not an error: the prune names it once, runs nothing from it, keeps every tagged image and exits 0, on both image stores; a job that still passes usrPruneImages (All, or a value version 15 refused with exit 2) runs as a normal one, and the settings file is written again without the line.",
   "variables": {},
   "steps": [
     {
@@ -24,6 +24,16 @@
         "python3: 0",
         "daemon.json code: 0",
         "moved input variables: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "From version 16 there is no All mode: the script reads no usrPruneImages and writes no PRUNE_IMAGES setting, and the prune it installs has no registry lookup (no lookup functions, no proxy handling, no test hooks, no docker buildx or docker manifest)",
+      "run": "f=Scripts/docker-configure-host-maintenance-lin/docker-configure-host-maintenance-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; echo \"usrPruneImages read or checked: $(grep -v '^[[:space:]]*#' \"$f\" | grep -c usrPruneImages)\"; echo \"PRUNE_IMAGES written to the settings file: $(grep -c '^PRUNE_IMAGES=' \"$f\")\"; echo \"registry lookup code: $(grep -cE 'lookup_setup|lookup_ref|now_ms|LOOKUP_|TC_PRUNE_TEST_LOOKUP|HTTPS?_PROXY|NO_PROXY|imagetools|manifest inspect|DOCKER_CONFIG' \"$f\")\"",
+      "outputContains": [
+        "usrPruneImages read or checked: 0",
+        "PRUNE_IMAGES written to the settings file: 0",
+        "registry lookup code: 0"
       ]
     },
     {
@@ -82,14 +92,13 @@
     },
     {
       "type": "file",
-      "label": "Prune script has an age filter and built-in defaults for its three settings, never runs its settings file, never prunes volumes and never forces an image",
+      "label": "Prune script has an age filter and built-in defaults for its two settings, never runs its settings file, never prunes volumes and never forces an image",
       "path": "/usr/local/sbin/tc-docker-prune",
       "contains": [
         "builder prune --all --force --filter \"until=${OLDER_THAN_HOURS}h\"",
         "\"$DOCKER\" image rm \"$ref\"",
         "setting OLDER_THAN_HOURS 168",
-        "setting GRACE_HOURS 144",
-        "setting PRUNE_IMAGES dangling"
+        "setting GRACE_HOURS 144"
       ],
       "notContains": [
         ". /etc/default/tc-docker-prune",
@@ -223,15 +232,15 @@
     },
     {
       "type": "file",
-      "label": "Settings file carries the age, the wait and the image mode",
+      "label": "Settings file carries the age and the wait, and no image mode (from version 16 there is none)",
       "path": "/etc/default/tc-docker-prune",
       "contains": [
         "OLDER_THAN_HOURS=168",
-        "GRACE_HOURS=144",
-        "PRUNE_IMAGES=dangling"
+        "GRACE_HOURS=144"
       ],
       "notContains": [
-        "REQUIRED_CONTAINERS"
+        "REQUIRED_CONTAINERS",
+        "PRUNE_IMAGES"
       ]
     },
     {
@@ -358,7 +367,7 @@
     },
     {
       "type": "command",
-      "label": "After the grace period (its record moved back 145 hours): the next prune removes it and drops the record; protected containers and their images stay; its unused tagged image stays, as PRUNE_IMAGES is dangling",
+      "label": "After the grace period (its record moved back 145 hours): the next prune removes it and drops the record; protected containers and their images stay; its unused tagged image stays, as the prune never removes a tagged image",
       "run": "sed -i -E \"s/^(.*\tname:tc-junk\ttc-junk\t)[0-9]+$/\\1$(( $(date +%s) - 145 * 3600 ))/\" /var/lib/tc-docker/pending-removal; grep -v '^#' /var/lib/tc-docker/pending-removal; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; for c in tc-listed tc-policy tc-labelled; do docker inspect -f '{{.Name}} kept' $c; done; for i in listed policy labelled; do docker image inspect -f \"image tc-test-$i kept\" tc-test-$i:1; done; docker inspect tc-junk >/dev/null 2>&1 && echo 'tc-junk STILL HERE' || echo 'tc-junk removed'; docker image inspect -f 'junk image kept (tagged)' tc-test-junk:1; grep -q 'name:tc-junk' /var/lib/tc-docker/pending-removal && echo 'tc-junk record STILL THERE' || echo 'tc-junk record dropped'",
       "outputContains": [
         "Stopped containers removed: 1",
@@ -372,7 +381,7 @@
         "image tc-test-labelled kept",
         "tc-junk removed",
         "junk image kept (tagged)",
-        "tagged image(s) that no container uses (PRUNE_IMAGES=dangling",
+        "tagged image(s) that no container uses (the prune never removes a tagged image)",
         "tc-junk record dropped"
       ],
       "outputNotContains": [
@@ -616,8 +625,8 @@
     },
     {
       "type": "command",
-      "label": "The settings file is read, never run: commands on other lines run nothing and are ignored, and the last line for a name wins; a setting whose value is a command substitution or an arithmetic subscript runs nothing and is refused, exit 1",
-      "run": "f=/etc/default/tc-docker-prune; rm -f /tmp/tc-test-ran-*\nprintf '%s\\n' '# tc-test: lines a shell would run' 'OLDER_THAN_HOURS=8000' 'GRACE_HOURS=144' 'PRUNE_IMAGES=dangling' 'touch /tmp/tc-test-ran-line' 'LOOKUP_MAX=$(touch /tmp/tc-test-ran-other)' 'export TC_X=`touch /tmp/tc-test-ran-tick`' 'REQUIRED_CONTAINERS=\"x\"; touch /tmp/tc-test-ran-semi' 'OLDER_THAN_HOURS=24' > $f\nout=$(/usr/local/sbin/tc-docker-prune 2>&1); echo \"commands on other lines: prune exit $?\"; printf '%s\\n' \"$out\" | grep -E '^(Pruning|ERROR)'\ntry() { printf '%s\\n' 'OLDER_THAN_HOURS=24' 'GRACE_HOURS=144' 'PRUNE_IMAGES=dangling' \"$2\" > $f; out=$(/usr/local/sbin/tc-docker-prune 2>&1); echo \"$1: prune exit $?\"; printf '%s\\n' \"$out\" | grep '^ERROR' | cut -c1-110; }\ntry 'age from a command' 'OLDER_THAN_HOURS=$(touch /tmp/tc-test-ran-age; echo 24)'\ntry 'age as an arithmetic subscript' 'OLDER_THAN_HOURS=a[$(touch /tmp/tc-test-ran-arith)]'\ntry 'wait from a command' 'GRACE_HOURS=$(touch /tmp/tc-test-ran-grace; echo 144)'\ntry 'image mode from a command' 'PRUNE_IMAGES=$(touch /tmp/tc-test-ran-images; echo all)'\necho \"commands run from the settings file: $(ls /tmp/tc-test-ran-* 2>/dev/null | wc -l)\"; ls /tmp/tc-test-ran-* 2>/dev/null\ncp -p /tmp/tc-settings.bak $f; rm -f /tmp/tc-settings.bak /tmp/tc-age.out /tmp/tc-agecheck-id; echo \"settings back: $(grep -c -E '^(OLDER_THAN_HOURS=168|GRACE_HOURS=144|PRUNE_IMAGES=dangling)$' $f) of 3 lines\"; docker rm tc-grace >/dev/null",
+      "label": "The settings file is read, never run: commands on other lines run nothing and are ignored, and the last line for a name wins; a setting whose value is a command substitution or an arithmetic subscript runs nothing and is refused, exit 1; a PRUNE_IMAGES line whose value is a command substitution runs nothing and is only named as no longer used",
+      "run": "f=/etc/default/tc-docker-prune; rm -f /tmp/tc-test-ran-*\nprintf '%s\\n' '# tc-test: lines a shell would run' 'OLDER_THAN_HOURS=8000' 'GRACE_HOURS=144' 'PRUNE_IMAGES=dangling' 'touch /tmp/tc-test-ran-line' 'LOOKUP_MAX=$(touch /tmp/tc-test-ran-other)' 'export TC_X=`touch /tmp/tc-test-ran-tick`' 'REQUIRED_CONTAINERS=\"x\"; touch /tmp/tc-test-ran-semi' 'OLDER_THAN_HOURS=24' > $f\nout=$(/usr/local/sbin/tc-docker-prune 2>&1); echo \"commands on other lines: prune exit $?\"; printf '%s\\n' \"$out\" | grep -E '^(Pruning|ERROR)'\ntry() { printf '%s\\n' 'OLDER_THAN_HOURS=24' 'GRACE_HOURS=144' \"$2\" > $f; out=$(/usr/local/sbin/tc-docker-prune 2>&1); echo \"$1: prune exit $?\"; printf '%s\\n' \"$out\" | grep -E '^(ERROR|PRUNE_IMAGES in)' | cut -c1-110; }\ntry 'age from a command' 'OLDER_THAN_HOURS=$(touch /tmp/tc-test-ran-age; echo 24)'\ntry 'age as an arithmetic subscript' 'OLDER_THAN_HOURS=a[$(touch /tmp/tc-test-ran-arith)]'\ntry 'wait from a command' 'GRACE_HOURS=$(touch /tmp/tc-test-ran-grace; echo 144)'\ntry 'old image mode from a command' 'PRUNE_IMAGES=$(touch /tmp/tc-test-ran-images; echo all)'\necho \"commands run from the settings file: $(ls /tmp/tc-test-ran-* 2>/dev/null | wc -l)\"; ls /tmp/tc-test-ran-* 2>/dev/null\ncp -p /tmp/tc-settings.bak $f; rm -f /tmp/tc-settings.bak /tmp/tc-age.out /tmp/tc-agecheck-id; echo \"settings back: $(grep -c -E '^(OLDER_THAN_HOURS=168|GRACE_HOURS=144)$' $f) of 2 lines\"; docker rm tc-grace >/dev/null",
       "outputContains": [
         "commands on other lines: prune exit 0",
         "Pruning unused items older than 24h",
@@ -626,10 +635,10 @@
         "ERROR: OLDER_THAN_HOURS in /etc/default/tc-docker-prune must be a whole number of hours, 24-8760",
         "wait from a command: prune exit 1",
         "ERROR: GRACE_HOURS in /etc/default/tc-docker-prune must be a whole number of hours, 24-8760",
-        "image mode from a command: prune exit 1",
-        "ERROR: PRUNE_IMAGES in /etc/default/tc-docker-prune must be dangling or all",
+        "old image mode from a command: prune exit 0",
+        "PRUNE_IMAGES in /etc/default/tc-docker-prune is no longer used",
         "commands run from the settings file: 0",
-        "settings back: 3 of 3 lines"
+        "settings back: 2 of 2 lines"
       ],
       "outputNotContains": [
         "/tmp/tc-test-ran-",
@@ -652,296 +661,100 @@
     },
     {
       "type": "command",
-      "label": "Images: a test registry over HTTPS (a test CA, trusted by Docker and the system) at tc-registry.test, a name only this runner resolves to 127.0.0.1; five images no container uses: untagged; tagged for the registry and never pushed; pushed; pushed then deleted from the registry; tagged and labelled tc.keep, each built 30 days ago",
-      "timeoutSeconds": 240,
-      "run": "set -e\ncat > /usr/local/sbin/tc-test-registry <<'EOF'\n#!/usr/bin/env python3\n# tc-test-registry PORT DIR [CERT KEY]: a minimal image registry (the Docker\n# Registry HTTP API v2, enough for docker push, docker pull and a manifest\n# lookup) on 127.0.0.1, so a test can give an image a real registry digest\n# without the internet. With CERT and KEY it serves HTTPS. Files in DIR change\n# how it answers, so a test can switch them on and off:\n#   htpasswd   \"user:password\": every request needs that Basic login\n#   ratelimit  manifest requests get 429 Too Many Requests, as Docker Hub's do\n#   delay      manifest requests wait this many seconds first\n# Every manifest request is appended to DIR/requests.log.\nimport base64, hashlib, os, ssl, sys, time, uuid\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nfrom urllib.parse import urlparse, parse_qs\nPORT, DIR = int(sys.argv[1]), sys.argv[2]\nfor sub in (\"blobs\", \"uploads\", \"manifests\"):\n    os.makedirs(os.path.join(DIR, sub), exist_ok=True)\ndef safe(s): return s.replace(\"/\", \"_\").replace(\":\", \"_\")\ndef sha(b): return \"sha256:\" + hashlib.sha256(b).hexdigest()\ndef flag(n):\n    try: return open(os.path.join(DIR, n)).read().strip()\n    except OSError: return None\nclass H(BaseHTTPRequestHandler):\n    protocol_version = \"HTTP/1.1\"\n    def log_message(self, *a): pass\n    def send(self, code, body=b\"\", headers=None):\n        self.send_response(code)\n        for k, v in (headers or {}).items(): self.send_header(k, v)\n        self.send_header(\"Content-Length\", str(len(body)))\n        self.send_header(\"Docker-Distribution-API-Version\", \"registry/2.0\")\n        self.end_headers()\n        if self.command != \"HEAD\": self.wfile.write(body)\n    def body(self):\n        n = int(self.headers.get(\"Content-Length\") or 0)\n        if n: return self.rfile.read(n)\n        if self.headers.get(\"Transfer-Encoding\", \"\").lower() != \"chunked\": return b\"\"\n        out = b\"\"\n        while True:\n            size = int(self.rfile.readline().strip().split(b\";\")[0], 16)\n            if size == 0: self.rfile.readline(); return out\n            out += self.rfile.read(size); self.rfile.readline()\n    def route(self):\n        u = urlparse(self.path); p = u.path; q = parse_qs(u.query)\n        login = flag(\"htpasswd\")\n        if login:\n            want = \"Basic \" + base64.b64encode(login.encode()).decode()\n            if self.headers.get(\"Authorization\") != want:\n                self.body()\n                return self.send(401, b'{\"errors\":[{\"code\":\"UNAUTHORIZED\",\"message\":\"authentication required\"}]}',\n                                 {\"WWW-Authenticate\": 'Basic realm=\"tc-test-registry\"', \"Content-Type\": \"application/json\"})\n        if p in (\"/v2\", \"/v2/\"): return self.send(200, b\"{}\")\n        if \"/blobs/uploads/\" in p:\n            name, rest = p[4:].split(\"/blobs/uploads/\", 1)\n            if self.command == \"POST\":\n                uid = uuid.uuid4().hex\n                open(f\"{DIR}/uploads/{uid}\", \"wb\").close()\n                return self.send(202, headers={\"Location\": f\"/v2/{name}/blobs/uploads/{uid}\", \"Range\": \"0-0\", \"Docker-Upload-UUID\": uid})\n            uid = rest.strip(\"/\"); f = f\"{DIR}/uploads/{uid}\"\n            with open(f, \"ab\") as fh: fh.write(self.body())\n            if self.command == \"PATCH\":\n                return self.send(202, headers={\"Location\": f\"/v2/{name}/blobs/uploads/{uid}\", \"Range\": f\"0-{max(os.path.getsize(f) - 1, 0)}\", \"Docker-Upload-UUID\": uid})\n            d = q[\"digest\"][0]\n            if sha(open(f, \"rb\").read()) != d: return self.send(400, b'{\"errors\":[{\"code\":\"DIGEST_INVALID\"}]}')\n            os.replace(f, f\"{DIR}/blobs/{safe(d)}\")\n            return self.send(201, headers={\"Location\": f\"/v2/{name}/blobs/{d}\", \"Docker-Content-Digest\": d})\n        if \"/blobs/\" in p:\n            d = p.rsplit(\"/blobs/\", 1)[1]; f = f\"{DIR}/blobs/{safe(d)}\"\n            if not os.path.exists(f): return self.send(404, b'{\"errors\":[{\"code\":\"BLOB_UNKNOWN\"}]}')\n            return self.send(200, open(f, \"rb\").read(), {\"Docker-Content-Digest\": d, \"Content-Type\": \"application/octet-stream\"})\n        if \"/manifests/\" in p:\n            name, ref = p[4:].rsplit(\"/manifests/\", 1)\n            if self.command == \"PUT\":\n                data = self.body(); d = sha(data)\n                for r in (ref, d):\n                    open(f\"{DIR}/manifests/{safe(name)}@{safe(r)}\", \"wb\").write(data)\n                    open(f\"{DIR}/manifests/{safe(name)}@{safe(r)}.type\", \"w\").write(self.headers.get(\"Content-Type\", \"\"))\n                return self.send(201, headers={\"Location\": f\"/v2/{name}/manifests/{d}\", \"Docker-Content-Digest\": d})\n            with open(f\"{DIR}/requests.log\", \"a\") as log: log.write(f\"{self.command} {p}\\n\")\n            delay = flag(\"delay\")\n            if delay: time.sleep(int(delay))\n            if flag(\"ratelimit\") is not None:\n                return self.send(429, b'{\"errors\":[{\"code\":\"TOOMANYREQUESTS\",\"message\":\"You have reached your pull rate limit.\"}]}', {\"Content-Type\": \"application/json\"})\n            f = f\"{DIR}/manifests/{safe(name)}@{safe(ref)}\"\n            if not os.path.exists(f): return self.send(404, b'{\"errors\":[{\"code\":\"MANIFEST_UNKNOWN\",\"message\":\"manifest unknown\"}]}', {\"Content-Type\": \"application/json\"})\n            data = open(f, \"rb\").read()\n            return self.send(200, data, {\"Docker-Content-Digest\": sha(data), \"Content-Type\": open(f + \".type\").read()})\n        return self.send(404)\n    do_GET = do_HEAD = do_POST = do_PATCH = do_PUT = route\nsrv = ThreadingHTTPServer((\"127.0.0.1\", PORT), H)\nif len(sys.argv) > 4:\n    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(sys.argv[3], sys.argv[4])\n    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)\nsrv.serve_forever()\nEOF\ncat > /usr/local/sbin/tc-test-images <<'EOF'\n#!/bin/bash\n# tc-test-images: helpers for this component's image tests (Tier 1 only).\n#   store                  which image store Docker is using: containerd or classic\n#   registry start|stop    the test registry, https://tc-registry.test:5055\n#   aside                  save the earlier steps' tc-test-* images that no\n#                          container uses to /tmp/tc-test-aside.tar (later steps\n#                          need them); \"restore\" loads them back\n#   images NAME...         remove every image no container uses (so a prune sees\n#                          only these), then make each NAME, built here:\n#                            untagged  untagged; its id goes in /tmp/tc-untagged-id\n#                            keep      tc-test-keepimg:1, labelled tc.keep\n#                            local     tagged for the registry, never pushed\n#                            deleted   pushed, then deleted from the registry\n#                            anything else  pushed (pulled, extra1, ...)\n#                          each 30 days old (tc-test-old-image), so the prune's\n#                          age limit (OLDER_THAN_HOURS, 168 here) lets it go;\n#                          and resets the registry's switches and request log.\n#   mode all|dangling      sets PRUNE_IMAGES in the prune's settings file\n#   prune [VAR=value...]   the prune, as the timer runs it (no HOME, no proxy),\n#                          output also in /tmp/tc-prune.out, then \"prune exit N\"\n#   has NAME...            \"NAME kept\" or \"NAME GONE\" for each image name\nR=tc-registry.test:5055\nD=/tmp/tc-test-registry\ncase \"$1\" in\nstore)\n    case \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo containerd ;; *) echo classic ;; esac ;;\nregistry)\n    # By its pid: a pkill -f pattern would also match the test step's own shell.\n    [ -s $D.pid ] && kill \"$(cat $D.pid)\" 2>/dev/null; rm -f $D.pid; sleep 1\n    if [ \"$2\" = start ]; then\n        setsid nohup python3 /usr/local/sbin/tc-test-registry 5055 $D /etc/tc-test-pki/registry.crt /etc/tc-test-pki/registry.key >/tmp/tc-test-registry.log 2>&1 </dev/null &\n        echo $! > $D.pid\n        for i in $(seq 20); do curl -fsS https://$R/v2/ >/dev/null 2>&1 && break; sleep 1; done\n        curl -fsS https://$R/v2/ >/dev/null && echo \"test registry answers on https://$R\"\n    else\n        curl -fsS https://$R/v2/ >/dev/null 2>&1 && echo \"test registry STILL ANSWERS\" || echo \"test registry stopped\"\n    fi ;;\naside)\n    used=$(docker ps -aq --no-trunc | xargs -r docker container inspect -f '{{.Image}}' | sort -u)\n    keep=\"\"\n    for id in $(docker image ls -q --no-trunc | sort -u); do\n        printf '%s\\n' \"$used\" | grep -qx \"$id\" && continue\n        keep=\"$keep $(docker image inspect -f '{{range .RepoTags}}{{.}} {{end}}' \"$id\" | tr ' ' '\\n' | grep '^tc-test-' | tr '\\n' ' ')\"\n    done\n    if [ -n \"${keep// /}\" ]; then docker save -o /tmp/tc-test-aside.tar $keep && echo \"set aside:$keep\"; else echo \"set aside: nothing\"; fi ;;\nrestore)\n    [ -f /tmp/tc-test-aside.tar ] && docker load -q -i /tmp/tc-test-aside.tar && rm -f /tmp/tc-test-aside.tar ;;\nimages)\n    shift\n    used=$(docker ps -aq --no-trunc | xargs -r docker container inspect -f '{{.Image}}' | sort -u)\n    for id in $( (docker image ls -q --no-trunc; docker image ls -q --no-trunc --filter dangling=true) | sort -u); do\n        printf '%s\\n' \"$used\" | grep -qx \"$id\" || docker image rm -f \"$id\" >/dev/null 2>&1\n    done\n    rm -f $D/ratelimit $D/delay $D/htpasswd\n    for n in \"$@\"; do\n        case \"$n\" in\n        untagged) tc-test-old-image tc.test=untagged > /tmp/tc-untagged-id || echo \"IMAGE NOT MADE: $n\" ;;\n        keep)     tc-test-old-image tc.keep=true tc-test-keepimg:1 >/dev/null || echo \"IMAGE NOT MADE: $n\" ;;\n        *)        tc-test-old-image \"tc.test=$n\" $R/tc-test-$n:1 >/dev/null || echo \"IMAGE NOT MADE: $n\"\n                  [ \"$n\" = local ] || docker push -q $R/tc-test-$n:1 >/dev/null || echo \"PUSH FAILED: $n\" ;;\n        esac\n    done\n    rm -f $D/manifests/tc-test-deleted@*\n    : > $D/requests.log; sleep 2\n    echo \"image store: $(\"$0\" store)\"\n    docker image ls --digests --format '{{.Repository}}:{{.Tag}}  {{.Digest}}  {{.ID}}' | sort ;;\nmode)\n    sed -i \"s/^PRUNE_IMAGES=.*/PRUNE_IMAGES=$2/\" /etc/default/tc-docker-prune; grep '^PRUNE_IMAGES=' /etc/default/tc-docker-prune ;;\nprune)\n    shift\n    env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \"$@\" /usr/local/sbin/tc-docker-prune > /tmp/tc-prune.out 2>&1\n    rc=$?; cat /tmp/tc-prune.out; echo \"prune exit $rc\" ;;\nhas)\n    shift\n    for n in \"$@\"; do docker image inspect \"$n\" >/dev/null 2>&1 && echo \"$n kept\" || echo \"$n GONE\"; done ;;\nesac\nEOF\nchmod 755 /usr/local/sbin/tc-test-registry /usr/local/sbin/tc-test-images\n# HTTPS, not plain HTTP: on the containerd image store docker push ignores insecure-registries,\n# and the lookup tools treat only localhost and 127.0.0.1 as plain-HTTP registries.\nmkdir -p /etc/tc-test-pki; cd /etc/tc-test-pki\nopenssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=tc-test-ca -keyout ca.key -out ca.crt -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign 2>/dev/null\nopenssl req -newkey rsa:2048 -nodes -subj /CN=tc-registry.test -keyout registry.key -out registry.csr 2>/dev/null\nprintf 'subjectAltName=DNS:tc-registry.test\\nbasicConstraints=CA:FALSE\\nextendedKeyUsage=serverAuth\\n' > ext\nopenssl x509 -req -in registry.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 2 -out registry.crt -extfile ext 2>/dev/null\ngrep -q ' tc-registry.test$' /etc/hosts || echo '127.0.0.1 tc-registry.test' >> /etc/hosts\nmkdir -p /etc/docker/certs.d/tc-registry.test:5055 && cp ca.crt /etc/docker/certs.d/tc-registry.test:5055/ca.crt\ncp ca.crt /usr/local/share/ca-certificates/tc-test-ca.crt && update-ca-certificates >/dev/null 2>&1\ncd /\ntc-test-images registry start\ntc-test-images aside\ntc-test-images images untagged local pulled deleted keep\necho \"untagged image: $(cut -c8-19 /tmp/tc-untagged-id)\"\nfor i in tc-registry.test:5055/tc-test-local:1 tc-registry.test:5055/tc-test-pulled:1 tc-registry.test:5055/tc-test-deleted:1 tc-test-keepimg:1; do docker image inspect -f \"$i RepoDigests {{json .RepoDigests}}\" $i; done\ndocker image inspect -f 'the pushed image was built {{.Created}}' tc-registry.test:5055/tc-test-pulled:1; grep '^OLDER_THAN_HOURS=' /etc/default/tc-docker-prune\nstore=$(tc-test-images store); loc=$(docker image inspect -f '{{json .RepoDigests}}' tc-registry.test:5055/tc-test-local:1)\nif [ \"$store\" = classic ] && [ \"$loc\" = '[]' ]; then echo 'never pushed: no digest, as on the classic store'; elif [ \"$store\" = containerd ] && [ \"$loc\" != '[]' ]; then echo 'never pushed: a digest all the same, as on the containerd store'; fi",
+      "label": "Images: three images no container uses, each built 30 days ago: untagged; tagged; tagged and labelled tc.keep (the earlier steps' unused test images set aside for the steps after)",
+      "timeoutSeconds": 180,
+      "run": "set -e\ncat > /usr/local/sbin/tc-test-images <<'EOF'\n#!/bin/bash\n# tc-test-images: helpers for this component's image tests (Tier 1 only).\n#   store                  which image store Docker is using: containerd or classic\n#   aside                  save the earlier steps' tc-test-* images that no\n#                          container uses to /tmp/tc-test-aside.tar (later steps\n#                          need them); \"restore\" loads them back\n#   images NAME...         remove every image no container uses (so a prune sees\n#                          only these), then make each NAME, built here, 30 days\n#                          old (tc-test-old-image), so the prune's age limit\n#                          (OLDER_THAN_HOURS, 168 here) lets it go:\n#                            untagged  untagged; its id goes in /tmp/tc-untagged-id\n#                            keep      tc-test-keepimg:1, labelled tc.keep\n#                            anything else  tc-test-NAME:1\n#   prune                  the prune, as the timer runs it (no HOME, no proxy),\n#                          through a docker shim that records every docker\n#                          command it runs; output also in /tmp/tc-prune.out,\n#                          then \"prune exit N\", and one line per recorded\n#                          command that could reach a registry\n#   has NAME...            \"NAME kept\" or \"NAME GONE\" for each image name\ncase \"$1\" in\nstore)\n    case \"$(docker info --format '{{json .DriverStatus}}')\" in *io.containerd.snapshotter*) echo containerd ;; *) echo classic ;; esac ;;\naside)\n    used=$(docker ps -aq --no-trunc | xargs -r docker container inspect -f '{{.Image}}' | sort -u)\n    keep=\"\"\n    for id in $(docker image ls -q --no-trunc | sort -u); do\n        printf '%s\\n' \"$used\" | grep -qx \"$id\" && continue\n        keep=\"$keep $(docker image inspect -f '{{range .RepoTags}}{{.}} {{end}}' \"$id\" | tr ' ' '\\n' | grep '^tc-test-' | tr '\\n' ' ')\"\n    done\n    if [ -n \"${keep// /}\" ]; then docker save -o /tmp/tc-test-aside.tar $keep && echo \"set aside:$keep\"; else echo \"set aside: nothing\"; fi ;;\nrestore)\n    [ -f /tmp/tc-test-aside.tar ] && docker load -q -i /tmp/tc-test-aside.tar && rm -f /tmp/tc-test-aside.tar ;;\nimages)\n    shift\n    used=$(docker ps -aq --no-trunc | xargs -r docker container inspect -f '{{.Image}}' | sort -u)\n    for id in $( (docker image ls -q --no-trunc; docker image ls -q --no-trunc --filter dangling=true) | sort -u); do\n        printf '%s\\n' \"$used\" | grep -qx \"$id\" || docker image rm -f \"$id\" >/dev/null 2>&1\n    done\n    for n in \"$@\"; do\n        case \"$n\" in\n        untagged) tc-test-old-image tc.test=untagged > /tmp/tc-untagged-id || echo \"IMAGE NOT MADE: $n\" ;;\n        keep)     tc-test-old-image tc.keep=true tc-test-keepimg:1 >/dev/null || echo \"IMAGE NOT MADE: $n\" ;;\n        *)        tc-test-old-image \"tc.test=$n\" tc-test-$n:1 >/dev/null || echo \"IMAGE NOT MADE: $n\" ;;\n        esac\n    done\n    sleep 2\n    echo \"image store: $(\"$0\" store)\"\n    docker image ls --digests --format '{{.Repository}}:{{.Tag}}  {{.Digest}}  {{.ID}}' | sort ;;\nprune)\n    real=$(command -v docker)\n    [ \"$real\" != /usr/local/sbin/docker ] || { echo \"a docker shim is already in /usr/local/sbin\"; exit 1; }\n    printf '%s\\n' '#!/bin/sh' '# tc-test shim: records each docker command, then runs it' 'printf \"%s\\n\" \"$*\" >> /tmp/tc-docker-calls.log' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker\n    chmod 755 /usr/local/sbin/docker; : > /tmp/tc-docker-calls.log\n    env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /usr/local/sbin/tc-docker-prune > /tmp/tc-prune.out 2>&1\n    rc=$?; rm -f /usr/local/sbin/docker\n    cat /tmp/tc-prune.out; echo \"prune exit $rc\"\n    [ -s /tmp/tc-docker-calls.log ] && echo \"the shim recorded the prune's docker commands: $(wc -l < /tmp/tc-docker-calls.log)\"\n    grep -E '^(buildx|manifest|pull|push|login|search|image pull|image push)( |$)' /tmp/tc-docker-calls.log | sed 's/^/REGISTRY CALL BY THE PRUNE: docker /' ;;\nhas)\n    shift\n    for n in \"$@\"; do docker image inspect \"$n\" >/dev/null 2>&1 && echo \"$n kept\" || echo \"$n GONE\"; done ;;\nesac\nEOF\nchmod 755 /usr/local/sbin/tc-test-images\ntc-test-images aside\ntc-test-images images untagged tagged keep\necho \"untagged image: $(cut -c8-19 /tmp/tc-untagged-id)\"\ngrep '^OLDER_THAN_HOURS=' /etc/default/tc-docker-prune",
       "outputContains": [
-        "test registry answers on https://tc-registry.test:5055",
         "image store:",
-        "never pushed:",
-        "tc-registry.test:5055/tc-test-pulled:1 RepoDigests [\"tc-registry.test:5055/tc-test-pulled@sha256:",
-        "tc-registry.test:5055/tc-test-deleted:1 RepoDigests [\"tc-registry.test:5055/tc-test-deleted@sha256:",
-        "the pushed image was built 20",
+        "tc-test-tagged:1",
+        "tc-test-keepimg:1",
+        "untagged image:",
         "OLDER_THAN_HOURS=168"
       ],
       "outputNotContains": [
-        "PUSH FAILED",
         "IMAGE NOT MADE"
       ]
     },
     {
       "type": "command",
-      "label": "Images, PRUNE_IMAGES=dangling: the untagged image built 30 days ago goes and is named; one made just now stays, as it is under OLDER_THAN_HOURS; every tagged one stays; no request reaches the registry",
-      "run": "grep PRUNE_IMAGES /etc/default/tc-docker-prune; r=$(mktemp -d); mkdir -p $r/bin; cp /bin/true $r/bin/; new=$(tar -C $r -c . | docker import --change 'LABEL tc.nonce=new' -); rm -rf $r; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; docker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'untagged image STILL HERE' || echo 'untagged image removed'; printf '%s\\n' \"$out\" | grep -qF \"untagged $(cut -c8-19 /tmp/tc-untagged-id)\" && echo 'untagged image named in the output'; tc-test-images has tc-registry.test:5055/tc-test-local:1 tc-registry.test:5055/tc-test-pulled:1 tc-registry.test:5055/tc-test-deleted:1 tc-test-keepimg:1; echo \"requests to the registry: $(wc -l < /tmp/tc-test-registry/requests.log)\"; docker image inspect \"$new\" >/dev/null 2>&1 && echo 'untagged image made just now kept: under OLDER_THAN_HOURS' || echo 'untagged image made just now GONE'; docker image rm \"$new\" >/dev/null",
+      "label": "Images: the untagged image built 30 days ago goes and is named; one made just now stays, as it is under OLDER_THAN_HOURS; the tagged ones stay; the prune runs no docker command that could reach a registry",
+      "run": "r=$(mktemp -d); mkdir -p $r/bin; cp /bin/true $r/bin/; new=$(tar -C $r -c . | docker import --change 'LABEL tc.nonce=new' -); rm -rf $r; sleep 2; tc-test-images prune; docker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'untagged image STILL HERE' || echo 'untagged image removed'; grep -qF \"untagged $(cut -c8-19 /tmp/tc-untagged-id)\" /tmp/tc-prune.out && echo 'untagged image named in the output'; tc-test-images has tc-test-tagged:1 tc-test-keepimg:1; docker image inspect \"$new\" >/dev/null 2>&1 && echo 'untagged image made just now kept: under OLDER_THAN_HOURS' || echo 'untagged image made just now GONE'; docker image rm \"$new\" >/dev/null",
       "outputContains": [
-        "PRUNE_IMAGES=dangling",
-        "Images removed (PRUNE_IMAGES=dangling):",
+        "Untagged images removed: 1",
         "prune exit 0",
         "untagged image removed",
         "untagged image named in the output",
-        "tc-registry.test:5055/tc-test-local:1 kept",
-        "tc-registry.test:5055/tc-test-pulled:1 kept",
-        "tc-registry.test:5055/tc-test-deleted:1 kept",
+        "tc-test-tagged:1 kept",
         "tc-test-keepimg:1 kept",
-        "Images kept: 3 tagged image(s) that no container uses (PRUNE_IMAGES=dangling removes untagged images only)",
-        "requests to the registry: 0",
+        "Images kept: 1 tagged image(s) that no container uses (the prune never removes a tagged image)",
+        "the shim recorded the prune's docker commands",
         "untagged image made just now kept: under OLDER_THAN_HOURS"
       ],
       "outputNotContains": [
         "STILL HERE",
         "GONE",
-        "pull again",
-        "registry check",
-        "Lookups made"
-      ]
-    },
-    {
-      "type": "command",
-      "label": "Images: a settings file with no PRUNE_IMAGES line (a host set up by version 8) behaves as dangling",
-      "run": "tc-test-old-image tc.test=untagged2 > /tmp/tc-untagged-id; sed -i '/^PRUNE_IMAGES=/d' /etc/default/tc-docker-prune; echo \"PRUNE_IMAGES lines in the settings file: $(grep -c '^PRUNE_IMAGES=' /etc/default/tc-docker-prune)\"; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; docker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'untagged image STILL HERE' || echo 'untagged image removed'; printf '%s\\n' \"$out\" | grep -qF \"untagged $(cut -c8-19 /tmp/tc-untagged-id)\" && echo 'untagged image named in the output'; tc-test-images has tc-registry.test:5055/tc-test-local:1 tc-registry.test:5055/tc-test-pulled:1 tc-registry.test:5055/tc-test-deleted:1 tc-test-keepimg:1; echo \"requests to the registry: $(wc -l < /tmp/tc-test-registry/requests.log)\"",
-      "outputContains": [
-        "PRUNE_IMAGES lines in the settings file: 0",
-        "Images removed (PRUNE_IMAGES=dangling):",
-        "prune exit 0",
-        "untagged image removed",
-        "tc-registry.test:5055/tc-test-local:1 kept",
-        "tc-registry.test:5055/tc-test-pulled:1 kept",
-        "tc-registry.test:5055/tc-test-deleted:1 kept",
-        "tc-test-keepimg:1 kept",
-        "requests to the registry: 0"
-      ],
-      "outputNotContains": [
-        "STILL HERE",
-        "GONE",
-        "pull again",
-        "registry check"
-      ]
-    },
-    {
-      "type": "runComponent",
-      "label": "usrPruneImages All is saved to the settings file",
-      "variables": {
-        "usrPruneImages": "all"
-      },
-      "outputContains": [
-        "Prune timer: updated the prune service, script or settings",
-        "images: all",
-        "The timer was not restarted"
-      ]
-    },
-    {
-      "type": "file",
-      "label": "Settings file: PRUNE_IMAGES=all, with the age and the wait",
-      "path": "/etc/default/tc-docker-prune",
-      "contains": [
-        "OLDER_THAN_HOURS=168",
-        "GRACE_HOURS=144",
-        "PRUNE_IMAGES=all"
-      ]
-    },
-    {
-      "type": "command",
-      "label": "Images, PRUNE_IMAGES=all, run by the timer's service: the pushed image goes, with the repo@sha256 its registry confirmed, in the journal; the one never pushed and the one deleted from the registry stay, each with its reason; the tc.keep one stays",
-      "run": ": > /tmp/tc-test-registry/requests.log; sleep 2; since=$(date '+%Y-%m-%d %H:%M:%S'); sleep 1; systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl --sync >/dev/null 2>&1; journalctl -u tc-docker-prune.service --since \"$since\" --no-pager -o cat > /tmp/tc-all.out; cat /tmp/tc-all.out; store=$(tc-test-images store); echo \"image store: $store\"; if [ \"$store\" = classic ]; then want='tc-registry.test:5055/tc-test-local:1 - no registry digest: built or loaded on this host, so there is nothing to look up'; else want='tc-registry.test:5055/tc-test-local:1 - its registry does not have tc-registry.test:5055/tc-test-local@sha256:'; fi; grep -qF \"$want\" /tmp/tc-all.out && echo \"never-pushed image kept, with the reason for the $store store\"; tc-test-images has tc-registry.test:5055/tc-test-local:1 tc-registry.test:5055/tc-test-pulled:1 tc-registry.test:5055/tc-test-deleted:1 tc-test-keepimg:1; echo '--- registry requests'; cat /tmp/tc-test-registry/requests.log",
-      "outputContains": [
-        "success",
-        "Images removed (PRUNE_IMAGES=all):",
-        "tc-registry.test:5055/tc-test-pulled:1 - its registry has it, pull again: tc-registry.test:5055/tc-test-pulled@sha256:",
-        "tc-registry.test:5055/tc-test-deleted:1 - its registry does not have tc-registry.test:5055/tc-test-deleted@sha256:",
-        "never-pushed image kept, with the reason for the",
-        "Tagged images, registry check: removed 1, kept (registry does not have it) 2, kept (could not check) 0, not checked this run 0.",
-        "tc-registry.test:5055/tc-test-pulled:1 GONE",
-        "tc-registry.test:5055/tc-test-local:1 kept",
-        "tc-registry.test:5055/tc-test-deleted:1 kept",
-        "tc-test-keepimg:1 kept"
-      ],
-      "outputNotContains": [
-        "tc-test-keepimg:1 -",
+        "REGISTRY CALL BY THE PRUNE",
+        "PRUNE_IMAGES",
         "ERROR",
         "WARNING"
       ]
     },
     {
       "type": "command",
-      "label": "Images: the repo@sha256 the prune printed pulls the image back",
-      "run": "ref=$(grep -oE 'tc-registry.test:5055/tc-test-pulled@sha256:[0-9a-f]{64}' /tmp/tc-all.out | tail -n 1); echo \"printed: $ref\"; docker pull -q \"$ref\" && docker image inspect -f 'pulled back: {{json .RepoDigests}}' \"$ref\"",
+      "label": "A settings file that still has PRUNE_IMAGES (as version 15 and earlier wrote it, or edited by hand) is not an error: with all, dangling, ALL or a value version 15 refused, the prune says once that the setting is no longer used, removes the untagged image, keeps the tagged ones, runs no docker command that could reach a registry, and exits 0. The file is left as version 15 wrote it with All, for the next step",
+      "run": "f=/etc/default/tc-docker-prune\nfor v in all dangling ALL everything; do\n  tc-test-old-image tc.test=untagged-$v > /tmp/tc-untagged-id\n  printf '%s\\n' '# Written by the Datto RMM component \"Docker - Configure Host Maintenance [Lin]\".' '# Re-run the component to change these; edits here are overwritten.' 'OLDER_THAN_HOURS=168' 'GRACE_HOURS=144' \"PRUNE_IMAGES=$v\" > $f\n  sleep 2; tc-test-images prune > /tmp/tc-legacy.out; [ \"$v\" = all ] && cp /tmp/tc-legacy.out /tmp/tc-legacy-all.out\n  echo \"PRUNE_IMAGES=$v: $(grep '^prune exit' /tmp/tc-legacy.out), $(grep -c '^PRUNE_IMAGES in /etc/default/tc-docker-prune is no longer used' /tmp/tc-legacy.out) line saying it is no longer used, $(grep -c '^ERROR' /tmp/tc-legacy.out) ERROR line(s), $(grep -c 'REGISTRY CALL BY THE PRUNE' /tmp/tc-legacy.out) registry call(s)\"\n  docker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo \"PRUNE_IMAGES=$v: untagged image STILL HERE\" || echo \"PRUNE_IMAGES=$v: untagged image removed\"\n  tc-test-images has tc-test-tagged:1 tc-test-keepimg:1 | sed \"s/^/PRUNE_IMAGES=$v: /\"\ndone\necho '--- the prune with PRUNE_IMAGES=all'; cat /tmp/tc-legacy-all.out\nprintf '%s\\n' '# Written by the Datto RMM component \"Docker - Configure Host Maintenance [Lin]\".' '# Re-run the component to change these; edits here are overwritten.' 'OLDER_THAN_HOURS=168' 'GRACE_HOURS=144' 'PRUNE_IMAGES=all' > $f; rm -f /tmp/tc-legacy.out /tmp/tc-legacy-all.out; grep '^PRUNE_IMAGES=' $f",
       "outputContains": [
-        "printed: tc-registry.test:5055/tc-test-pulled@sha256:",
-        "pulled back: [\"tc-registry.test:5055/tc-test-pulled@sha256:"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "Registry check, registry up: the pushed image goes, with the repo@sha256 its registry confirmed; the one never pushed and the one deleted from the registry stay, each with its reason; tc.keep and untagged as before",
-      "run": "tc-test-images mode all; tc-test-images images untagged local pulled deleted keep; echo '--- prune'; tc-test-images prune; echo '--- after'; docker image ls --digests --format '{{.Repository}}:{{.Tag}}  {{.Digest}}  {{.ID}}' | sort; store=$(tc-test-images store); echo \"image store: $store\"; if [ \"$store\" = classic ]; then want='tc-registry.test:5055/tc-test-local:1 - no registry digest: built or loaded on this host, so there is nothing to look up'; else want='tc-registry.test:5055/tc-test-local:1 - its registry does not have tc-registry.test:5055/tc-test-local@sha256:'; fi; grep -qF \"$want\" /tmp/tc-prune.out && echo \"never-pushed image kept, with the reason for the $store store\"; tc-test-images has tc-registry.test:5055/tc-test-local:1 tc-registry.test:5055/tc-test-pulled:1 tc-registry.test:5055/tc-test-deleted:1 tc-test-keepimg:1; docker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'untagged image STILL HERE' || echo 'untagged image removed'; ref=$(grep -oE 'tc-registry.test:5055/tc-test-pulled@sha256:[0-9a-f]{64}' /tmp/tc-prune.out | tail -n 1); docker pull -q \"$ref\" >/dev/null && docker image inspect -f 'pulled back: {{json .RepoDigests}}' \"$ref\"",
-      "outputContains": [
-        "tc-registry.test:5055/tc-test-pulled:1 - its registry has it, pull again: tc-registry.test:5055/tc-test-pulled@sha256:",
-        "tc-registry.test:5055/tc-test-deleted:1 - its registry does not have tc-registry.test:5055/tc-test-deleted@sha256:",
-        "never-pushed image kept, with the reason for the",
-        "Tagged images, registry check: removed 1, kept (registry does not have it) 2, kept (could not check) 0, not checked this run 0.",
-        "prune exit 0",
-        "tc-registry.test:5055/tc-test-pulled:1 GONE",
-        "tc-registry.test:5055/tc-test-local:1 kept",
-        "tc-registry.test:5055/tc-test-deleted:1 kept",
-        "tc-test-keepimg:1 kept",
-        "untagged image removed",
-        "pulled back: [\"tc-registry.test:5055/tc-test-pulled@sha256:"
+        "PRUNE_IMAGES=all: prune exit 0, 1 line saying it is no longer used, 0 ERROR line(s), 0 registry call(s)",
+        "PRUNE_IMAGES=all: untagged image removed",
+        "PRUNE_IMAGES=all: tc-test-tagged:1 kept",
+        "PRUNE_IMAGES=all: tc-test-keepimg:1 kept",
+        "PRUNE_IMAGES=dangling: prune exit 0, 1 line saying it is no longer used, 0 ERROR line(s), 0 registry call(s)",
+        "PRUNE_IMAGES=dangling: untagged image removed",
+        "PRUNE_IMAGES=dangling: tc-test-tagged:1 kept",
+        "PRUNE_IMAGES=dangling: tc-test-keepimg:1 kept",
+        "PRUNE_IMAGES=ALL: prune exit 0, 1 line saying it is no longer used, 0 ERROR line(s), 0 registry call(s)",
+        "PRUNE_IMAGES=ALL: untagged image removed",
+        "PRUNE_IMAGES=ALL: tc-test-tagged:1 kept",
+        "PRUNE_IMAGES=ALL: tc-test-keepimg:1 kept",
+        "PRUNE_IMAGES=everything: prune exit 0, 1 line saying it is no longer used, 0 ERROR line(s), 0 registry call(s)",
+        "PRUNE_IMAGES=everything: untagged image removed",
+        "PRUNE_IMAGES=everything: tc-test-tagged:1 kept",
+        "PRUNE_IMAGES=everything: tc-test-keepimg:1 kept",
+        "PRUNE_IMAGES in /etc/default/tc-docker-prune is no longer used (it is 'all'): the prune removes untagged images only, and keeps every tagged image.",
+        "Images kept: 1 tagged image(s) that no container uses (the prune never removes a tagged image)",
+        "the shim recorded the prune's docker commands"
       ],
       "outputNotContains": [
-        "PUSH FAILED",
-        "ERROR",
-        "WARNING",
-        "tc-test-keepimg:1 -",
-        "STILL HERE"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "Registry check, registry stopped: every tagged image stays as \"could not check\", with the reason, and the prune exits 0",
-      "run": "tc-test-images mode all; tc-test-images images local pulled deleted; tc-test-images registry stop; tc-test-images prune; tc-test-images has tc-registry.test:5055/tc-test-local:1 tc-registry.test:5055/tc-test-pulled:1 tc-registry.test:5055/tc-test-deleted:1; tc-test-images registry start",
-      "outputContains": [
-        "test registry stopped",
-        "tc-registry.test:5055/tc-test-pulled:1 - could not check tc-registry.test:5055/tc-test-pulled@sha256:",
-        "connection refused",
-        "Tagged images, registry check: removed 0,",
-        "prune exit 0",
-        "tc-registry.test:5055/tc-test-pulled:1 kept",
-        "tc-registry.test:5055/tc-test-local:1 kept",
-        "tc-registry.test:5055/tc-test-deleted:1 kept"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED",
-        "pull again",
-        "GONE",
-        "kept (could not check) 0,"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "Registry check, the registry rate-limits (429 Too Many Requests, as Docker Hub answers): the first lookup stops all others, every tagged image stays, those not reached counted as not checked, and the prune exits 0",
-      "run": "tc-test-images mode all; tc-test-images images local pulled deleted extra1 extra2; touch /tmp/tc-test-registry/ratelimit; tc-test-images prune; rm -f /tmp/tc-test-registry/ratelimit; echo '--- registry requests'; cat /tmp/tc-test-registry/requests.log; echo \"distinct manifests asked for: $(awk '{print $2}' /tmp/tc-test-registry/requests.log | sort -u | wc -l)\"; tc-test-images has tc-registry.test:5055/tc-test-pulled:1 tc-registry.test:5055/tc-test-extra1:1 tc-registry.test:5055/tc-test-extra2:1",
-      "outputContains": [
-        "could not check tc-registry.test:5055/tc-test-",
-        "the registry is rate-limiting",
-        "not checked this run: a registry rate-limited a lookup",
-        "Lookups made: 1",
-        "Registry lookups stopped: a registry rate-limited a lookup.",
-        "Tagged images, registry check: removed 0, kept (registry does not have it)",
-        "kept (could not check) 1, not checked this run",
-        "prune exit 0",
-        "distinct manifests asked for: 1",
-        "tc-registry.test:5055/tc-test-pulled:1 kept",
-        "tc-registry.test:5055/tc-test-extra1:1 kept",
-        "tc-registry.test:5055/tc-test-extra2:1 kept"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED",
-        "pull again",
-        "GONE",
-        "not checked this run 0."
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "Registry check, more images than the lookup limit: the limit lowered to 2 for the test (TC_PRUNE_TEST_LOOKUP_MAX, which can only lower it), while the settings file tries LOOKUP_MAX=1000: two lookups, the rest kept as not checked, exit 0",
-      "run": "tc-test-images mode all; tc-test-images images pulled extra1 extra2 extra3; printf 'LOOKUP_MAX=1000\\nLOOKUP_SECONDS=100000\\nLOOKUP_TIMEOUT=1000\\n' >> /etc/default/tc-docker-prune; tc-test-images prune TC_PRUNE_TEST_LOOKUP_MAX=2; sed -i '/^LOOKUP_/d' /etc/default/tc-docker-prune; echo '--- registry requests'; cat /tmp/tc-test-registry/requests.log; echo \"distinct manifests asked for: $(awk '{print $2}' /tmp/tc-test-registry/requests.log | sort -u | wc -l)\"",
-      "outputContains": [
-        "not checked this run: the limit of 2 registry lookups a run was reached",
-        "Lookups made: 2",
-        "Registry lookups stopped: the limit of 2 registry lookups a run was reached.",
-        "Tagged images, registry check: removed 2, kept (registry does not have it) 0, kept (could not check) 0, not checked this run 2.",
-        "prune exit 0",
-        "distinct manifests asked for: 2"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED",
-        "ERROR"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "Registry check, the registry answers only after 25 seconds: a lookup gives up after 20; with the run's lookup time lowered to 22 seconds for the test (TC_PRUNE_TEST_LOOKUP_SECONDS), the next gets what is left and the third is not checked; nothing removed, exit 0, no lookup left running",
-      "run": "tc-test-images mode all; tc-test-images images pulled extra1 extra2; echo 25 > /tmp/tc-test-registry/delay; s=$(date +%s); tc-test-images prune TC_PRUNE_TEST_LOOKUP_SECONDS=22; echo \"prune took $(( $(date +%s) - s ))s\"; rm -f /tmp/tc-test-registry/delay; echo \"lookups that timed out: $(grep -c 'no answer within' /tmp/tc-prune.out)\"; pgrep -fa '[i]magetools inspect|[m]anifest inspect' && echo 'LOOKUP STILL RUNNING' || echo 'no lookup left running'",
-      "outputContains": [
-        "no answer within 20s",
-        "lookups that timed out: 2",
-        "not checked this run: the 22 seconds of registry lookups a run were used",
-        "Tagged images, registry check: removed 0, kept (registry does not have it) 0, kept (could not check) 2, not checked this run 1.",
-        "prune exit 0",
-        "no lookup left running"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED",
-        "pull again",
-        "STILL RUNNING"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "Registry check, no lookup tool (a docker shim on PATH that refuses docker buildx and docker manifest): every tagged image stays, with the reason, nothing is asked, exit 0",
-      "run": "tc-test-images mode all; tc-test-images images local pulled; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker || exit 1; printf '%s\\n' '#!/bin/sh' '# tc-test shim: no buildx plugin, no manifest command' '[ \"$1\" = buildx ] || [ \"$1\" = manifest ] && { echo \"docker: unknown command: docker $1\" >&2; exit 1; }' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; tc-test-images prune; rm -f /usr/local/sbin/docker; hash -r; echo \"requests to the registry: $(wc -l < /tmp/tc-test-registry/requests.log)\"",
-      "outputContains": [
-        "tc-registry.test:5055/tc-test-pulled:1 - could not check: neither docker buildx imagetools nor docker manifest works on this host, so no registry can be asked",
-        "Lookups made: 0.",
-        "Tagged images, registry check: removed 0,",
-        "prune exit 0",
-        "requests to the registry: 0"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED",
-        "pull again"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "PRUNE_IMAGES=dangling with the registry stopped behaves as before (untagged removed, tagged counted and kept, no registry line); with the registry up it asks the registry nothing",
-      "run": "tc-test-images mode all; tc-test-images images untagged local pulled; tc-test-images mode dangling; tc-test-images registry stop; tc-test-images prune; docker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'untagged image STILL HERE' || echo 'untagged image removed'; tc-test-images has tc-registry.test:5055/tc-test-local:1 tc-registry.test:5055/tc-test-pulled:1; tc-test-images registry start; tc-test-images images untagged pulled >/dev/null; tc-test-images prune >/dev/null; echo \"requests to the registry in dangling mode: $(wc -l < /tmp/tc-test-registry/requests.log)\"; tc-test-images mode all",
-      "outputContains": [
-        "test registry stopped",
-        "Images removed (PRUNE_IMAGES=dangling): 1",
-        "untagged image removed",
-        "Images kept: 2 tagged image(s) that no container uses (PRUNE_IMAGES=dangling removes untagged images only).",
-        "prune exit 0",
-        "tc-registry.test:5055/tc-test-local:1 kept",
-        "tc-registry.test:5055/tc-test-pulled:1 kept",
-        "requests to the registry in dangling mode: 0"
-      ],
-      "outputNotContains": [
-        "registry check",
-        "Lookups made",
-        "could not check",
-        "pull again",
         "STILL HERE",
-        "GONE",
-        "ERROR"
+        "GONE"
       ]
     },
     {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "Registry check through the timer's service, against a registry that needs a login: refused (kept) before root's docker login; after it, the service finds root's login and the image goes",
-      "run": "tc-test-images mode all; tc-test-images images pulled; echo 'tcuser:tc-test-password' > /tmp/tc-test-registry/htpasswd; HOME=/root docker logout tc-registry.test:5055 >/dev/null 2>&1; since=$(date '+%Y-%m-%d %H:%M:%S'); sleep 1; systemctl start tc-docker-prune.service; journalctl --sync >/dev/null 2>&1; echo '--- journal, before docker login'; journalctl -u tc-docker-prune.service --since \"$since\" --no-pager -o cat | grep -E 'tc-test-pulled|registry check'; printf 'tc-test-password' | HOME=/root docker login -u tcuser --password-stdin tc-registry.test:5055 2>&1 | tail -n 1; ls /root/.docker/config.json; sleep 1; since=$(date '+%Y-%m-%d %H:%M:%S'); sleep 1; systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl --sync >/dev/null 2>&1; echo '--- journal, after root docker login'; journalctl -u tc-docker-prune.service --since \"$since\" --no-pager -o cat | grep -E 'tc-test-pulled|registry check|version'; tc-test-images has tc-registry.test:5055/tc-test-pulled:1; HOME=/root docker logout tc-registry.test:5055 >/dev/null 2>&1; rm -f /tmp/tc-test-registry/htpasswd",
+      "type": "runComponent",
+      "label": "A job that still passes usrPruneImages = All runs as one that does not: the input is ignored, the settings file is written again without PRUNE_IMAGES, and the timer is not restarted",
+      "variables": {
+        "usrPruneImages": "all"
+      },
       "outputContains": [
-        "--- journal, before docker login",
-        "tc-registry.test:5055/tc-test-pulled:1 - could not check tc-registry.test:5055/tc-test-pulled@sha256:",
-        "the registry refused access",
-        "Login Succeeded",
-        "/root/.docker/config.json",
-        "--- journal, after root docker login",
-        "success",
-        "tc-registry.test:5055/tc-test-pulled:1 - its registry has it, pull again: tc-registry.test:5055/tc-test-pulled@sha256:",
-        "Tagged images, registry check: removed 1,",
-        "tc-registry.test:5055/tc-test-pulled:1 GONE"
+        "Prune timer: updated the prune service, script or settings",
+        "images: untagged only",
+        "The timer was not restarted"
       ],
       "outputNotContains": [
-        "PUSH FAILED"
+        "usrPruneImages",
+        "images: all"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "Settings file: the age and the wait, and the PRUNE_IMAGES line gone",
+      "path": "/etc/default/tc-docker-prune",
+      "contains": [
+        "OLDER_THAN_HOURS=168",
+        "GRACE_HOURS=144"
+      ],
+      "notContains": [
+        "PRUNE_IMAGES"
       ]
     },
     {
@@ -972,22 +785,24 @@
     },
     {
       "type": "runComponent",
-      "label": "Refuses an image mode that is not Dangling or All",
+      "label": "A job that passes usrPruneImages with a value version 15 refused with exit 2: the input is ignored, and the run is a normal one",
       "variables": {
         "usrPruneImages": "everything"
       },
-      "expectExitCode": 2,
+      "expectExitCode": 0,
       "outputContains": [
-        "usrPruneImages must be dangling or all"
+        "Docker host maintenance: done."
+      ],
+      "outputNotContains": [
+        "usrPruneImages"
       ]
     },
     {
       "type": "command",
-      "label": "Images tests: clean up - test containers and images gone, the registry stopped, the image setting back",
-      "run": "tc-test-images registry stop; docker rm -f tc-age-stopped tc-age-fresh tc-age-never >/dev/null; for i in $(docker image ls -q --filter label=tc.nonce; docker image ls -q --filter dangling=true --filter label=tc.nonce; docker image ls -q --filter dangling=true); do docker image rm -f $i >/dev/null 2>&1; done; sed -i '/^name:tc-age-stopped$/d' /etc/tc-docker/expected-containers; rm -rf /tmp/tc-test-registry /tmp/tc-untagged-id /tmp/tc-all.out /tmp/tc-prune.out; sed -i 's/^PRUNE_IMAGES=.*/PRUNE_IMAGES=dangling/' /etc/default/tc-docker-prune; rm -rf /etc/docker/certs.d/tc-registry.test:5055; rmdir /etc/docker/certs.d 2>/dev/null; echo \"left in /etc/docker: $(ls -A /etc/docker | tr '\\n' ' ')\"; tc-test-images restore; docker image inspect -f 'tc-test-listed:1 back for the steps after' tc-test-listed:1; docker ps -a --format '{{.Names}}' | grep -c tc-age || echo 'no tc-age containers'",
+      "label": "Images tests: clean up - test containers and images gone, the earlier steps' images back",
+      "run": "docker rm -f tc-age-stopped tc-age-fresh tc-age-never >/dev/null; for i in $(docker image ls -q --filter label=tc.nonce; docker image ls -q --filter dangling=true --filter label=tc.nonce; docker image ls -q --filter dangling=true); do docker image rm -f $i >/dev/null 2>&1; done; sed -i '/^name:tc-age-stopped$/d' /etc/tc-docker/expected-containers; rm -f /tmp/tc-untagged-id /tmp/tc-prune.out /tmp/tc-docker-calls.log; echo \"left in /etc/docker: $(ls -A /etc/docker 2>/dev/null | tr '\\n' ' ')\"; tc-test-images restore; docker image inspect -f 'tc-test-listed:1 back for the steps after' tc-test-listed:1; docker ps -a --format '{{.Names}}' | grep -c tc-age || echo 'no tc-age containers'",
       "timeoutSeconds": 180,
       "outputContains": [
-        "test registry stopped",
         "tc-test-listed:1 back for the steps after",
         "no tc-age containers"
       ],
@@ -1486,194 +1301,47 @@
     {
       "type": "command",
       "timeoutSeconds": 240,
-      "label": "The other image store (last, as it changes the image store): Docker restarted on whichever store it is not using; the test registry started again",
-      "run": "set -e\nrm -f /tmp/tc-store-daemon.json\nif [ -s /etc/docker/daemon.json ]; then cp -p /etc/docker/daemon.json /tmp/tc-store-daemon.json; else mkdir -p /etc/docker; echo '{}' > /etc/docker/daemon.json; fi\nbefore=$(tc-test-images store)\nif [ \"$before\" = containerd ]; then on=False; want=classic; else on=True; want=containerd; fi\npython3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d.setdefault('features', {})['containerd-snapshotter'] = $on; json.dump(d, open(p, 'w'), indent=2)\"\nsystemctl restart docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done\nstore=$(tc-test-images store); echo \"image store: $store\"\n[ \"$store\" = \"$want\" ] && echo \"switched from the $before store to the $store store\"\nmkdir -p /etc/docker/certs.d/tc-registry.test:5055 && cp /etc/tc-test-pki/ca.crt /etc/docker/certs.d/tc-registry.test:5055/ca.crt\ntc-test-images registry start",
+      "label": "The other image store (last, as it changes the image store): Docker restarted on whichever store it is not using",
+      "run": "set -e\nrm -f /tmp/tc-store-daemon.json\nif [ -s /etc/docker/daemon.json ]; then cp -p /etc/docker/daemon.json /tmp/tc-store-daemon.json; else mkdir -p /etc/docker; echo '{}' > /etc/docker/daemon.json; fi\nbefore=$(tc-test-images store)\nif [ \"$before\" = containerd ]; then on=False; want=classic; else on=True; want=containerd; fi\npython3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d.setdefault('features', {})['containerd-snapshotter'] = $on; json.dump(d, open(p, 'w'), indent=2)\"\nsystemctl restart docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done\nstore=$(tc-test-images store); echo \"image store: $store\"\n[ \"$store\" = \"$want\" ] && echo \"switched from the $before store to the $store store\"",
       "outputContains": [
-        "switched from the",
-        "test registry answers on https://tc-registry.test:5055"
+        "switched from the"
       ]
     },
     {
       "type": "command",
       "timeoutSeconds": 180,
-      "label": "The other image store: Registry check, registry up: the pushed image goes, with the repo@sha256 its registry confirmed; the one never pushed and the one deleted from the registry stay, each with its reason; tc.keep and untagged as before",
-      "run": "tc-test-images mode all; tc-test-images images untagged local pulled deleted keep; echo '--- prune'; tc-test-images prune; echo '--- after'; docker image ls --digests --format '{{.Repository}}:{{.Tag}}  {{.Digest}}  {{.ID}}' | sort; store=$(tc-test-images store); echo \"image store: $store\"; if [ \"$store\" = classic ]; then want='tc-registry.test:5055/tc-test-local:1 - no registry digest: built or loaded on this host, so there is nothing to look up'; else want='tc-registry.test:5055/tc-test-local:1 - its registry does not have tc-registry.test:5055/tc-test-local@sha256:'; fi; grep -qF \"$want\" /tmp/tc-prune.out && echo \"never-pushed image kept, with the reason for the $store store\"; tc-test-images has tc-registry.test:5055/tc-test-local:1 tc-registry.test:5055/tc-test-pulled:1 tc-registry.test:5055/tc-test-deleted:1 tc-test-keepimg:1; docker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'untagged image STILL HERE' || echo 'untagged image removed'; ref=$(grep -oE 'tc-registry.test:5055/tc-test-pulled@sha256:[0-9a-f]{64}' /tmp/tc-prune.out | tail -n 1); docker pull -q \"$ref\" >/dev/null && docker image inspect -f 'pulled back: {{json .RepoDigests}}' \"$ref\"",
+      "label": "The other image store: the untagged image built 30 days ago goes and is named; one made just now stays; the tagged ones stay, also with PRUNE_IMAGES=all left in the settings file (on the containerd store every image has a registry digest); the prune runs no docker command that could reach a registry",
+      "run": "f=/etc/default/tc-docker-prune; cp -p $f /tmp/tc-settings.bak\ntc-test-images images untagged tagged keep\nr=$(mktemp -d); mkdir -p $r/bin; cp /bin/true $r/bin/; new=$(tar -C $r -c . | docker import --change 'LABEL tc.nonce=new' -); rm -rf $r; sleep 2\ntc-test-images prune\ndocker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'untagged image STILL HERE' || echo 'untagged image removed'\ngrep -qF \"untagged $(cut -c8-19 /tmp/tc-untagged-id)\" /tmp/tc-prune.out && echo 'untagged image named in the output'\ntc-test-images has tc-test-tagged:1 tc-test-keepimg:1\ndocker image inspect \"$new\" >/dev/null 2>&1 && echo 'untagged image made just now kept: under OLDER_THAN_HOURS' || echo 'untagged image made just now GONE'; docker image rm \"$new\" >/dev/null\necho '--- with PRUNE_IMAGES=all left in the settings file'\ntc-test-images images untagged tagged keep >/dev/null\necho \"the tagged image's registry digests on the $(tc-test-images store) store: $(docker image inspect -f '{{json .RepoDigests}}' tc-test-tagged:1)\"\necho 'PRUNE_IMAGES=all' >> $f; tc-test-images prune > /tmp/tc-legacy.out\ngrep -E '^(PRUNE_IMAGES in|Untagged images removed|Images kept|prune exit|the shim|REGISTRY CALL|ERROR|WARNING)' /tmp/tc-legacy.out | sed 's/^/with all: /'\ndocker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'with all: untagged image STILL HERE' || echo 'with all: untagged image removed'\ntc-test-images has tc-test-tagged:1 tc-test-keepimg:1 | sed 's/^/with all: /'\ncp -p /tmp/tc-settings.bak $f; rm -f /tmp/tc-settings.bak /tmp/tc-legacy.out",
       "outputContains": [
-        "tc-registry.test:5055/tc-test-pulled:1 - its registry has it, pull again: tc-registry.test:5055/tc-test-pulled@sha256:",
-        "tc-registry.test:5055/tc-test-deleted:1 - its registry does not have tc-registry.test:5055/tc-test-deleted@sha256:",
-        "never-pushed image kept, with the reason for the",
-        "Tagged images, registry check: removed 1, kept (registry does not have it) 2, kept (could not check) 0, not checked this run 0.",
+        "Untagged images removed: 1",
         "prune exit 0",
-        "tc-registry.test:5055/tc-test-pulled:1 GONE",
-        "tc-registry.test:5055/tc-test-local:1 kept",
-        "tc-registry.test:5055/tc-test-deleted:1 kept",
+        "untagged image removed",
+        "untagged image named in the output",
+        "tc-test-tagged:1 kept",
         "tc-test-keepimg:1 kept",
-        "untagged image removed",
-        "pulled back: [\"tc-registry.test:5055/tc-test-pulled@sha256:"
+        "Images kept: 1 tagged image(s) that no container uses (the prune never removes a tagged image)",
+        "the shim recorded the prune's docker commands",
+        "untagged image made just now kept: under OLDER_THAN_HOURS",
+        "PRUNE_IMAGES in /etc/default/tc-docker-prune is no longer used (it is 'all')",
+        "with all: prune exit 0",
+        "with all: untagged image removed",
+        "with all: tc-test-tagged:1 kept",
+        "with all: tc-test-keepimg:1 kept"
       ],
       "outputNotContains": [
-        "PUSH FAILED",
-        "ERROR",
-        "WARNING",
-        "tc-test-keepimg:1 -",
-        "STILL HERE"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "The other image store: Registry check, registry stopped: every tagged image stays as \"could not check\", with the reason, and the prune exits 0",
-      "run": "tc-test-images mode all; tc-test-images images local pulled deleted; tc-test-images registry stop; tc-test-images prune; tc-test-images has tc-registry.test:5055/tc-test-local:1 tc-registry.test:5055/tc-test-pulled:1 tc-registry.test:5055/tc-test-deleted:1; tc-test-images registry start",
-      "outputContains": [
-        "test registry stopped",
-        "tc-registry.test:5055/tc-test-pulled:1 - could not check tc-registry.test:5055/tc-test-pulled@sha256:",
-        "connection refused",
-        "Tagged images, registry check: removed 0,",
-        "prune exit 0",
-        "tc-registry.test:5055/tc-test-pulled:1 kept",
-        "tc-registry.test:5055/tc-test-local:1 kept",
-        "tc-registry.test:5055/tc-test-deleted:1 kept"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED",
-        "pull again",
-        "GONE",
-        "kept (could not check) 0,"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "The other image store: Registry check, the registry rate-limits (429 Too Many Requests, as Docker Hub answers): the first lookup stops all others, every tagged image stays, those not reached counted as not checked, and the prune exits 0",
-      "run": "tc-test-images mode all; tc-test-images images local pulled deleted extra1 extra2; touch /tmp/tc-test-registry/ratelimit; tc-test-images prune; rm -f /tmp/tc-test-registry/ratelimit; echo '--- registry requests'; cat /tmp/tc-test-registry/requests.log; echo \"distinct manifests asked for: $(awk '{print $2}' /tmp/tc-test-registry/requests.log | sort -u | wc -l)\"; tc-test-images has tc-registry.test:5055/tc-test-pulled:1 tc-registry.test:5055/tc-test-extra1:1 tc-registry.test:5055/tc-test-extra2:1",
-      "outputContains": [
-        "could not check tc-registry.test:5055/tc-test-",
-        "the registry is rate-limiting",
-        "not checked this run: a registry rate-limited a lookup",
-        "Lookups made: 1",
-        "Registry lookups stopped: a registry rate-limited a lookup.",
-        "Tagged images, registry check: removed 0, kept (registry does not have it)",
-        "kept (could not check) 1, not checked this run",
-        "prune exit 0",
-        "distinct manifests asked for: 1",
-        "tc-registry.test:5055/tc-test-pulled:1 kept",
-        "tc-registry.test:5055/tc-test-extra1:1 kept",
-        "tc-registry.test:5055/tc-test-extra2:1 kept"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED",
-        "pull again",
-        "GONE",
-        "not checked this run 0."
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "The other image store: Registry check, more images than the lookup limit: the limit lowered to 2 for the test (TC_PRUNE_TEST_LOOKUP_MAX, which can only lower it), while the settings file tries LOOKUP_MAX=1000: two lookups, the rest kept as not checked, exit 0",
-      "run": "tc-test-images mode all; tc-test-images images pulled extra1 extra2 extra3; printf 'LOOKUP_MAX=1000\\nLOOKUP_SECONDS=100000\\nLOOKUP_TIMEOUT=1000\\n' >> /etc/default/tc-docker-prune; tc-test-images prune TC_PRUNE_TEST_LOOKUP_MAX=2; sed -i '/^LOOKUP_/d' /etc/default/tc-docker-prune; echo '--- registry requests'; cat /tmp/tc-test-registry/requests.log; echo \"distinct manifests asked for: $(awk '{print $2}' /tmp/tc-test-registry/requests.log | sort -u | wc -l)\"",
-      "outputContains": [
-        "not checked this run: the limit of 2 registry lookups a run was reached",
-        "Lookups made: 2",
-        "Registry lookups stopped: the limit of 2 registry lookups a run was reached.",
-        "Tagged images, registry check: removed 2, kept (registry does not have it) 0, kept (could not check) 0, not checked this run 2.",
-        "prune exit 0",
-        "distinct manifests asked for: 2"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED",
-        "ERROR"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "The other image store: Registry check, the registry answers only after 25 seconds: a lookup gives up after 20; with the run's lookup time lowered to 22 seconds for the test (TC_PRUNE_TEST_LOOKUP_SECONDS), the next gets what is left and the third is not checked; nothing removed, exit 0, no lookup left running",
-      "run": "tc-test-images mode all; tc-test-images images pulled extra1 extra2; echo 25 > /tmp/tc-test-registry/delay; s=$(date +%s); tc-test-images prune TC_PRUNE_TEST_LOOKUP_SECONDS=22; echo \"prune took $(( $(date +%s) - s ))s\"; rm -f /tmp/tc-test-registry/delay; echo \"lookups that timed out: $(grep -c 'no answer within' /tmp/tc-prune.out)\"; pgrep -fa '[i]magetools inspect|[m]anifest inspect' && echo 'LOOKUP STILL RUNNING' || echo 'no lookup left running'",
-      "outputContains": [
-        "no answer within 20s",
-        "lookups that timed out: 2",
-        "not checked this run: the 22 seconds of registry lookups a run were used",
-        "Tagged images, registry check: removed 0, kept (registry does not have it) 0, kept (could not check) 2, not checked this run 1.",
-        "prune exit 0",
-        "no lookup left running"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED",
-        "pull again",
-        "STILL RUNNING"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "The other image store: Registry check, no lookup tool (a docker shim on PATH that refuses docker buildx and docker manifest): every tagged image stays, with the reason, nothing is asked, exit 0",
-      "run": "tc-test-images mode all; tc-test-images images local pulled; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker || exit 1; printf '%s\\n' '#!/bin/sh' '# tc-test shim: no buildx plugin, no manifest command' '[ \"$1\" = buildx ] || [ \"$1\" = manifest ] && { echo \"docker: unknown command: docker $1\" >&2; exit 1; }' \"exec $real \\\"\\$@\\\"\" > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; tc-test-images prune; rm -f /usr/local/sbin/docker; hash -r; echo \"requests to the registry: $(wc -l < /tmp/tc-test-registry/requests.log)\"",
-      "outputContains": [
-        "tc-registry.test:5055/tc-test-pulled:1 - could not check: neither docker buildx imagetools nor docker manifest works on this host, so no registry can be asked",
-        "Lookups made: 0.",
-        "Tagged images, registry check: removed 0,",
-        "prune exit 0",
-        "requests to the registry: 0"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED",
-        "pull again"
-      ]
-    },
-    {
-      "type": "command",
-      "timeoutSeconds": 180,
-      "label": "The other image store: PRUNE_IMAGES=dangling with the registry stopped behaves as before (untagged removed, tagged counted and kept, no registry line); with the registry up it asks the registry nothing",
-      "run": "tc-test-images mode all; tc-test-images images untagged local pulled; tc-test-images mode dangling; tc-test-images registry stop; tc-test-images prune; docker image inspect $(cat /tmp/tc-untagged-id) >/dev/null 2>&1 && echo 'untagged image STILL HERE' || echo 'untagged image removed'; tc-test-images has tc-registry.test:5055/tc-test-local:1 tc-registry.test:5055/tc-test-pulled:1; tc-test-images registry start; tc-test-images images untagged pulled >/dev/null; tc-test-images prune >/dev/null; echo \"requests to the registry in dangling mode: $(wc -l < /tmp/tc-test-registry/requests.log)\"; tc-test-images mode all",
-      "outputContains": [
-        "test registry stopped",
-        "Images removed (PRUNE_IMAGES=dangling): 1",
-        "untagged image removed",
-        "Images kept: 2 tagged image(s) that no container uses (PRUNE_IMAGES=dangling removes untagged images only).",
-        "prune exit 0",
-        "tc-registry.test:5055/tc-test-local:1 kept",
-        "tc-registry.test:5055/tc-test-pulled:1 kept",
-        "requests to the registry in dangling mode: 0"
-      ],
-      "outputNotContains": [
-        "registry check",
-        "Lookups made",
-        "could not check",
-        "pull again",
         "STILL HERE",
         "GONE",
-        "ERROR"
+        "REGISTRY CALL BY THE PRUNE",
+        "ERROR",
+        "WARNING",
+        "IMAGE NOT MADE"
       ]
     },
     {
       "type": "command",
-      "timeoutSeconds": 180,
-      "label": "The other image store: Registry check through the timer's service, against a registry that needs a login: refused (kept) before root's docker login; after it, the service finds root's login and the image goes",
-      "run": "tc-test-images mode all; tc-test-images images pulled; echo 'tcuser:tc-test-password' > /tmp/tc-test-registry/htpasswd; HOME=/root docker logout tc-registry.test:5055 >/dev/null 2>&1; since=$(date '+%Y-%m-%d %H:%M:%S'); sleep 1; systemctl start tc-docker-prune.service; journalctl --sync >/dev/null 2>&1; echo '--- journal, before docker login'; journalctl -u tc-docker-prune.service --since \"$since\" --no-pager -o cat | grep -E 'tc-test-pulled|registry check'; printf 'tc-test-password' | HOME=/root docker login -u tcuser --password-stdin tc-registry.test:5055 2>&1 | tail -n 1; ls /root/.docker/config.json; sleep 1; since=$(date '+%Y-%m-%d %H:%M:%S'); sleep 1; systemctl start tc-docker-prune.service; systemctl show tc-docker-prune.service -p Result --value; journalctl --sync >/dev/null 2>&1; echo '--- journal, after root docker login'; journalctl -u tc-docker-prune.service --since \"$since\" --no-pager -o cat | grep -E 'tc-test-pulled|registry check|version'; tc-test-images has tc-registry.test:5055/tc-test-pulled:1; HOME=/root docker logout tc-registry.test:5055 >/dev/null 2>&1; rm -f /tmp/tc-test-registry/htpasswd",
+      "label": "The other image store: clean up - daemon.json as it was, Docker restarted",
+      "run": "if [ -e /tmp/tc-store-daemon.json ]; then cp -p /tmp/tc-store-daemon.json /etc/docker/daemon.json; else rm -f /etc/docker/daemon.json; fi; rm -f /tmp/tc-store-daemon.json /tmp/tc-untagged-id /tmp/tc-prune.out /tmp/tc-docker-calls.log; systemctl restart docker.service && docker info --format 'docker up again: {{.ServerVersion}}'",
       "outputContains": [
-        "--- journal, before docker login",
-        "tc-registry.test:5055/tc-test-pulled:1 - could not check tc-registry.test:5055/tc-test-pulled@sha256:",
-        "the registry refused access",
-        "Login Succeeded",
-        "/root/.docker/config.json",
-        "--- journal, after root docker login",
-        "success",
-        "tc-registry.test:5055/tc-test-pulled:1 - its registry has it, pull again: tc-registry.test:5055/tc-test-pulled@sha256:",
-        "Tagged images, registry check: removed 1,",
-        "tc-registry.test:5055/tc-test-pulled:1 GONE"
-      ],
-      "outputNotContains": [
-        "PUSH FAILED"
-      ]
-    },
-    {
-      "type": "command",
-      "label": "The other image store: clean up - daemon.json as it was, Docker restarted, the registry stopped, the test CA and name gone",
-      "run": "if [ -e /tmp/tc-store-daemon.json ]; then cp -p /tmp/tc-store-daemon.json /etc/docker/daemon.json; else rm -f /etc/docker/daemon.json; fi; rm -f /tmp/tc-store-daemon.json; tc-test-images registry stop; rm -rf /tmp/tc-test-registry /tmp/tc-test-registry.pid /etc/tc-test-pki /etc/docker/certs.d/tc-registry.test:5055; rmdir /etc/docker/certs.d 2>/dev/null; rm -f /usr/local/share/ca-certificates/tc-test-ca.crt; update-ca-certificates --fresh >/dev/null 2>&1; sed -i '/ tc-registry.test$/d' /etc/hosts; grep -c tc-registry.test /etc/hosts || echo 'test name gone'; systemctl restart docker.service && docker info --format 'docker up again: {{.ServerVersion}}'",
-      "outputContains": [
-        "test registry stopped",
-        "test name gone",
         "docker up again"
       ]
     },

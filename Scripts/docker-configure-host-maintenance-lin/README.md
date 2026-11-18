@@ -26,13 +26,14 @@ first records it as waiting, and removes it only on a run at least
 > A job that used this component to set them must add that one. See
 > *Version 15* at the end of this list.
 >
-> **Version 9 switches every host to removing untagged ("dangling") images
-> only.** Versions up to 8 removed every image no container used. A host that
-> needs the old behaviour, such as a CI or GitLab runner host whose disk fills
-> with pulled images, **must be run with `usrPruneImages` = `All`**, or its
-> images will pile up again. From version 10, `All` removes a tagged image
-> only when its registry confirms it still has it, so `All` **contacts
-> registries**. See *Images* below.
+> **Version 16 removes `usrPruneImages` = `All`. The prune removes untagged
+> ("dangling") images only, on every host, and never a tagged image.**
+> Versions up to 8 removed every image no container used; versions 9 to 15
+> removed untagged ones, and with `All` also tagged ones their registry
+> confirmed it still had. A host that ran with `All`, such as a CI or GitLab
+> runner host whose disk fills with pulled images, **gets no cleanup of its
+> tagged images from version 16**: they pile up until they are removed some
+> other way. See *Version 16* at the end of this list, and *Images* below.
 >
 > - **Version 3** added per-container protection and the expected-containers
 >   list.
@@ -117,7 +118,8 @@ first records it as waiting, and removes it only on a run at least
 >   registry confirms, at that moment, that it still has one of the image's
 >   `repo@sha256` references. Anything short of a confirmed yes keeps it. The
 >   rule is the same on both image stores. **`All` now makes network calls**
->   (see *Registry lookups* below); `Dangling` still makes none.
+>   (registry lookups; version 16 removed them with `All`); `Dangling` still
+>   makes none.
 >   `TC_PRUNE_VERSION=10`. The monitor's `PRUNE_MIN_VERSION` stays `9`:
 >   version 9 is safe, only less effective. Version 10 was run against a live
 >   Docker 29 daemon in a sandbox on both image stores, with both lookup
@@ -272,6 +274,58 @@ first records it as waiting, and removes it only on a run at least
 >   the prune's unit) have **not** been run for this version: the Tier 1 test
 >   runs them on the CI runner, so read that result before merging. It has
 >   not yet run through a Datto agent.
+> - **Version 16** (2026-11-18) removes `All` mode. The prune removes
+>   **untagged images only**, by the rule `Dangling` had: no container uses
+>   the image, it was built more than `usrPruneOlderThanHours` ago, it is not
+>   labelled `tc.keep`, it is removed without `--force`, and only once the
+>   list is reviewed. **A tagged image is never removed.** What goes:
+>   - **The input variable `usrPruneImages`.** A Datto job that still passes
+>     it runs as before; it is ignored, whatever its value (version 15
+>     refused anything but `Dangling` or `All` with exit `2`).
+>   - **The `PRUNE_IMAGES` setting.** The component no longer writes it to
+>     `/etc/default/tc-docker-prune`, and removes the line the next time it
+>     runs on a host. A file that still has it (a hand edit, or a host where
+>     the settings file could not be rewritten) is not an error: the prune
+>     says once
+>     `PRUNE_IMAGES in /etc/default/tc-docker-prune is no longer used (it is 'all'): ...`,
+>     runs nothing from it, keeps every tagged image and goes on. Up to
+>     version 15 a value other than `dangling` or `all` there was an `ERROR:`
+>     and exit 1, with no image removed.
+>   - **Every registry lookup, and with them the prune's only network
+>     calls:** `docker buildx imagetools inspect` and
+>     `docker manifest inspect`, the use of root's `docker login` and of the
+>     Docker daemon's proxy, the lookup limits, and the two test-only
+>     environment variables that lowered them (`TC_PRUNE_TEST_LOOKUP_MAX`,
+>     `TC_PRUNE_TEST_LOOKUP_SECONDS`).
+>
+>   Two output lines change: `Images removed (PRUNE_IMAGES=dangling): N` is
+>   now `Untagged images removed: N`, and the count of tagged images kept
+>   ends `(the prune never removes a tagged image).` instead of naming the
+>   mode. On a host that ran `Dangling`, which is the default, nothing else
+>   changes. **On a host that ran `All`** (CI and GitLab runner hosts were why
+>   it existed), the first version 16 run keeps every tagged image.
+>   `TC_PRUNE_VERSION=16`. Running version 16 rewrites the prune script and
+>   its settings file and reloads systemd; it does not restart the timer.
+>   The monitor's `PRUNE_MIN_VERSION` stays **11**: a version 15 prune is not
+>   unsafe, it only removes more.
+>
+>   The Tier 1 test lost its registry steps (17 of 123) and its test
+>   registry with them; untagged-image removal is still tested on both image
+>   stores, and a stand-in `docker` that records the prune's commands shows
+>   it runs none that could reach a registry. The test was run against a live
+>   Docker 29 daemon in a sandbox **without systemd**, with the timer and
+>   unit steps left out, on both image stores (containerd first, then
+>   classic): every step passed, as version 15's spec did there. The
+>   stopped-Docker and no-`docker.service` steps in which the component
+>   itself runs passed against a stand-in for `systemctl` and for
+>   `docker.socket`. The new and changed steps were run against version 15's
+>   script, where they fail, and against four broken copies of version 16's
+>   (one removes tagged images, one does not name a `PRUNE_IMAGES` line, one
+>   treats that line as an error, one whose component still writes it):
+>   each was caught. The steps that need a real systemd (the timer, starting
+>   the prune's unit) have **not** been run for this version: the Tier 1
+>   test runs them on the CI runner, so read that result before merging. It
+>   has not yet run on bash 4.2 or through a Datto agent.
 
 ## What it does
 
@@ -336,7 +390,7 @@ carried onto the new list.
 | File | What it is |
 |---|---|
 | `/usr/local/sbin/tc-docker-prune` | The prune script |
-| `/etc/default/tc-docker-prune` | Its settings: `OLDER_THAN_HOURS`, `GRACE_HOURS`, `PRUNE_IMAGES`. Read as text, never run; see *The settings file* below |
+| `/etc/default/tc-docker-prune` | Its settings: `OLDER_THAN_HOURS`, `GRACE_HOURS`. Read as text, never run; see *The settings file* below |
 | `/var/lib/tc-docker/pending-removal` | Written by the prune: the stopped containers it has recorded and will remove. Directory `0700`, file `0600`, both root. The Docker monitors keep their state files in the same directory |
 | `/etc/systemd/system/tc-docker-prune.service` | Runs the script, only while Docker is running (`Requisite=docker.service`) |
 | `/etc/systemd/system/tc-docker-prune.timer` | Runs the service on `usrPruneSchedule` |
@@ -444,8 +498,8 @@ What earlier versions left on a host, which the monitor flags:
 | 9, 10 | `Requires=docker.service`, and a `docker info` before it checks anything. (9 also keeps every tagged image on the containerd image store in `All` mode, which is not unsafe) | The weekly timer starts a Docker that was stopped on purpose, and every `restart: always` container with it. Flagged from the monitor's version 8 (`PRUNE_MIN_VERSION` 11) |
 | 11 | Runs its settings file as shell, and does not check `OLDER_THAN_HOURS` | Only after a hand edit of `/etc/default/tc-docker-prune`: a line there is a command run as root, and `OLDER_THAN_HOURS=0` removes things of any age. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run the current version on the host to replace it |
 | 12, 13 | The current rules, except that a `/var/lib/tc-docker` owned by another user is made root's and the record in it believed. Version 13's prune differs from 12's only in where its code for reading `pending-removal` lives | Only on a host where that directory is not root's, which nothing in these components causes: a record another user wrote there can get an unprotected stopped container removed without its wait. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run the current version on the host to replace it |
-| 14 | The current rules. Version 15's prune differs from 14's only in its stamp | Nothing; there is no need to replace it |
-| 15 | Current | |
+| 14, 15 | The current rules, plus `All` mode: with `PRUNE_IMAGES=all` in its settings file it also removes tagged images whose registry confirms it has them. Version 15's prune differs from 14's only in its stamp | Nothing unsafe. On a host whose settings say `all`, tagged images go on being removed until version 16 runs there |
+| 16 | Current | |
 
 **Before the list is reviewed:** the prune removes only unused networks and
 build cache older than `usrPruneOlderThanHours`. No container and no image.
@@ -535,22 +589,28 @@ it (Add it to the list).
     # Re-run the component to change these; edits here are overwritten.
     OLDER_THAN_HOURS=168
     GRACE_HOURS=144
-    PRUNE_IMAGES=dangling
+
+Up to version 15 it had a third line, `PRUNE_IMAGES=dangling` or
+`PRUNE_IMAGES=all`; the component removes it the next time it runs.
 
 **The prune reads it as text. Nothing in it is ever run.** (Up to version 11
 the prune sourced it as shell, as root.) The rules:
 
-- A setting is one line, `NAME=value`, for one of those three names. Spaces
+- A setting is one line, `NAME=value`, for one of those two names. Spaces
   before the name and after the value are dropped.
 - If a name appears more than once, the **last** line wins.
 - **Every other line is ignored:** comments, blank lines, any other name
   (`REQUIRED_CONTAINERS` from version 2, say), and anything a shell would
   treat as a command. A misspelled name is one of those, so it is ignored
   and the default applies.
-- A name with no line gets its default: 168, 144, `dangling`. So a settings
-  file with no `PRUNE_IMAGES` (one written by version 8) is `dangling`. A
-  file that is missing, or is not a regular file root can read, means all
-  three defaults.
+- A name with no line gets its default: 168, 144. A file that is missing,
+  or is not a regular file root can read, means both defaults.
+- **A `PRUNE_IMAGES` line** (the image mode up to version 15) is not used,
+  whatever its value, and is not an error. The prune says so once, after its
+  version line (unless Docker is stopped: then it prints only that it is):
+  `PRUNE_IMAGES in /etc/default/tc-docker-prune is no longer used (it is 'all'): the prune removes untagged images only, and keeps every tagged image.`
+  (the value is shown made printable and cut to 20 characters), and goes on.
+  Nothing in the line is run.
 - **It is not a shell file.** A value in quotes (`GRACE_HOURS="144"`), with a
   comment after it, or with `export` in front is not understood: the first
   two are refused as below, the third is ignored.
@@ -562,7 +622,6 @@ it refuses is never used:
 |---|---|---|
 | `OLDER_THAN_HOURS` | A whole number, 24–8760 | **Nothing at all** is recorded or removed (every removal goes by age): one `ERROR:` line, exit 1 |
 | `GRACE_HOURS` | A whole number, 24–8760 | No container is recorded or removed; images, networks and build cache are still handled; `ERROR:`, exit 1 |
-| `PRUNE_IMAGES` | `dangling` or `all` (any case) | No image is removed; `ERROR:`, exit 1 |
 
 The error names the setting and shows what it found, for example
 `ERROR: OLDER_THAN_HOURS in /etc/default/tc-docker-prune must be a whole number of hours, 24-8760 (it is '0'). Every removal depends on it, so nothing is recorded or removed this run. A setting is one line, NAME=value, with no quotes and nothing after the value.`
@@ -580,69 +639,17 @@ After review, for each image, in this order:
 4. **Built less than `usrPruneOlderThanHours` ago**, or its creation time
    cannot be read: kept. ("Older than" is the image's build time, not when it
    was pulled or last used.)
-5. **Untagged: removed**, in both modes, by its id (or by the `repo@sha256`
-   names it still has). If it has a registry digest, that is printed.
-6. **Tagged, and `usrPruneImages` is `Dangling`: kept.** The output counts
-   them.
-7. **Tagged, `All`, and no registry digest** (`RepoDigests` empty, which on
-   the classic image store means it was built or `docker load`-ed here):
-   **kept**. There is nothing to look up.
-8. **Tagged, `All`: its registry is asked**, one `repo@sha256` reference at a
-   time, until one is confirmed. This is the only step that leaves the host,
-   and it comes after every local check, so an image that would be kept
-   anyway costs no request.
-   - **The registry has it: removed**, one `docker image rm` per tag, never
-     `--force`, so Docker's own check refuses an image something uses. The
-     output prints it as
-     `<repo>:<tag> - its registry has it, pull again: <repo>@sha256:<digest>`,
-     the reference the registry confirmed, which is in the journal, so the
-     image can be pulled back exactly as it was.
-   - **The registry says it does not have it: kept**, as
-     `kept (registry does not have it)`. That is an image built here and never
-     pushed (on the containerd store it has a digest all the same), or one
-     deleted from the registry since.
-   - **Anything else: kept**, as `kept (could not check)`, with the reason:
-     the registry refused access, no answer within 20 seconds, a network or
-     TLS error, a rate limit, or no lookup tool on the host.
-   - **Not reached**, because a limit was hit or a registry rate-limited an
-     earlier lookup: **kept**, as `not checked this run`. The next run tries
-     again.
+5. **Untagged: removed**, by its id (or by the `repo@sha256` names it still
+   has), never `--force`, so Docker's own check refuses an image something
+   uses. If it has a registry digest, that is printed, so it can be pulled
+   again by digest.
+6. **Tagged: kept.** The output counts them:
+   `Images kept: 2 tagged image(s) that no container uses (the prune never removes a tagged image).`
 
-   None of these makes the prune exit non-zero. One line sums them up:
-
-       Tagged images, registry check: removed 3, kept (registry does not have it) 1, kept (could not check) 0, not checked this run 0. Lookups made: 4.
-
-#### Registry lookups (`All` only)
-
-- **Which registry:** the one each image's `repo@sha256` reference names
-  (Docker Hub for a bare name such as `nginx`), and no other. Only images
-  that passed every local check are looked up; `Dangling` mode makes no
-  network call at all.
-- **How:** with Docker's own client, `docker buildx imagetools inspect --raw
-  <repo>@sha256:<digest>` when the buildx plugin is installed, otherwise
-  `docker manifest inspect <repo>@sha256:<digest>`. Neither downloads the
-  image. If neither works, every tagged image is kept, and the output says
-  why.
-- **Credentials:** the prune handles none. Docker's client reads root's
-  `docker login` (`$DOCKER_CONFIG` if set, otherwise `.docker/config.json` in
-  root's home directory as `/etc/passwd` gives it, so the timer, a Datto job
-  and a root shell use the same file). Run `sudo docker login <registry>` on
-  the host once for a private registry; without it, that registry's images
-  are kept.
-- **Proxy:** Docker's client does not use the Docker daemon's proxy on its
-  own. When the prune's own environment has no proxy, it uses the daemon's
-  (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` as `docker info` shows them) for
-  the lookups. A daemon proxy with a password is not used, because
-  `docker info` hides the password; the lookups then go direct.
-- **Limits, fixed in the script (the settings file cannot change them):**
-  20 seconds per lookup, at most 100 lookups and 300 seconds of lookups in
-  one run. Images not reached are kept as `not checked this run`.
-- **Rate limits:** a `429 Too Many Requests` or `toomanyrequests` answer
-  keeps that image and stops every further lookup for the run.
-- **Cost on Docker Hub:** a lookup reads one manifest, which Docker Hub can
-  count as a pull (100 per 6 hours for an anonymous IP address, 200 for a
-  logged-in personal account, at the time of writing). On a host with many
-  unused Docker Hub images, log root in to Docker Hub.
+Up to version 15, `usrPruneImages` = `All` also removed a tagged image whose
+registry confirmed, at that moment, that it still had it. That mode and its
+registry lookups are gone from version 16 (see the version note at the top),
+and with them every network call the prune made.
 
 **If Docker does not return its image list, or the list of which images
 containers use**, no image is removed and the run exits 1.
@@ -681,10 +688,11 @@ for a stopped one. Nothing it does needs a restart.
 If Docker is not installed, it exits 0 and changes nothing. That makes it safe
 to target at every Linux device.
 
-It makes no network calls of its own, with one exception: the prune, with
-`usrPruneImages` = `All`, asks registries whether they still have the tagged
-images it would remove (see *Registry lookups*). With `Dangling`, the
-default, it makes none.
+**It never removes a tagged image** (from version 16), and never a volume.
+
+It makes no network calls of its own, and neither does the prune. (Up to
+version 15 the prune asked registries about tagged images when
+`usrPruneImages` was `All`.)
 
 ## Why
 
@@ -700,9 +708,10 @@ Two fixes came out of that: limits that stop growth, and a scheduled prune
 that removes what the limits don't cover. Up to version 14 this component
 did both. From version 15 it is the prune, and the limits are
 [`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/);
-a host like those two wants both. From version 9 a host like the GitLab
-server needs `usrPruneImages` = `All`: the default, `Dangling`, would leave
-its unused tagged images in place.
+a host like those two wants both. The prune removes untagged images only
+(from version 16 there is no other mode), so on a host like the GitLab
+server, whose disk filled with unused tagged images, those still have to be
+removed some other way.
 
 ## Related components
 
@@ -730,10 +739,12 @@ Docker monitors.
 
 **Updating an existing copy:** open it in Datto, paste the script over the
 body, and make the variables and description match the tables below. For
-version 15 that means deleting four variables (`usrLogMaxSize`,
-`usrLogMaxFile`, `usrBuildCacheMax`, `usrBuildCacheReserved`), changing the
-description, and removing a post-condition on `RESTART PENDING` or
-`DAEMON WILL NOT START` if one was set. A re-import creates a second
+version 16 that means deleting `usrPruneImages`. Coming from version 14 or
+earlier, version 15's changes are needed too: deleting four variables
+(`usrLogMaxSize`, `usrLogMaxFile`, `usrBuildCacheMax`,
+`usrBuildCacheReserved`), changing the description, and removing a
+post-condition on `RESTART PENDING` or `DAEMON WILL NOT START` if one was
+set. A re-import creates a second
 component; see the repo's `tools/README.md`.
 
 **New install:** Automation → Components → New Component, or import the
@@ -758,7 +769,6 @@ component; see the repo's `tools/README.md`.
 | `usrPruneSchedule` | String | `Sun *-*-* 04:00:00` | A systemd `OnCalendar` expression in the host's local time, checked with `systemd-analyze calendar`. Blank leaves the timer alone. |
 | `usrPruneOlderThanHours` | String | `168` | 24–8760. Only unused items older than this are pruned; a stopped container counts from when it stopped. Saved to `/etc/default/tc-docker-prune` as `OLDER_THAN_HOURS`, so the most recent run sets it for the timer. The prune checks it again and removes nothing if it is out of range. |
 | `usrPruneGraceHours` | String | `144` | 24–8760. How long a stopped container waits in `pending-removal` before the prune may remove it. 144 (6 days) means a weekly timer removes it at the run after the one that recorded it. Saved as `GRACE_HOURS`. |
-| `usrPruneImages` | **Selection** | `Dangling` | `Dangling` removes untagged images only, and makes no network call. `All` also removes tagged images no container uses, but only those whose registry confirms it still has them; it contacts registries (see *Registry lookups*). **Use `All` on CI and GitLab runner hosts.** Saved as `PRUNE_IMAGES`. |
 | `usrPruneNow` | **Selection** | `No` | `Yes` also runs the prune once, now. |
 
 No customer-specific value is hardcoded. Different hosts get different values
@@ -768,6 +778,13 @@ target every host.
 
 An invalid value makes the component refuse to run with exit `2`. It checks
 every input before it changes anything.
+
+**Removed in version 16:** `usrPruneImages`. The prune removes untagged
+images only. **If a Datto job still passes it, it is ignored:** the script
+does not read it, so there is no error and no message, whatever its value,
+even one version 15 refused with exit `2`, and it changes nothing the prune
+removes. Delete it from the component in Datto (see *Installing it in
+Datto*).
 
 **Removed in version 15:** `usrLogMaxSize`, `usrLogMaxFile`,
 `usrBuildCacheMax` and `usrBuildCacheReserved`. They belong to
@@ -805,11 +822,10 @@ The prune script on the host exits `0` when it pruned, and also when
 systemd reports Docker stopped (it prunes nothing then, and says so). It
 exits `1` on an error: the daemon unreachable, its container list not coming back (nothing is
 removed then), `pending-removal` not writable (no container removed), its
-image list not coming back (no image removed), an `OLDER_THAN_HOURS`,
-`GRACE_HOURS` or `PRUNE_IMAGES` it refuses (see *The settings file*), a
-container or image Docker would not remove, or a
-network or build-cache step failing. A registry lookup that fails, times out or is
-rate-limited is not an error: that image is kept and the exit is still `0`.
+image list not coming back (no image removed), an `OLDER_THAN_HOURS` or
+`GRACE_HOURS` it refuses (see *The settings file*), a container or image
+Docker would not remove, or a network or build-cache step failing. A
+`PRUNE_IMAGES` line in the settings file is not an error.
 
 ## How to tell it worked
 
@@ -829,13 +845,13 @@ A second run says `Expected list: ... exists ... not changed` and
 
 A prune with Docker stopped (by hand; the timer does not start it then):
 
-    tc-docker-prune version 15
+    tc-docker-prune version 16
     Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.
 
 A prune after review reports what it recorded, what is waiting, what it
 removed and what it kept:
 
-    tc-docker-prune version 15
+    tc-docker-prune version 16
     Pruning unused items older than 168h. Volumes are never removed.
     Disk before: 30G free, 29% used
     Stopped containers recorded for removal this run (removed 144h from now if still stopped and not protected):
@@ -847,11 +863,9 @@ removed and what it kept:
     Stopped containers kept, with their images:
       shop-db-1 (on the expected list)
       legacy (restart policy unless-stopped)
-    Images removed (PRUNE_IMAGES=all): 1
-      registry.example.com/team/app:1.4 - its registry has it, pull again: registry.example.com/team/app@sha256:61488c...
-    Images kept that no container uses:
-      registry.example.com/team/tool:dev - its registry does not have registry.example.com/team/tool@sha256:9c1f0e...
-    Tagged images, registry check: removed 1, kept (registry does not have it) 1, kept (could not check) 0, not checked this run 0. Lookups made: 2.
+    Untagged images removed: 1
+      untagged 3c9d2e7a41f0
+    Images kept: 2 tagged image(s) that no container uses (the prune never removes a tagged image).
     Networks: nothing to remove
     Build cache: 0B reclaimed
     Disk after:  30G free, 29% used
@@ -898,33 +912,12 @@ Never a customer first.
 - **`pending-removal` is trusted as the prune wrote it.** It is root-only;
   a line that is not well formed is dropped, but a well-formed line edited by
   hand to an older time shortens that container's wait.
-- **A registry confirms the image at that moment, not for ever.** It can be
-  deleted from the registry after the prune removed it here. The printed
-  `repo@sha256` is the reference to pull it back by while it exists.
-- **A re-pulled tag may be a newer image than the one removed.** Tags move.
-  Pulling `<repo>:<tag>` gets whatever the tag points at now; pulling the
-  printed `<repo>@sha256:<digest>` gets exactly the image that was removed.
-- **An image in a registry this host cannot log in to is kept**, as `could
-  not check`, on every run. So is one in a registry the host cannot reach.
-  Log root in (`sudo docker login`) or remove such images by hand. Docker Hub
-  refuses access to a repository that does not exist rather than saying it
-  is not there, so an image
-  built here under a bare name (`myapp:dev`) on the containerd store is kept
-  as `could not check`, not as `registry does not have it`, and still costs a
-  lookup each run.
-- **A login kept by a credential helper** (`credsStore` in root's
-  `config.json`) works only if that helper works without a desktop session.
-- **A registry served over plain HTTP** (an `insecure-registries` entry for
-  anything but `localhost` or `127.0.0.1`) cannot be asked: the lookup tools
-  use HTTPS. Its images are kept as `could not check`.
-- **A lookup reads a manifest, which Docker Hub can count as a pull.** At
-  most 100 a run. A lookup that finds the image fetches its manifest; one
-  that does not find it costs a `HEAD` request only with buildx, and two
-  `GET` requests with `docker manifest`.
-- **The time limits are per run, not per host.** A Prune now and the timer
-  running at the same time each get their own 100 lookups.
-- **An untagged image is removed in both modes**, including one pulled by
-  digest only. Those can be pulled again by their digest, which is printed.
+- **An untagged image is removed**, including one pulled by digest only.
+  Those can be pulled again by their digest, which is printed.
+- **A tagged image is never removed** (from version 16). On a host whose
+  disk fills with pulled images, such as a CI or GitLab runner host, unused
+  tagged images pile up: remove them by hand or with a cleanup made for that
+  host. Disk space monitoring is the backstop.
 - **An unreviewed host gets no image cleanup.** That is deliberate. Its disk
   relief waits for the review, so review a new host's list in its first
   week. The monitor reports every unreviewed host.
@@ -942,7 +935,7 @@ Never a customer first.
   nothing and exits 1. Checked against a Docker 1.10 engine.
 - **systemd only** for the timer. On a host without systemd, the timer part
   exits `3`, and the other parts still run.
-- **The settings file is not shell.** Only `NAME=value` lines for the three
+- **The settings file is not shell.** Only `NAME=value` lines for the two
   settings are read. A misspelled name, or `export NAME=value`, is ignored
   without a message, and that setting keeps its default; a value in quotes or
   with a comment after it is refused, and the prune exits 1 until it is
@@ -979,6 +972,10 @@ Never a customer first.
   on their next run), and run `systemctl daemon-reload`.
 
 ## Open questions
+
+- **Tagged images on CI and GitLab runner hosts.** From version 16 nothing
+  in these components removes them (`All` did, up to version 15). Whether
+  such a host needs a component of its own for that is not decided.
 
 - **Level** is not standardised. `component.json` carries 5, because this
   component installs a script that removes containers and images as root.

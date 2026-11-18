@@ -59,15 +59,16 @@ usrMode="${usrMode:-apply}"
 usrPruneSchedule="${usrPruneSchedule-Sun *-*-* 04:00:00}"
 usrPruneOlderThanHours="${usrPruneOlderThanHours-168}"
 usrPruneGraceHours="${usrPruneGraceHours-144}"
-usrPruneImages="${usrPruneImages:-dangling}"
 usrPruneNow="${usrPruneNow:-no}"
 
 # Trim surrounding whitespace a pasted value tends to carry.
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
-for v in usrMode usrPruneSchedule usrPruneOlderThanHours usrPruneGraceHours usrPruneImages usrPruneNow; do
+for v in usrMode usrPruneSchedule usrPruneOlderThanHours usrPruneGraceHours usrPruneNow; do
     printf -v "$v" '%s' "$(trim "${!v}")"
 done
-usrMode="${usrMode,,}"; usrPruneNow="${usrPruneNow,,}"; usrPruneImages="${usrPruneImages,,}"
+usrMode="${usrMode,,}"; usrPruneNow="${usrPruneNow,,}"
+# usrPruneImages (Dangling or All) was an input up to version 15. It is not
+# read: a job that still passes it runs as if it did not.
 
 case "$usrMode" in apply|report) ;; *) fail 2 "usrMode must be apply or report (got '$usrMode')." ;; esac
 case "$usrPruneNow" in yes|no) ;; *) fail 2 "usrPruneNow must be yes or no (got '$usrPruneNow')." ;; esac
@@ -88,13 +89,12 @@ if [ -n "$usrPruneSchedule" ]; then
         fail 2 "usrPruneSchedule '$usrPruneSchedule' is not a systemd calendar expression."
     fi
 fi
-# The same goes for the wait and the image mode.
+# The same goes for the wait.
 if [ -n "$usrPruneSchedule" ] || [ "$usrPruneNow" = "yes" ]; then
     [[ "$usrPruneGraceHours" =~ ^[0-9]{1,5}$ ]] && [ $((10#$usrPruneGraceHours)) -ge 24 ] \
         && [ $((10#$usrPruneGraceHours)) -le 8760 ] \
         || fail 2 "usrPruneGraceHours must be 24-8760 (got '$usrPruneGraceHours')."
     usrPruneGraceHours=$((10#$usrPruneGraceHours))
-    case "$usrPruneImages" in dangling|all) ;; *) fail 2 "usrPruneImages must be dangling or all (got '$usrPruneImages')." ;; esac
 fi
 # ---------------------------------------------------------------- is Docker here?
 
@@ -254,7 +254,7 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # tc-docker-prune -- installed by the Datto RMM component
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune, read as text and never run.
-TC_PRUNE_VERSION=15
+TC_PRUNE_VERSION=16
 # The line above is the version of the component that installed this script,
 # and the first thing a run prints is that version, so the journal shows which
 # prune ran. "Docker - Containers Differ From Expected [Lin]" reads it to flag
@@ -269,8 +269,7 @@ TC_PRUNE_VERSION=15
 #     names), and only GRACE_HOURS after first recording them in
 #     /var/lib/tc-docker/pending-removal; if that record cannot be written, no
 #     container is removed;
-#   - images no container uses: untagged ones, and with PRUNE_IMAGES=all also
-#     tagged ones whose registry confirms, at that moment, that it has them.
+#   - untagged images no container uses. A tagged image is never removed.
 # Never volumes. Nothing at all when Docker does not return its container
 # list. With Docker stopped it runs no docker command and leaves it stopped.
 # Exit: 0 done (also: Docker stopped, nothing pruned); 1 an error, each one
@@ -278,17 +277,13 @@ TC_PRUNE_VERSION=15
 # https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/docker-configure-host-maintenance-lin
 set -u
 echo "tc-docker-prune version $TC_PRUNE_VERSION"
-# Tests may LOWER the lookup limits through the environment: a value here is
-# only ever used to lower one. The settings file cannot set them at all.
-TEST_LOOKUP_MAX="${TC_PRUNE_TEST_LOOKUP_MAX:-}"
-TEST_LOOKUP_SECONDS="${TC_PRUNE_TEST_LOOKUP_SECONDS:-}"
 PRUNE_CONF=/etc/default/tc-docker-prune
 # The settings file is read as text and never run. A setting is a line
-# NAME=value; for each of the three names below the last such line is used, with
+# NAME=value; for each of the two names below the last such line is used, with
 # the default when there is none. Every other line is ignored (comments, blank
 # lines, names this script does not know), so nothing in the file can run a
 # command or set any other variable here. A file that is missing, or is not a
-# regular file root can read, leaves all three defaults. What comes back is not
+# regular file root can read, leaves both defaults. What comes back is not
 # trusted: each value is checked further down, before anything uses it.
 setting() {  # name, default
     local line=""
@@ -299,7 +294,12 @@ setting() {  # name, default
 }
 OLDER_THAN_HOURS="$(setting OLDER_THAN_HOURS 168)"
 GRACE_HOURS="$(setting GRACE_HOURS 144)"
-PRUNE_IMAGES="$(setting PRUNE_IMAGES dangling)"
+# Up to version 15 the file also had PRUNE_IMAGES (dangling or all). It is not
+# used: a line for it, whatever its value, is named once and changes nothing.
+PRUNE_IMAGES_LINE=0
+if [ -f "$PRUNE_CONF" ] && [ -r "$PRUNE_CONF" ] && grep -q '^[[:space:]]*PRUNE_IMAGES=' "$PRUNE_CONF" 2>/dev/null; then
+    PRUNE_IMAGES_LINE=1
+fi
 
 DOCKER="$(command -v docker)" || { echo "ERROR: docker not found"; exit 1; }
 
@@ -509,7 +509,7 @@ tc_epoch() {
     [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$ ]] || return 1
     date -d "$1" +%s 2>/dev/null
 }
-# Printable, short: for echoing a setting that failed its check.
+# Printable, short: for echoing a value from the settings file.
 shown() { printf '%s' "$1" | tr -cd 'a-zA-Z0-9._ -' | cut -c1-20; }
 # What a settings line has to look like, for the same messages: the file is not
 # a shell file, so a value in quotes or with a comment after it is refused.
@@ -517,7 +517,7 @@ SETTING_FORM="A setting is one line, NAME=value, with no quotes and nothing afte
 
 # The settings file is written by the component, but every value is checked
 # again here, before it is used in any arithmetic: a hand edit must not shorten
-# either wait or widen which images are removed.
+# either wait.
 OLDER_OK=1
 if [[ "$OLDER_THAN_HOURS" =~ ^[0-9]{1,5}$ ]] && [ $((10#$OLDER_THAN_HOURS)) -ge 24 ] && [ $((10#$OLDER_THAN_HOURS)) -le 8760 ]; then
     OLDER_THAN_HOURS=$((10#$OLDER_THAN_HOURS))
@@ -530,19 +530,9 @@ if [[ "$GRACE_HOURS" =~ ^[0-9]{1,5}$ ]] && [ $((10#$GRACE_HOURS)) -ge 24 ] && [ 
 else
     GRACE_OK=0
 fi
-IMAGES_OK=1
-PRUNE_IMAGES="$(printf '%s' "${PRUNE_IMAGES:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-[ -n "$PRUNE_IMAGES" ] || PRUNE_IMAGES=dangling
-case "$PRUNE_IMAGES" in dangling|all) ;; *) IMAGES_OK=0 ;; esac
-# Registry lookups (All mode only). The settings file cannot change these; a
-# test can only lower the last two.
-LOOKUP_TIMEOUT=20
-LOOKUP_MAX=100
-LOOKUP_SECONDS=300
-[[ "$TEST_LOOKUP_MAX" =~ ^[0-9]{1,3}$ ]] && [ $((10#$TEST_LOOKUP_MAX)) -lt "$LOOKUP_MAX" ] \
-    && LOOKUP_MAX=$((10#$TEST_LOOKUP_MAX))
-[[ "$TEST_LOOKUP_SECONDS" =~ ^[0-9]{1,3}$ ]] && [ $((10#$TEST_LOOKUP_SECONDS)) -lt "$LOOKUP_SECONDS" ] \
-    && LOOKUP_SECONDS=$((10#$TEST_LOOKUP_SECONDS))
+if [ "$PRUNE_IMAGES_LINE" -eq 1 ]; then
+    echo "PRUNE_IMAGES in $PRUNE_CONF is no longer used (it is '$(shown "$(setting PRUNE_IMAGES '')")'): the prune removes untagged images only, and keeps every tagged image."
+fi
 
 # Everything this prune removes is chosen by its age, so without a usable
 # OLDER_THAN_HOURS there is nothing it can safely record or remove.
@@ -799,135 +789,9 @@ docker_said() {
     [ -z "$m" ] || printf ' Docker said: %s' "$m"
 }
 
-# ---- registry lookups (PRUNE_IMAGES=all only)
-
-LOOKUP_TOOL=""   # buildx, manifest or none, once lookup_setup has run
-LOOKUP_STOP=""   # why no more lookups are made this run, once that is so
-LOOKUP_NOTE=""   # how the lookups reach the registry, for the output
-LOOKUPS=0        # lookups made
-LOOKUP_USED=0    # milliseconds spent in them
-now_ms() {
-    local t
-    t="$(date +%s%3N 2>/dev/null)"
-    [[ "$t" =~ ^[0-9]+$ ]] || t=$(( $(date +%s) * 1000 ))
-    printf '%s' "$t"
-}
-
-# Picks the lookup tool and sets up its environment, once, when the first
-# tagged image has passed every local check. Credentials: Docker's client reads
-# them from root's docker login ($DOCKER_CONFIG, else this user's home in
-# /etc/passwd, so the timer, a Datto job and a shell all find the same file).
-# Proxy: the client does not use the daemon's proxy on its own, so when this
-# process has none, the daemon's (from docker info) is used for the lookups.
-lookup_setup() {
-    local home p hp hsp np ok=1
-    [ -z "$LOOKUP_TOOL" ] || return 0
-    if ! command -v timeout >/dev/null 2>&1; then
-        LOOKUP_TOOL=none; LOOKUP_STOP="this host has no timeout command, which every lookup needs"; return 0
-    fi
-    # By the help each command prints: without the plugin, docker prints its
-    # own help for "docker buildx ... --help" and still exits 0.
-    if "$DOCKER" buildx version >/dev/null 2>&1 \
-       && "$DOCKER" buildx imagetools inspect --help 2>&1 | grep -q -e '--raw'; then LOOKUP_TOOL=buildx
-    elif "$DOCKER" manifest inspect --help 2>&1 | grep -q -e '--insecure'; then LOOKUP_TOOL=manifest
-    else
-        LOOKUP_TOOL=none; LOOKUP_STOP="neither docker buildx imagetools nor docker manifest works on this host, so no registry can be asked"; return 0
-    fi
-    if [ -z "${DOCKER_CONFIG:-}" ]; then
-        home="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
-        [ -n "$home" ] || home="${HOME:-/root}"
-        export DOCKER_CONFIG="$home/.docker"
-    fi
-    if [ -z "${HTTPS_PROXY:-}${https_proxy:-}${HTTP_PROXY:-}${http_proxy:-}" ]; then
-        # One per line: an empty one must not shift the others.
-        p="$("$DOCKER" info --format '{{.HTTPProxy}}{{"\n"}}{{.HTTPSProxy}}{{"\n"}}{{.NoProxy}}' 2>/dev/null)" || p=""
-        { IFS= read -r hp; IFS= read -r hsp; IFS= read -r np; } <<<"$p"
-        if [ -n "$hp$hsp" ]; then
-            for p in "$hp" "$hsp" "$np"; do
-                [[ "$p" =~ ^[A-Za-z0-9._:/@%+,*=-]*$ ]] || ok=0
-            done
-            case "$hp$hsp" in *xxxxx*) ok=2 ;; esac
-            if [ "$ok" -eq 1 ]; then
-                [ -z "$hp" ] || export HTTP_PROXY="$hp"
-                [ -z "$hsp" ] || export HTTPS_PROXY="$hsp"
-                [ -z "$np" ] || export NO_PROXY="$np"
-                LOOKUP_NOTE="through the Docker daemon's proxy"
-            elif [ "$ok" -eq 2 ]; then
-                LOOKUP_NOTE="without a proxy: the Docker daemon's proxy has a password docker info does not show"
-            else
-                LOOKUP_NOTE="without a proxy: the Docker daemon's proxy setting is not a plain URL"
-            fi
-        fi
-    else
-        LOOKUP_NOTE="through this process's own proxy setting"
-    fi
-    return 0
-}
-
-# Asks the image's registry whether it has reference $1 (repo@sha256:<digest>,
-# already checked by image_rows). Sets LOOKUP_RESULT to one of:
-#   yes      the registry returned that manifest
-#   no       the registry says it does not have it
-#   refused  the registry refused access (no login here, or the wrong one)
-#   timeout  no answer within the time left for this lookup
-#   ratelimit  429 Too Many Requests / toomanyrequests; no more lookups this run
-#   error    anything else (network, TLS, an answer not understood)
-#   skipped  not asked: no lookup tool, or a limit or rate limit already hit
-# and LOOKUP_MSG to a short printable reason.
-lookup_ref() {
-    local ref="$1" out rc left t t0 last
-    LOOKUP_RESULT=skipped; LOOKUP_MSG=""
-    [ -z "$LOOKUP_STOP" ] || return 0
-    if [ "$LOOKUPS" -ge "$LOOKUP_MAX" ]; then
-        LOOKUP_STOP="the limit of $LOOKUP_MAX registry lookups a run was reached"; return 0
-    fi
-    left=$(( LOOKUP_SECONDS * 1000 - LOOKUP_USED ))
-    if [ "$left" -le 0 ]; then
-        LOOKUP_STOP="the $LOOKUP_SECONDS seconds of registry lookups a run were used"; return 0
-    fi
-    t=$(( (left + 999) / 1000 )); [ "$t" -le "$LOOKUP_TIMEOUT" ] || t=$LOOKUP_TIMEOUT
-    LOOKUPS=$((LOOKUPS + 1))
-    t0="$(now_ms)"
-    if [ "$LOOKUP_TOOL" = buildx ]; then
-        out="$(timeout -k 5 "$t" "$DOCKER" buildx imagetools inspect --raw "$ref" 2>&1 </dev/null)"; rc=$?
-    else
-        out="$(timeout -k 5 "$t" "$DOCKER" manifest inspect "$ref" 2>&1 </dev/null)"; rc=$?
-    fi
-    LOOKUP_USED=$(( LOOKUP_USED + $(now_ms) - t0 ))
-    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q '"schemaVersion"'; then
-        LOOKUP_RESULT=yes; return 0
-    fi
-    # The cause is at the end of Docker's message, so that end is kept.
-    last="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n 1 | tr -cd '[:print:]' \
-        | sed -E 's#"https?://[^"]*"#(registry URL)#g')"
-    last="${last#ERROR: }"
-    [ "${#last}" -le 160 ] || last="...${last: -160}"
-    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-        LOOKUP_RESULT=timeout; LOOKUP_MSG="no answer within ${t}s"
-    elif printf '%s\n' "$out" | grep -qiF -e '429 Too Many Requests' -e 'toomanyrequests'; then
-        LOOKUP_RESULT=ratelimit; LOOKUP_MSG="the registry is rate-limiting: $last"
-        LOOKUP_STOP="a registry rate-limited a lookup"
-    elif printf '%s\n' "$out" | grep -qiE '401 Unauthorized|403 Forbidden|unauthorized|denied|no basic auth credentials|authentication required'; then
-        LOOKUP_RESULT=refused; LOOKUP_MSG="the registry refused access: $last"
-    elif printf '%s\n' "$out" | grep -qF -e "$ref: not found"; then
-        LOOKUP_RESULT=no
-    elif printf '%s\n' "$out" | grep -qiE 'manifest unknown|no such manifest'; then
-        LOOKUP_RESULT=no
-    else
-        LOOKUP_RESULT=error; LOOKUP_MSG="${last:-the lookup failed (exit $rc)}"
-    fi
-    return 0
-}
-
 image_section() {
     local used keepers rows id tags names digs created readable short t ref ok n_tagged=0
-    local found why unsure skipped
-    local n_removed=0 n_absent=0 n_unsure=0 n_unchecked=0
     local -a img_removed=() img_kept=()
-    if [ "$IMAGES_OK" -eq 0 ]; then
-        echo "ERROR: PRUNE_IMAGES in /etc/default/tc-docker-prune must be dangling or all (it is '$(shown "$PRUNE_IMAGES")'). No image was removed. $SETTING_FORM"
-        errors=$((errors + 1)); return
-    fi
     # After the containers above were removed, so an image they used can go.
     if ! used="$(used_images)"; then
         echo "ERROR: Docker did not return its container list for the image check. No image was removed.$(docker_said)"
@@ -965,57 +829,17 @@ image_section() {
             fi
             continue
         fi
-        if [ "$PRUNE_IMAGES" = "dangling" ]; then n_tagged=$((n_tagged + 1)); continue; fi
-        # All: every local check has passed. Removed only if its registry
-        # confirms, now, that it has one of the image's repo@sha256 references.
-        if [ "$digs" = "-" ]; then
-            n_absent=$((n_absent + 1))
-            img_kept+=("$tags - no registry digest: built or loaded on this host, so there is nothing to look up"); continue
-        fi
-        lookup_setup
-        found=""; why=""; unsure=0; skipped=0
-        for ref in $digs; do
-            lookup_ref "$ref"
-            case "$LOOKUP_RESULT" in
-                yes)     found="$ref"; break ;;
-                no)      why="${why:+$why; }its registry does not have $ref" ;;
-                skipped) skipped=1; break ;;
-                *)       unsure=1; why="${why:+$why; }could not check $ref: $LOOKUP_MSG" ;;
-            esac
-        done
-        if [ -z "$found" ]; then
-            if [ "$LOOKUP_TOOL" = none ]; then
-                n_unsure=$((n_unsure + 1)); img_kept+=("$tags - could not check: $LOOKUP_STOP")
-            elif [ "$unsure" -eq 1 ]; then
-                n_unsure=$((n_unsure + 1)); img_kept+=("$tags - $why")
-            elif [ "$skipped" -eq 1 ]; then
-                n_unchecked=$((n_unchecked + 1)); img_kept+=("$tags - not checked this run: $LOOKUP_STOP${why:+ ($why)}")
-            else
-                n_absent=$((n_absent + 1)); img_kept+=("$tags - $why")
-            fi
-            continue
-        fi
-        # Each name in turn, without --force; the last one removes the image.
-        ok=1
-        for ref in $names; do
-            "$DOCKER" image rm "$ref" >/dev/null 2>&1 || { ok=0; echo "WARNING: could not remove image $ref"; errors=$((errors + 1)); break; }
-        done
-        if [ "$ok" -eq 1 ]; then
-            n_removed=$((n_removed + 1)); img_removed+=("$tags - its registry has it, pull again: $found")
-        fi
+        # Tagged: never removed here, only counted.
+        n_tagged=$((n_tagged + 1))
     done <<<"$rows"
 
-    echo "Images removed (PRUNE_IMAGES=$PRUNE_IMAGES): ${#img_removed[@]}"
+    echo "Untagged images removed: ${#img_removed[@]}"
     [ "${#img_removed[@]}" -eq 0 ] || printf '  %s\n' "${img_removed[@]}"
     if [ "${#img_kept[@]}" -gt 0 ]; then
         echo "Images kept that no container uses:"
         printf '  %s\n' "${img_kept[@]}"
     fi
-    [ "$n_tagged" -eq 0 ] || echo "Images kept: $n_tagged tagged image(s) that no container uses (PRUNE_IMAGES=dangling removes untagged images only)."
-    if [ "$PRUNE_IMAGES" = "all" ]; then
-        echo "Tagged images, registry check: removed $n_removed, kept (registry does not have it) $n_absent, kept (could not check) $n_unsure, not checked this run $n_unchecked. Lookups made: $LOOKUPS${LOOKUP_NOTE:+, $LOOKUP_NOTE}."
-        [ -z "$LOOKUP_STOP" ] || [ "$LOOKUP_TOOL" = none ] || echo "Registry lookups stopped: $LOOKUP_STOP."
-    fi
+    [ "$n_tagged" -eq 0 ] || echo "Images kept: $n_tagged tagged image(s) that no container uses (the prune never removes a tagged image)."
 }
 [ "$REVIEWED" -eq 1 ] && image_section
 
@@ -1059,8 +883,7 @@ install_prune_script() {
     conf="# Written by the Datto RMM component \"Docker - Configure Host Maintenance [Lin]\".
 # Re-run the component to change these; edits here are overwritten.
 OLDER_THAN_HOURS=$usrPruneOlderThanHours
-GRACE_HOURS=$usrPruneGraceHours
-PRUNE_IMAGES=$usrPruneImages"
+GRACE_HOURS=$usrPruneGraceHours"
     put_file "$PRUNE_BIN"  "$PRUNE_SCRIPT" 755 || return 1
     put_file "$PRUNE_CONF" "$conf"         644 || return 1
 }
@@ -1202,7 +1025,7 @@ WantedBy=timers.target"
     local changed_timer=$WROTE
     local changed=$(( changed_svc | changed_timer ))
 
-    local guard="keeps stopped containers on the expected list, removes other stopped ones ${usrPruneGraceHours}h after recording them, images: $usrPruneImages"
+    local guard="keeps stopped containers on the expected list, removes other stopped ones ${usrPruneGraceHours}h after recording them, images: untagged only"
 
     if [ "$usrMode" = "report" ]; then
         if [ $changed_timer -eq 1 ]; then
