@@ -118,7 +118,7 @@ export PATH
 # prunes of versions 9 and 10 start a Docker that was stopped on purpose, and
 # every restart: always container with it. Version 12 only changes how the
 # prune reads its own settings file, which matters after a hand edit of that
-# file, so 11 is still accepted.
+# file, and version 13 only moves code, so 11 is still accepted.
 PRUNE_MIN_VERSION=11
 PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
 PRUNE_UNIT="/etc/systemd/system/tc-docker-prune.service"
@@ -160,6 +160,7 @@ START="$(date +%s)"
 [[ "$START" =~ ^[0-9]+$ ]] || emit 1 "Check could not run: date +%s does not give the time in seconds"
 DOCKER_DEADLINE=$(( START + DOCKER_TIMEOUT ))
 
+# >>> tc-docker bounded: identical in the Containers, Health and Images monitors; change them together.
 # Runs $1 (shell code) in a new bash under timeout(1), with the rest of the
 # arguments as $1..., and returns its exit status: 124 or 137 when it was still
 # running DOCKER_TIMEOUT seconds after the monitor started. timeout(1) puts the
@@ -168,6 +169,7 @@ DOCKER_DEADLINE=$(( START + DOCKER_TIMEOUT ))
 # there). Once it has timed out, whatever is left in that group (a docker client
 # that ignored TERM after the bash above it died) is sent KILL here. Nothing
 # else is ever signalled: not the monitor's own process group, not its parent.
+# The caller sets DOCKER_DEADLINE (seconds since 1970) before the first call.
 bounded() {
     local code=$1 left pid rc
     shift
@@ -187,6 +189,7 @@ docker_unit_loaded() {
     systemd_up || return 1
     [ "$(timeout -k 2 10 systemctl show docker.service -p LoadState 2>/dev/null)" = "LoadState=loaded" ]
 }
+# <<< tc-docker bounded
 
 DOCKER="$(command -v docker 2>/dev/null || true)"
 if [ -z "$DOCKER" ]; then
@@ -270,7 +273,7 @@ tc_ignored() {
 tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # <<< tc-docker shared
 
-# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# >>> tc-docker running: identical in every tc-docker component; change them together.
 # Whether the Docker daemon is running, found out without starting it. Where
 # systemd manages docker.service, systemd is asked, and no docker command is run
 # unless the service is active: on most installs docker.socket stays listening
@@ -281,6 +284,7 @@ tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
 # options only, so systemd 219 understands them.
 DOCKER_STATE=""
+# shellcheck disable=SC2034  # the monitors read DOCKER_STATE in the bash that bounded starts, as text shellcheck cannot follow
 tc_docker_running() {
     local load state
     DOCKER_STATE=""

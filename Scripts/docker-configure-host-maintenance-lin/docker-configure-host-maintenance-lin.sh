@@ -190,7 +190,7 @@ esac
 
 DOCKER="$DOCKER_BIN"
 
-# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# >>> tc-docker running: identical in every tc-docker component; change them together.
 # Whether the Docker daemon is running, found out without starting it. Where
 # systemd manages docker.service, systemd is asked, and no docker command is run
 # unless the service is active: on most installs docker.socket stays listening
@@ -201,6 +201,7 @@ DOCKER="$DOCKER_BIN"
 # DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
 # options only, so systemd 219 understands them.
 DOCKER_STATE=""
+# shellcheck disable=SC2034  # the monitors read DOCKER_STATE in the bash that bounded starts, as text shellcheck cannot follow
 tc_docker_running() {
     local load state
     DOCKER_STATE=""
@@ -799,7 +800,7 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # tc-docker-prune -- installed by the Datto RMM component
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune, read as text and never run.
-TC_PRUNE_VERSION=12
+TC_PRUNE_VERSION=13
 # The line above is the version of the component that installed this script,
 # and the first thing a run prints is that version, so the journal shows which
 # prune ran. "Docker - Containers Differ From Expected [Lin]" reads it to flag
@@ -873,7 +874,7 @@ PENDING_FILE="$PENDING_DIR/pending-removal"
 
 DOCKER="$(command -v docker)" || { echo "ERROR: docker not found"; exit 1; }
 
-# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# >>> tc-docker running: identical in every tc-docker component; change them together.
 # Whether the Docker daemon is running, found out without starting it. Where
 # systemd manages docker.service, systemd is asked, and no docker command is run
 # unless the service is active: on most installs docker.socket stays listening
@@ -884,6 +885,7 @@ DOCKER="$(command -v docker)" || { echo "ERROR: docker not found"; exit 1; }
 # DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
 # options only, so systemd 219 understands them.
 DOCKER_STATE=""
+# shellcheck disable=SC2034  # the monitors read DOCKER_STATE in the bash that bounded starts, as text shellcheck cannot follow
 tc_docker_running() {
     local load state
     DOCKER_STATE=""

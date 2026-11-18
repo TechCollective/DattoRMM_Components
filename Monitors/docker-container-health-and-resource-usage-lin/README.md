@@ -13,6 +13,15 @@ and non-zero exits, and reports through Datto's monitor contract.
 > live Docker 29 daemon in a sandbox, except the stopped-Docker steps, which
 > need systemd (run in CI). Not yet run through a Datto agent. Follow the
 > [test order](#test-order) before widening it.
+>
+> **Version 2** (2026-11-17) changes comments only: the time-limit code
+> (`bounded`, `systemd_up`, `docker_unit_loaded`) is marked as a shared block,
+> `tc-docker bounded`, with the other two Docker monitors, and the first line
+> of the `tc-docker running` block says it is identical in every tc-docker
+> component. Every line of code is the same as version 1's. Through its Tier
+> 1 `test.json` in a sandbox with no systemd and no bash 4.2, every step gave
+> the result it gave for version 1 there; the bash 4.2 and stopped-Docker
+> steps run in CI. Not yet run through a Datto agent.
 
 ## What it does
 
@@ -121,8 +130,11 @@ monitor starts. What is still running then is stopped: `timeout(1)` sends TERM
 to the process group of the docker commands this run started, then KILL to
 anything left in it; nothing else is signalled. The diagnostic names the command
 that did not finish. The same mechanism and the same shared "is Docker running"
-block as `Docker - Containers Differ From Expected [Lin]`
-(`tools/check-shared-blocks.py` keeps the copies identical).
+block as `Docker - Containers Differ From Expected [Lin]`: the time limit is
+the block marked `tc-docker bounded` (three copies, one in each Docker
+monitor) and the check is the block marked `tc-docker running` (six copies,
+one in every Docker component and in the prune). `tools/check-shared-blocks.py`
+keeps the copies identical.
 
 ### State file
 

@@ -148,7 +148,7 @@ tc_ignored() {
 tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # <<< tc-docker shared
 
-# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# >>> tc-docker running: identical in every tc-docker component; change them together.
 # Whether the Docker daemon is running, found out without starting it. Where
 # systemd manages docker.service, systemd is asked, and no docker command is run
 # unless the service is active: on most installs docker.socket stays listening
@@ -159,6 +159,7 @@ tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
 # options only, so systemd 219 understands them.
 DOCKER_STATE=""
+# shellcheck disable=SC2034  # the monitors read DOCKER_STATE in the bash that bounded starts, as text shellcheck cannot follow
 tc_docker_running() {
     local load state
     DOCKER_STATE=""
