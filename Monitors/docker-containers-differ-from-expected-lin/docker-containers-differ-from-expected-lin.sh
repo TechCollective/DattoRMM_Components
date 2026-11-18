@@ -97,7 +97,6 @@ export PATH
 # /var/lib/tc-docker that is not root's, so 11 is still accepted.
 PRUNE_MIN_VERSION=11
 PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
-PRUNE_UNIT="/etc/systemd/system/tc-docker-prune.service"
 PRUNE_CONF="/etc/default/tc-docker-prune"
 FIRST_SEEN_KEEP_DAYS=7
 DOCKER_SOCK="/var/run/docker.sock"
@@ -360,27 +359,14 @@ tc_state_write() {  # name, content
 PENDING_FILE="$TC_STATE_DIR/pending-removal"
 FIRST_SEEN_FILE="$TC_STATE_DIR/monitor-first-seen"
 
-# A prune installed by an older Host Maintenance. Reads two files and nothing
-# else. STALE_STATUS is the status text ("" when nothing is stale or the action
-# is ignore); STALE_DIAG the diagnostic lines for an alert.
+# A prune installed by an older Host Maintenance. Reads one file, the prune
+# script, and nothing else (version 10 also read the unit, for the version 1
+# layout). STALE_STATUS is the status text ("" when nothing is stale or the
+# action is ignore); STALE_DIAG the diagnostic lines for an alert.
 STALE_STATUS=""
 STALE_DIAG=()
 stale_prune_check() {
-    local found=() v n line bad="" val
-    # The version 1 layout: the service runs docker itself, not the script.
-    if [ -e "$PRUNE_UNIT" ] || [ -L "$PRUNE_UNIT" ]; then
-        local seen=0
-        while IFS= read -r line; do
-            seen=1
-            val="${line#"${line%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"
-            [ "$val" = "$PRUNE_BIN" ] || bad="${bad:-${val:-(empty)}}"
-        done < <(sed -n 's/^[[:space:]]*ExecStart=//p' "$PRUNE_UNIT" 2>/dev/null)
-        [ "$seen" -eq 1 ] || bad="(no ExecStart line)"
-        if [ -n "$bad" ]; then
-            found+=("prune service on this host does not run $PRUNE_BIN (version 1 layout)")
-            STALE_DIAG+=("STALE PRUNE  $PRUNE_UNIT has ExecStart: $(printf '%s' "$bad" | tr -cd '[:print:]' | cut -c1-200)")
-        fi
-    fi
+    local found=() v n line
     # The script: a readable TC_PRUNE_VERSION whole number, at least PRUNE_MIN_VERSION.
     # The stamp was introduced in version 7, so a script without one is older than 7
     # whatever PRUNE_MIN_VERSION is by now.
@@ -409,9 +395,9 @@ stale_prune_check() {
     for f in ${found[@]+"${found[@]}"}; do STALE_STATUS="${STALE_STATUS:+$STALE_STATUS; }$f"; done
     STALE_DIAG+=("             Run Docker - Configure Host Maintenance [Lin] on this host to install the current prune. Until then the old prune's rules apply.")
 }
-# Before any docker command and before the "no list" exit: it reads two files and
+# Before any docker command and before the "no list" exit: it reads one file and
 # needs no daemon, so a host with an old prune is reported while Docker is stopped,
-# and hosts on versions 1 and 2 have no list and are the ones it exists to find.
+# and a version 2 host, which has no list, is reported too.
 [ "$usrStalePruneAction" = "ignore" ] || stale_prune_check
 
 # The exits before the container list. emit_early puts a stale prune first and

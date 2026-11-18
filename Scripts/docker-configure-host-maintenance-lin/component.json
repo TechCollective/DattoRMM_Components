@@ -5,7 +5,7 @@
     "description": "Seeds the expected-containers list and installs a weekly prune that deletes nothing until the list is reviewed, then waits before removing a stopped container. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "3f5aab29-1ae2-4a8d-9956-7037cb7c1ed8",
     "hash": "",
-    "version": "16",
+    "version": "17",
     "timeout": "900",
     "securityLevel": "5",
     "installType": "unix"

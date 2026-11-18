@@ -326,6 +326,30 @@ first records it as waiting, and removes it only on a run at least
 >   the prune's unit) have **not** been run for this version: the Tier 1
 >   test runs them on the CI runner, so read that result before merging. It
 >   has not yet run on bash 4.2 or through a Datto agent.
+> - **Version 17** (2026-11-18) stops carrying names over from version 2.
+>   Up to version 16, when the component created the expected-containers
+>   list, it also read a `REQUIRED_CONTAINERS="..."` line from
+>   `/etc/default/tc-docker-prune` (version 2's setting,
+>   `usrRequiredContainers`) and put each name on the new list, even a
+>   container that did not exist. Version 17 does not read that line: **a
+>   new list holds the containers present when it is created, and nothing
+>   else.** On a host that still has version 2's settings file, a container
+>   that was required then but is not present now is not on the new list;
+>   add it with Docker - Update Expected Containers [Lin] before the list is
+>   reviewed. This matters only on a host Host Maintenance version 2 reached
+>   and no later version has: from version 3, an Apply with a schedule
+>   rewrites the settings file without that line. Nothing else changes;
+>   the prune is version 16's with one line different, the stamp:
+>   `TC_PRUNE_VERSION=17`. The monitor's `PRUNE_MIN_VERSION` stays **11**.
+>   The Tier 1 test was run against a live Docker 29 daemon in a sandbox
+>   **without systemd**, with the timer and unit steps left out: each step
+>   gave the result it gave for version 16 there, and the four new steps
+>   pass; against the version 16 script they fail. The stopped-Docker and
+>   no-`docker.service` steps in which the component itself runs passed
+>   against a stand-in for `systemctl` and for `docker.socket`. The steps
+>   that need a real systemd have **not** been run for this version: the
+>   Tier 1 test runs them on the CI runner, so read that result before
+>   merging. It has not yet run through a Datto agent.
 
 ## What it does
 
@@ -382,8 +406,9 @@ If Docker is stopped, the list is not created either (exit `3`), and Docker is
 left stopped: the output says
 `Expected list: Docker is not running (docker.service is inactive), so the list was not created and Docker was left stopped; the next run will try again.`
 
-A host that ran version 2 with `usrRequiredContainers` set has those names
-carried onto the new list.
+Only containers present on the host go on a new list. (Up to version 16 a
+`REQUIRED_CONTAINERS` line left in the settings file by version 2 was read
+too, and its names added; from version 17 it is not.)
 
 ### 2. Installs the weekly prune
 
@@ -485,11 +510,14 @@ to that version, and every host still on an older prune alerts on its next
 check, with the fix named: run this component on it. The constant is **11**
 from the monitor's version 8.
 
-What earlier versions left on a host, which the monitor flags:
+What earlier versions left on a host, which the monitor flags (all but
+version 1: from its version 11 the monitor no longer reads the unit, so a
+version 1 host, which has no script, reads as having no prune installed and
+is **not flagged**):
 
 | Version | What it left | Why it is unsafe |
 |---|---|---|
-| 1 | No script. The service's `ExecStart` runs `docker system prune --all --force` directly | No list, no review |
+| 1 | No script. The service's `ExecStart` runs `docker system prune --all --force` directly | No list, no review. **Not flagged** from the monitor's version 11 |
 | 2 | The script, running `docker system prune --all` behind a `REQUIRED_CONTAINERS` check | No expected-containers list |
 | 3 | Per-container protection | No review gate |
 | 4, 5 | Review gate | A container label can still make it delete a protected container |
@@ -499,7 +527,8 @@ What earlier versions left on a host, which the monitor flags:
 | 11 | Runs its settings file as shell, and does not check `OLDER_THAN_HOURS` | Only after a hand edit of `/etc/default/tc-docker-prune`: a line there is a command run as root, and `OLDER_THAN_HOURS=0` removes things of any age. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run the current version on the host to replace it |
 | 12, 13 | The current rules, except that a `/var/lib/tc-docker` owned by another user is made root's and the record in it believed. Version 13's prune differs from 12's only in where its code for reading `pending-removal` lives | Only on a host where that directory is not root's, which nothing in these components causes: a record another user wrote there can get an unprotected stopped container removed without its wait. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run the current version on the host to replace it |
 | 14, 15 | The current rules, plus `All` mode: with `PRUNE_IMAGES=all` in its settings file it also removes tagged images whose registry confirms it has them. Version 15's prune differs from 14's only in its stamp | Nothing unsafe. On a host whose settings say `all`, tagged images go on being removed until version 16 runs there |
-| 16 | Current | |
+| 16 | The current rules. Version 17's prune differs from 16's only in its stamp | Nothing; there is no need to replace it |
+| 17 | Current | |
 
 **Before the list is reviewed:** the prune removes only unused networks and
 build cache older than `usrPruneOlderThanHours`. No container and no image.
@@ -845,13 +874,13 @@ A second run says `Expected list: ... exists ... not changed` and
 
 A prune with Docker stopped (by hand; the timer does not start it then):
 
-    tc-docker-prune version 16
+    tc-docker-prune version 17
     Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.
 
 A prune after review reports what it recorded, what is waiting, what it
 removed and what it kept:
 
-    tc-docker-prune version 16
+    tc-docker-prune version 17
     Pruning unused items older than 168h. Volumes are never removed.
     Disk before: 30G free, 29% used
     Stopped containers recorded for removal this run (removed 144h from now if still stopped and not protected):

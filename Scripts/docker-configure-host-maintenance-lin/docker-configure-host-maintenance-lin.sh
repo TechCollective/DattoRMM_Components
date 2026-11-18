@@ -254,7 +254,7 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # tc-docker-prune -- installed by the Datto RMM component
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune, read as text and never run.
-TC_PRUNE_VERSION=16
+TC_PRUNE_VERSION=17
 # The line above is the version of the component that installed this script,
 # and the first thing a run prints is that version, so the journal shows which
 # prune ran. "Docker - Containers Differ From Expected [Lin]" reads it to flag
@@ -916,7 +916,7 @@ seed_section() {
         say "Expected list: the Docker daemon is not reachable, so the list was not created; the next run will try again."
         return 3
     fi
-    local rows keys old unreadable
+    local rows keys unreadable
     # Docker answered "info" but not the listing: an empty list now would be
     # read later as "this host runs nothing". Leave it for the next run.
     if ! rows="$(tc_containers)"; then
@@ -928,11 +928,6 @@ seed_section() {
     keys="$(printf '%s\n' "$rows" | awk -F'\t' '$9 == "n" {print $2}')"
     # A container whose Compose labels cannot be read has no key to list.
     unreadable="$(printf '%s\n' "$rows" | awk -F'\t' '$2 ~ /^unreadable:/ {print $3 " (" substr($1, 1, 12) ")"}')"
-    # Carry over names from the version 2 setting, if this host had one.
-    old="$(sed -n 's/^REQUIRED_CONTAINERS="\(.*\)"$/\1/p' /etc/default/tc-docker-prune 2>/dev/null)"
-    for n in $old; do
-        [[ "$n" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] && keys="$keys"$'\n'"name:$n"
-    done
     keys="$(printf '%s\n' "$keys" | grep -E "$KEY_RE" | sort -u)"
     local count; count="$(printf '%s\n' "$keys" | grep -c . || true)"
 
