@@ -15,7 +15,15 @@ registry, and when an image's registry has not answered for days.
 > block on an unexpected exit. Version 2 was exercised through its Tier 1
 > `test.json` against a live Docker 29 daemon and a local test registry in a
 > sandbox, except the stopped-Docker steps, which need systemd (run in CI). It
-> has not yet run through a Datto agent. Run its script once as a **Scripts**
+> has not yet run through a Datto agent. **Version 3** (2026-11-17) brings it
+> to the repo standard: the input variables take the `usr` prefix (the old
+> names are still read; see [Input variables](#input-variables)), the script
+> runs under `set -u`, and the container list takes three docker commands
+> whatever the number of containers, instead of four or five per container
+> (see [Listing the containers](#listing-the-containers)). Version 3 was
+> exercised through its Tier 1 `test.json` against a live Docker 29 daemon in
+> a sandbox, except the steps that need systemd or GNU bash 4.2 (run in CI);
+> it has not run through a Datto agent. Run its script once as a **Scripts**
 > component first; see [Test order](#test-order).
 
 ## What it does
@@ -34,13 +42,13 @@ registry lookups through `docker buildx imagetools inspect`, which:
 
 | Outcome | Alerts? |
 |---|---|
-| **Behind**: the registry digest differs and the new image is at least `minAgeDays` old | **Yes** |
-| **Pending**: the registry digest differs but the new image is younger than `minAgeDays` | No; counted in the status |
+| **Behind**: the registry digest differs and the new image is at least `usrMinAgeDays` old | **Yes** |
+| **Pending**: the registry digest differs but the new image is younger than `usrMinAgeDays` | No; counted in the status |
 | **Current**: same digest, on a moving tag (`latest`, `stable`) | No |
 | **Pinned**: same digest, on a version-looking tag (`1.25`, `v3.2`) | No; reported, never alerted |
 | **Deferred**: rate limited, or not reached before the run's time limit | No; served from the cache where possible |
 | **Unreadable**: the lookup failed for another reason | No, unless *every* container is unreadable |
-| **Stale**: an image reference has had no successful registry answer for `staleAfterDays` | **Yes**, naming the reference, the last error and since when |
+| **Stale**: an image reference has had no successful registry answer for `usrStaleAfterDays` | **Yes**, naming the reference, the last error and since when |
 
 It classifies by outcome. A tag that looks pinned but whose digest has moved
 (`alpine3.19`, `php8.3-fpm`) is correctly reported as behind.
@@ -66,6 +74,40 @@ mechanism as `Docker - Containers Differ From Expected [Lin]`, and the same
 shared "is Docker running" block (`tools/check-shared-blocks.py` keeps the
 copies identical).
 
+### Listing the containers
+
+The container list takes three docker commands, whatever the number of
+running containers: one `docker ps`, one `docker inspect` over every container
+(name, image reference, image id), and one `docker image inspect` over the
+distinct images (tags, repo digests). Version 2 ran four or five per container.
+Measured with a shim that counts docker commands, on 10 running containers:
+
+| | docker ps | docker inspect | docker image inspect | Total for the list |
+|---|---|---|---|---|
+| Version 2 | 1 | 30 | 10 | **41** |
+| Version 3 | 1 | 1 | 1 | **3** |
+
+- **A container that goes away mid-listing.** A container removed between
+  `docker ps` and `docker inspect` (or its image between the two inspects)
+  makes that call fail, so the whole listing is retried: three tries, one
+  second apart. When no try succeeds the result is exit 1, `Check could not
+  run: Docker did not return its container list`. It is never read as "no
+  containers". Version 2 counted such a container as one with no image tag.
+- **Values are read JSON-encoded.** Each value is kept only when it is a plain
+  name, image reference, digest or id. Nothing in a name, tag or digest can add
+  a row or a field. A name that is not plain is shown as the first 12
+  characters of the container id. A reference or tag that is not plain counts
+  as no image tag. A digest that is not plain is ignored.
+- **No map keys.** The templates read only fixed fields, never a map key. On
+  Docker 29 a template that addresses a missing map key can fail the whole
+  call.
+
+The rows are the same as version 2's, with the same skip reasons. A container
+whose image reference is empty or an image id (run by id) is checked under its
+image's first tag. A container with no usable tag is skipped as `no image
+tag`. A container whose image has no repo digest for that repository is skipped
+as `local image, not from a registry`.
+
 ### Registry load
 
 The main design constraint is how often it asks the registry. Three things
@@ -74,7 +116,7 @@ keep that low:
 1. **Digest lookups are cheap.** Each is one HEAD request. The build date costs
    a manifest walk and a config blob, so it is fetched only for images that
    moved.
-2. **Results are cached** for `cacheHours`. When `cacheHours` is 24 or more,
+2. **Results are cached** for `usrCacheHours`. When `usrCacheHours` is 24 or more,
    each host shaves a stable slice of up to 10% off it. That stops many hosts
    behind one NAT address from all refreshing at once.
 3. **The first rate-limit answer stops all further lookups** for that run.
@@ -84,7 +126,7 @@ keep that low:
    4290 or an address containing 429 tripped the breaker and deferred every
    other lookup.
 
-Each lookup has its own time limit, `inspectTimeout`, and no lookup runs past
+Each lookup has its own time limit, `usrInspectTimeout`, and no lookup runs past
 75 seconds after the monitor started. What was not looked up by then is served
 from the cache and counted as deferred; the next run carries on, because what
 was answered is now cached.
@@ -108,7 +150,7 @@ kind of the last error:
 | timeout | no answer within the lookup's time limit |
 | other | anything else (network, TLS, connection refused) |
 
-A reference with no successful answer for `staleAfterDays` (default 7) makes
+A reference with no successful answer for `usrStaleAfterDays` (default 7) makes
 the monitor alert, for example:
 
     STATUS=3 checked: 0 behind, 3 current, 0 pinned [0 cached, 1 queried, 2 from stale cache, rate limited]. No registry answer for 7+ days: registry.example/app:latest (rate limited, no registry answer since 2026-11-09)
@@ -186,23 +228,44 @@ Version 2 goes in by pasting the new body over this component in Datto and
 adding the `staleAfterDays` variable, not by re-importing, so its uid and
 monitoring policies stay in place. Lower the timeout to 120 in the same edit.
 
+Version 3 goes in the same way: paste the body, and rename the six variables
+in the component to their `usr` names (table below). Monitor policies saved
+before then still send the old names, and version 3 reads those (see below),
+so they keep working until each policy is saved again with the new names.
+
 ## Input variables
 
 | Name | Type | Default | Safe range / notes |
 |---|---|---|---|
-| `minAgeDays` | String | `7` | 0–365. Days a new image must exist before it counts. `0` disables the wait. |
-| `excludePattern` | String | *(empty)* | Extended regex matched against container names, e.g. `^(postgres\|mysql)`. A pattern starting with `-` is a pattern, not an option. |
-| `inspectTimeout` | String | `20` | 10–60. Seconds per registry lookup. |
-| `maxParallel` | String | `3` | 1–8. Concurrent lookups. |
-| `cacheHours` | String | `12` | 0–720. How long a lookup is reused. `168` = weekly. |
-| `staleAfterDays` | String | `7` | 0–365. Alert on a reference with no registry answer this long. `0` turns it off. |
+| `usrMinAgeDays` | String | `7` | 0–365. Days a new image must exist before it counts. `0` disables the wait. |
+| `usrExcludePattern` | String | *(empty)* | Extended regex matched against container names, e.g. `^(postgres\|mysql)`. A pattern starting with `-` is a pattern, not an option. |
+| `usrInspectTimeout` | String | `20` | 10–60. Seconds per registry lookup. |
+| `usrMaxParallel` | String | `3` | 1–8. Concurrent lookups. |
+| `usrCacheHours` | String | `12` | 0–720. How long a lookup is reused. `168` = weekly. |
+| `usrStaleAfterDays` | String | `7` | 0–365. Alert on a reference with no registry answer this long. `0` turns it off. |
 
 No customer-specific value is hardcoded. Surrounding spaces are ignored and a
 leading zero is read as decimal. **Any other invalid value is refused**: exit 1
 with `STATUS=Check could not run: <name> must be a whole number from <min> to
-<max> (got '<value>')`, or `excludePattern is not a valid extended regular
-expression`. Version 1 silently replaced bad input with the default (and
-clamped `maxParallel`).
+<max> (got '<value>')`, or `usrExcludePattern is not a valid extended regular
+expression`. The message names the variable the value was read from. Version 1
+silently replaced bad input with the default (and clamped `maxParallel`).
+
+**Old names (before version 3).** Until version 3 the variables had no `usr`
+prefix: `minAgeDays`, `excludePattern`, `inspectTimeout`, `maxParallel`,
+`cacheHours`, `staleAfterDays`. Monitor policies saved before the rename still
+send those names, so each value is read from its `usr` name and, only when the
+`usr` name is not set at all, from its old name. When both are set the `usr`
+name wins, even when it is empty. **This fallback is temporary:** remove it
+(the inner `${old-...}` in each input line and `from_name`, both marked
+`OLD-NAME FALLBACK` in the script) once no policy in Datto sends the old
+names.
+
+Not yet checked against Datto: whether a policy saved before the rename gets
+the new names too, with the component's defaults. If it does, those defaults
+win over the values the policy set under the old names. After renaming the
+variables in Datto, read the output of one run from a policy that sets a
+non-default value, and save each policy again if its value was lost.
 
 ## Exit behaviour
 
@@ -214,16 +277,17 @@ clamped `maxParallel`).
 | A docker client and no daemon at all | **Exit 0**, says so |
 | Daemon unreachable | **Exit 1**: "Check could not run: cannot talk to the Docker daemon" |
 | Daemon does not answer | **Exit 1** inside 45 seconds: "Docker did not answer within 40 seconds" |
+| `docker ps`, `docker inspect` or `docker image inspect` fails on three tries | **Exit 1**: "Check could not run: Docker did not return its container list" |
 | `docker buildx` missing | **Exit 1**, naming the `docker-buildx-plugin` package |
 | Docker installed, no containers running | **Exit 0**, and says so |
 | No container uses a registry image | **Exit 0**, counted in the status |
 | One or more containers behind | **Exit 1**, with a diagnostic per container: image, local and registry digests, build date |
-| A reference with no registry answer for `staleAfterDays` | **Exit 1**, naming it, the error kind and since when |
+| A reference with no registry answer for `usrStaleAfterDays` | **Exit 1**, naming it, the error kind and since when |
 | Every lookup failed (not rate limiting) | **Exit 1**: "no image could be read from any registry" |
 | Rate limited, or deferred by the time limit | **Exit 0**, reported in the status |
 | State directory unusable | Runs without saved state; the status says why. Never fails |
 | An input variable is invalid | **Exit 1**: "Check could not run: ..." |
-| The script dies unexpectedly | **Exit 1** via an `EXIT` trap: "Check could not run: the monitor stopped unexpectedly (exit N)". TERM, INT and HUP go through the same trap |
+| The script dies unexpectedly | **Exit 1** via an `EXIT` trap: "Check could not run: the monitor stopped unexpectedly (exit N)". TERM, INT and HUP go through the same trap. The script runs under `set -u`; every lookup that could be unset has a default, so the trap is a last resort, not the way an unset value is handled |
 
 Safe to assign to every Linux device, because a host without Docker exits 0.
 
@@ -233,7 +297,7 @@ A healthy status reads like:
 
     STATUS=4 checked: 0 behind, 3 current, 1 pinned [0 cached, 4 queried]
 
-On the next run within `cacheHours`, it should show the lookups as cached
+On the next run within `usrCacheHours`, it should show the lookups as cached
 (`[4 cached, 0 queried]`). If it never does, the status says why there is no
 saved state.
 
@@ -246,12 +310,15 @@ saved state.
 
 ## Known issues
 
-- **Two names.** The script header calls it
-  `Docker - Container Images Behind Registry [Lin]`, which follows the naming
-  standard. The Datto name, `Docker Images monitor [Lin]`, does not, and
-  `component.json` keeps the deployed name. Renaming it is done in Datto by a
-  person (the name field of the existing component, so its uid and policies
-  stay); then change `general.name` here and this heading to match.
+- **The name does not follow the naming standard.** `component.json`, the
+  script header and this heading all use the name saved in Datto,
+  `Docker Images monitor [Lin]`. The standard (`[Subject] - [Condition
+  watched]`) would give something like
+  `Docker - Container Images Behind Registry [Lin]`, which version 2's script
+  header used. Renaming is a decision for a person and is done in Datto (the
+  name field of the existing component, so its uid and policies stay); then
+  change `general.name`, the script header and this heading together. The
+  folder name stays as it is.
 
 ## Known limits
 
@@ -269,3 +336,11 @@ saved state.
   may not reach them all inside its 75 seconds; the rest are deferred to the
   next runs, which make progress because answers are cached.
 - bash 4.2 or later (tested under GNU bash 4.2 in CI).
+- **Docker's containerd image store** (the default for new installs from
+  Docker 29) gives an image that never came from a registry a repo digest of
+  its own (seen on Docker 29.9.3: an image made with `docker import` and never
+  pushed lists `name@sha256:<its id>`). Such a container is therefore not
+  skipped as `local image, not from a registry`. Its reference is looked up in
+  the registry and, when that fails, it is counted as unreadable and can
+  become stale. Versions 2 and 3 behave the same here. Use
+  `usrExcludePattern` for such containers until this is handled.
