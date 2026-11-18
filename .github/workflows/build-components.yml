@@ -12,14 +12,12 @@ name: Build components
 # export bundles the vendor's installer, and this repo is public. See
 # CONTRIBUTING.md.
 
+# Runs on every pull request, not only ones touching components: "Package and
+# audit" is a required check on main, and a required check that never runs
+# leaves a pull request (one changing only docs/, say) waiting forever. With
+# nothing to build it finishes in seconds.
 on:
   pull_request:
-    paths:
-      - 'Applications/**'
-      - 'Scripts/**'
-      - 'Monitors/**'
-      - 'tools/**'
-      - '.github/workflows/build-components.yml'
   push:
     branches: [main]
   workflow_dispatch:
