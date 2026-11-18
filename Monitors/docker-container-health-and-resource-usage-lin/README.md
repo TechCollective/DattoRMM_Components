@@ -22,6 +22,15 @@ and non-zero exits, and reports through Datto's monitor contract.
 > 1 `test.json` in a sandbox with no systemd and no bash 4.2, every step gave
 > the result it gave for version 1 there; the bash 4.2 and stopped-Docker
 > steps run in CI. Not yet run through a Datto agent.
+>
+> **Version 3** (2026-11-17): the result and diagnostic code is now the block
+> marked `tc-docker result`, shared with the other two Docker monitors: one
+> `emit`, one `diag`, one `EXIT` trap, one status limit (900 characters, which
+> this monitor already had). See [One result block](#one-result-block). Every
+> status and every diagnostic reads as in version 2, with one exception: a run
+> that dies unexpectedly now says `Check could not run: the monitor stopped
+> unexpectedly (exit N)`, as the other two monitors do, where version 2 said
+> `Check failed before it could measure anything (exit N)`.
 
 ## What it does
 
@@ -234,12 +243,30 @@ alert. There is no warning tier; "Warn" here means named in the status, exit 0.
 | Saved state older than 6 hours | New baseline; the status says so |
 | A required tool (`awk`, `grep`, `sed`, `date`, `timeout` with `-k`, `stat`, `mktemp`) missing | **Exit 1** with `STATUS=Check could not run: ...` |
 | An input variable is invalid | **Exit 1**, refuses loudly |
-| The script dies unexpectedly | **Exit 1** via an `EXIT` trap |
+| The script dies unexpectedly | **Exit 1** via an `EXIT` trap: `Check could not run: the monitor stopped unexpectedly (exit N)` |
 
 The `EXIT` trap matters more than it looks. An unhandled error that exits
 non-zero with nothing on stdout is what Datto renders as an alert with no text,
-the exact failure the old component shipped with. The trap emits a fallback
-result block and upgrades a would-be exit 0 to exit 1.
+the exact failure the old component shipped with. The trap prints a fallback
+result block and exits 1.
+
+### One result block
+
+The result and diagnostic code is the block marked `tc-docker result`, the
+same in the three Docker monitors (CI's "Shared blocks match" check compares
+the copies):
+
+- **One result on every way out**: `<-Start Result->`, one `STATUS=` line,
+  `<-End Result->`. The diagnostic block follows only when the exit code is
+  not 0.
+- **The status is one line.** A carriage return, newline or tab in it becomes
+  a space, and a run of spaces becomes one.
+- **The status is cut at 900 characters** (897 and three dots), so what
+  matters most goes first.
+- **A run that ends any other way** (an unset variable, a signal) goes through
+  an `EXIT` trap that prints `Check could not run: the monitor stopped
+  unexpectedly (exit N)` and makes the exit non-zero. Once a result is being
+  printed, HUP, INT and TERM are ignored, so it is printed once and whole.
 
 ## How to tell it worked
 

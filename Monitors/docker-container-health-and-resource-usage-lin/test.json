@@ -2,7 +2,7 @@
  "platforms": [
   "linux"
  ],
- "description": "On a runner with Docker and systemd. Exited containers: one OOM-killed (16 MiB limit, a shell that allocates) always alerts, worded as an out-of-memory kill; docker stop giving 143 (sleep behind --init) and 137 (a shell as PID 1 that ignores TERM) is named in the status under usrStoppedExitAction Warn and alerts under Alert; exit code 1 alerts as before; usrIncludeLogs Yes puts the last log lines in the diagnostic and says so in the status. Baseline age: saved state an hour old gives the restart-loop alert; made 7 hours old, the run takes a new baseline, raises no restart alert, resets breach streaks and says so. The state directory /var/lib/tc-docker-monitor: a pre-made symlink there is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the state file is replaced, its target untouched. usrExclude starting with - is a pattern. A docker shim that never answers (also one that ignores TERM, and one that hangs only docker stats) gives 'Docker did not answer within 60 seconds', exit 1, inside 90 seconds, nothing left running and a sibling in the caller's process group untouched. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found through the appended PATH. GNU bash 4.2 runs the main paths without an unbound-variable crash. The first step reads the script itself: its time-limit functions sit in one block marked tc-docker bounded (a block CI compares with the other Docker monitors' copies), and its tc-docker running block says it is identical in every tc-docker component.",
+ "description": "On a runner with Docker and systemd. Exited containers: one OOM-killed (16 MiB limit, a shell that allocates) always alerts, worded as an out-of-memory kill; docker stop giving 143 (sleep behind --init) and 137 (a shell as PID 1 that ignores TERM) is named in the status under usrStoppedExitAction Warn and alerts under Alert; exit code 1 alerts as before; usrIncludeLogs Yes puts the last log lines in the diagnostic and says so in the status. Baseline age: saved state an hour old gives the restart-loop alert; made 7 hours old, the run takes a new baseline, raises no restart alert, resets breach streaks and says so. The state directory /var/lib/tc-docker-monitor: a pre-made symlink there is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the state file is replaced, its target untouched. usrExclude starting with - is a pattern. A docker shim that never answers (also one that ignores TERM, and one that hangs only docker stats) gives 'Docker did not answer within 60 seconds', exit 1, inside 90 seconds, nothing left running and a sibling in the caller's process group untouched. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found through the appended PATH. GNU bash 4.2 runs the main paths without an unbound-variable crash. The first step reads the script itself: its time-limit functions sit in one block marked tc-docker bounded (a block CI compares with the other Docker monitors' copies), and its tc-docker running block says it is identical in every tc-docker component. Version 3: the result code is one block marked tc-docker result, shared with the other two Docker monitors (a step reads the script for it), and TERM mid-run gives one fallback result block, 'Check could not run: the monitor stopped unexpectedly'.",
  "steps": [
   {
    "type": "command",
@@ -13,6 +13,18 @@
     "functions inside it: 3",
     "the same functions in the whole script: 3",
     "running block first line: 1"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Result block: emit, diag and on_exit are defined once each, inside one block marked tc-docker result (a block CI compares with the other Docker monitors' copies); one length limit for the status, 900 characters; nothing outside the block prints a result or diagnostic marker",
+   "run": "f=Monitors/docker-container-health-and-resource-usage-lin/docker-container-health-and-resource-usage-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; b() { sed -n '/^# >>> tc-docker result: /,/^# <<< tc-docker result$/p' \"$f\"; }; echo \"result block: $(grep -c '^# >>> tc-docker result: ' $f) start, $(grep -c '^# <<< tc-docker result$' $f) end\"; echo \"functions inside it: $(b | grep -cE '^(emit|diag|on_exit)\\(\\) \\{')\"; echo \"result functions in the whole script: $(grep -cE '^(emit|emit_result|diag|on_exit)\\(\\) \\{' $f)\"; echo \"one limit: $(b | grep -c '^STATUS_MAX=900$') in the block, $(grep -cE '^[^#]*msg:0:[0-9]' $f) fixed cut(s) anywhere\"; echo \"markers printed outside the block: $(sed '/^# >>> tc-docker result: /,/^# <<< tc-docker result$/d' \"$f\" | grep -v '^[[:space:]]*#' | grep -cE '(Start|End) (Result|Diagnostic)')\"",
+   "outputContains": [
+    "result block: 1 start, 1 end",
+    "functions inside it: 3",
+    "result functions in the whole script: 3",
+    "one limit: 1 in the block, 0 fixed cut(s) anywhere",
+    "markers printed outside the block: 0"
    ]
   },
   {
@@ -497,6 +509,21 @@
    "outputContains": [
     "no docker client or shim process left"
    ]
+  },
+  {
+   "type": "command",
+   "label": "Unexpected exit: the monitor sent TERM 3 seconds into a run (the hang shim still in place): one fallback result block, worded as the other Docker monitors word it, and nothing left running once the docker command's own time limit has passed",
+   "run": "( sleep 3; pkill -TERM -f '[d]ocker-container-health-and-resource-usage-lin.sh' ) & out=$(tc-test-run); wait; printf '%s\\n' \"$out\"; echo \"result blocks: $(printf '%s\\n' \"$out\" | grep -c '^<-Start Result->$'), STATUS lines: $(printf '%s\\n' \"$out\" | grep -c '^STATUS=')\"; for i in $(seq 80); do pgrep -f '[s]leep 600' >/dev/null || break; sleep 1; done; tc-test-left",
+   "outputContains": [
+    "STATUS=Check could not run: the monitor stopped unexpectedly (exit ",
+    "result blocks: 1, STATUS lines: 1",
+    "no docker client or shim process left"
+   ],
+   "outputNotContains": [
+    "Diagnostic",
+    "failed before it could measure"
+   ],
+   "timeoutSeconds": 180
   },
   {
    "type": "command",

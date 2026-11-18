@@ -104,6 +104,16 @@ again.
 > need bash 4.2, which were **not** run for this version. CI builds bash 4.2
 > and has a real systemd, so read its result before merging. Not yet through
 > a Datto agent.
+>
+> **Version 10** (2026-11-17): the result and diagnostic code is now the block
+> marked `tc-docker result`, shared with the Health and Images monitors: one
+> `emit`, one `diag`, one `EXIT` trap, one status limit. See
+> [One result block](#one-result-block). Two things can read differently from
+> version 9. **The status is cut at 900 characters, not 400**, so a long status
+> (many stopped, missing or unlisted containers) now shows more of itself. And
+> a tab or carriage return in the status becomes a space and a run of spaces
+> becomes one, which only an invalid input value echoed back can show.
+> `PRUNE_MIN_VERSION` stays **11**.
 
 ## What it does
 
@@ -297,7 +307,8 @@ The status names what was found, for example `prune on this host is version 3,
 older than 11`, `prune on this host has no version (installed before version
 7)`, or `prune service on this host does not run
 /usr/local/sbin/tc-docker-prune (version 1 layout)`. It goes first in the
-status, because the status is cut at 400 characters. On an alert the
+status, because the status is cut at 900 characters (400 before version
+10). On an alert the
 diagnostic says to run Docker - Configure Host Maintenance [Lin] on the host,
 and that until then **the old prune's rules apply**.
 
@@ -397,10 +408,28 @@ No customer-specific value is hardcoded. An invalid value makes it report
 | Container with unreadable Compose labels, `usrUnlistedAction` Alert | **Exit 1**, `UNREADABLE  <name> (<short id>)` in the diagnostic |
 | An input variable is invalid | **Exit 1**, `Check could not run: …` |
 | A required tool is missing | **Exit 1**, `Check could not run: …` |
-| The script dies unexpectedly | **Exit 1**, through an `EXIT` trap that emits a result block, so an alert is never empty |
+| The script dies unexpectedly | **Exit 1**, through an `EXIT` trap that prints a result block, `Check could not run: the monitor stopped unexpectedly (exit N)`, so an alert is never empty |
 
 Exactly one result block, with `STATUS=` and no space after the equals, on
 every path.
+
+### One result block
+
+The result and diagnostic code is the block marked `tc-docker result`, the
+same in the three Docker monitors (CI's "Shared blocks match" check compares
+the copies):
+
+- **One result on every way out**: `<-Start Result->`, one `STATUS=` line,
+  `<-End Result->`. The diagnostic block follows only when the exit code is
+  not 0.
+- **The status is one line.** A carriage return, newline or tab in it becomes
+  a space, and a run of spaces becomes one.
+- **The status is cut at 900 characters** (897 and three dots), so what
+  matters most goes first.
+- **A run that ends any other way** (an unset variable, a signal) goes through
+  an `EXIT` trap that prints `Check could not run: the monitor stopped
+  unexpectedly (exit N)` and makes the exit non-zero. Once a result is being
+  printed, HUP, INT and TERM are ignored, so it is printed once and whole.
 
 ## How to tell it worked
 
@@ -503,7 +532,7 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
   from its id. Fix the labels, or the image they come from.
 - Under `usrUnlistedAction` Ignore, an unreadable container is still counted
   in the status, but never alerts.
-- It shares three blocks of code with the other Docker components. Every
+- It shares four blocks of code with the other Docker components. Every
   copy of a block must stay byte-identical; CI's "Shared blocks match" check
   fails the pull request when they are not.
   - `tc-docker shared`: how a container becomes its key, and (from version 9)
@@ -515,6 +544,8 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
   - `tc-docker bounded` (marked from version 9): the time limit on every
     docker command. Three copies: this monitor and the Health and Images
     monitors.
+  - `tc-docker result` (from version 10): the result block, the diagnostic
+    and the `EXIT` trap. Three copies: the same three monitors.
 
 ## Open questions
 

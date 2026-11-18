@@ -33,7 +33,51 @@
 
 set -u
 
-RESULT_EMITTED=0
+# >>> tc-docker result: identical in the Containers, Health and Images monitors; change them together.
+# The one result a run prints, as Datto reads it: <-Start Result->, one STATUS=
+# line, <-End Result->, on every way out. With an exit code that is not 0, and
+# only then, the lines diag collected follow as the diagnostic block.
+#   diag LINE         adds a line to the diagnostic
+#   emit CODE STATUS  prints the result (and the diagnostic), then exits CODE
+# The status is made one line (a CR, newline or tab becomes a space, a run of
+# spaces one space) and is cut at STATUS_MAX characters, so what matters most
+# goes first. A run that ends any other way (an unset variable under set -u, a
+# signal) leaves through the EXIT trap, which prints the result itself and
+# makes the exit non-zero: a monitor that exits non-zero with nothing printed
+# is an alert with no text. Before it does, it calls tc_cleanup when the
+# monitor has defined one (something to remove on every way out). Once the
+# result is being printed, HUP, INT and TERM are ignored, so it is printed
+# once and whole.
+STATUS_MAX=900
+EMITTED=0
+DIAG=""
+diag() { DIAG="${DIAG}${1}"$'\n'; }
+emit() {  # exit code, status
+    local msg="$2"
+    trap '' HUP INT TERM
+    msg="${msg//$'\r'/ }"; msg="${msg//$'\n'/ }"; msg="${msg//$'\t'/ }"
+    while [ "$msg" != "${msg//  / }" ]; do msg="${msg//  / }"; done
+    msg="${msg# }"; msg="${msg% }"
+    [ -n "$msg" ] || msg="Check produced no status text"
+    [ "${#msg}" -gt "$STATUS_MAX" ] && msg="${msg:0:$((STATUS_MAX - 3))}..."
+    printf '<-Start Result->\nSTATUS=%s\n<-End Result->\n' "$msg"
+    EMITTED=1
+    if [ "$1" -ne 0 ] && [ -n "$DIAG" ]; then
+        printf '<-Start Diagnostic->\n%s<-End Diagnostic->\n' "$DIAG"
+    fi
+    exit "$1"
+}
+on_exit() {
+    local rc=$?
+    trap '' HUP INT TERM
+    if declare -F tc_cleanup >/dev/null; then tc_cleanup; fi
+    if [ "$EMITTED" -eq 0 ]; then
+        printf '<-Start Result->\nSTATUS=Check could not run: the monitor stopped unexpectedly (exit %s)\n<-End Result->\n' "$rc"
+        exit 1
+    fi
+}
+trap on_exit EXIT
+# <<< tc-docker result
 
 # One PATH rule, whatever PATH the agent gives the script: the usual system
 # directories are appended (never prepended, so what the agent's PATH finds
@@ -51,44 +95,7 @@ DOCKER_TIMEOUT=60
 BASELINE_MAX_AGE=21600
 STATE_NAME="monitor-state.tsv"
 
-# --------------------------------------------------------------------------
-# Result contract
-# --------------------------------------------------------------------------
-
-emit_result() {
-    local msg="$1"
-    msg="${msg//$'\r'/ }"
-    msg="${msg//$'\n'/ }"
-    msg="${msg//$'\t'/ }"
-    if [ "${#msg}" -gt 900 ]; then
-        msg="${msg:0:897}..."
-    fi
-    while [ "${msg}" != "${msg//  / }" ]; do msg="${msg//  / }"; done
-    msg="${msg# }"
-    msg="${msg% }"
-    [ -n "$msg" ] || msg="Check produced no status text"
-    printf '<-Start Result->\n'
-    printf 'STATUS=%s\n' "$msg"
-    printf '<-End Result->\n'
-    RESULT_EMITTED=1
-}
-
-on_exit() {
-    local rc=$?
-    if [ "$RESULT_EMITTED" -eq 0 ]; then
-        printf '<-Start Result->\n'
-        printf 'STATUS=Check failed before it could measure anything (exit %s)\n' "$rc"
-        printf '<-End Result->\n'
-        [ "$rc" -eq 0 ] && rc=1
-    fi
-    exit "$rc"
-}
-trap on_exit EXIT
-
-die_cannot_run() {
-    emit_result "Check could not run: $1"
-    exit 1
-}
+die_cannot_run() { emit 1 "Check could not run: $1"; }
 
 # --------------------------------------------------------------------------
 # Dependencies - checked FIRST, so a missing tool is never misreported as a
@@ -207,12 +214,9 @@ docker_unit_loaded() {
 }
 # <<< tc-docker bounded
 docker_hung() {  # what was running
-    emit_result "Check could not run: Docker did not answer within ${DOCKER_TIMEOUT} seconds"
-    printf '<-Start Diagnostic->\n'
-    printf '%s had not finished %s seconds after this monitor started, so it was stopped: timeout(1) sent TERM to the process group of the docker commands this run started, then anything left in that group was sent KILL; nothing else was signalled.\n' "$1" "$DOCKER_TIMEOUT"
-    printf 'A Docker daemon that accepts connections but does not answer is the usual cause. Look at dockerd: systemctl status docker; journalctl -u docker.\n'
-    printf '<-End Diagnostic->\n'
-    exit 1
+    diag "$1 had not finished $DOCKER_TIMEOUT seconds after this monitor started, so it was stopped: timeout(1) sent TERM to the process group of the docker commands this run started, then anything left in that group was sent KILL; nothing else was signalled."
+    diag "A Docker daemon that accepts connections but does not answer is the usual cause. Look at dockerd: systemctl status docker; journalctl -u docker."
+    emit 1 "Check could not run: Docker did not answer within $DOCKER_TIMEOUT seconds"
 }
 # A docker command with the run's deadline: dk SUBCOMMAND ARGS...
 dk() { bounded '"$@"' "$DOCKER" "$@"; }
@@ -254,30 +258,25 @@ if [ -z "$DOCKER" ]; then
     [ -S "$DOCKER_SOCK" ] && seen="$DOCKER_SOCK is a socket"
     docker_unit_loaded && seen="${seen:+$seen and }docker.service is loaded"
     if [ -n "$seen" ]; then
-        emit_result "Docker appears to be installed but no docker command was found"
-        printf '<-Start Diagnostic->\nNo docker command was found in %s, but %s, so Docker looks installed here. Find where its client went (a package removed only the CLI, a snap or a custom path) and put docker on one of those directories.\n<-End Diagnostic->\n' "$PATH" "$seen"
-        exit 1
+        diag "No docker command was found in $PATH, but $seen, so Docker looks installed here. Find where its client went (a package removed only the CLI, a snap or a custom path) and put docker on one of those directories."
+        emit 1 "Docker appears to be installed but no docker command was found"
     fi
     # Docker absent is a normal state on a broadly-assigned monitor, not a fault.
-    emit_result "Docker is not installed on this host; nothing to check"
-    exit 0
+    emit 0 "Docker is not installed on this host; nothing to check"
 fi
 
 DSTATE="$(bounded "$(declare -f tc_docker_running)"$'\n''DOCKER=$1; tc_docker_running; rc=$?; printf "%s" "$DOCKER_STATE"; exit "$rc"' "$DOCKER")"
 case $? in
     0) ;;
-    1)  emit_result "Docker is stopped (${DSTATE:-docker.service is not active}); nothing to check"
-        exit 0 ;;
+    1)  emit 0 "Docker is stopped (${DSTATE:-docker.service is not active}); nothing to check" ;;
     2)  if [ ! -S "$DOCKER_SOCK" ] && ! docker_unit_loaded; then
-            emit_result "Docker client installed ($DOCKER) but no Docker daemon on this host (no docker.service, no $DOCKER_SOCK); nothing to check"
-            exit 0
+            emit 0 "Docker client installed ($DOCKER) but no Docker daemon on this host (no docker.service, no $DOCKER_SOCK); nothing to check"
         fi
         DOCKER_INFO_OUT="$(dk info 2>&1)"
         case $? in 124|137) docker_hung "docker info" ;; esac
         DOCKER_ERR="$(printf '%s' "$DOCKER_INFO_OUT" | grep -iE 'cannot connect|permission denied|daemon running|dial unix|timed out|failed to connect' | head -1 | tr -cd '[:print:]' | cut -c1-300)"
         [ -n "$DOCKER_ERR" ] || DOCKER_ERR="docker info failed with no recognisable error line"
-        emit_result "Docker is installed but the daemon is not reachable: ${DOCKER_ERR}"
-        exit 1 ;;
+        emit 1 "Docker is installed but the daemon is not reachable: ${DOCKER_ERR}" ;;
     124|137) docker_hung "docker info" ;;
     *) die_cannot_run "asking whether Docker is running failed unexpectedly" ;;
 esac
@@ -654,8 +653,7 @@ fi
 suffix="${suffix}${STATE_NOTE}"
 
 if [ "$RUNNING_COUNT" -eq 0 ] && [ "${#ALERTS[@]}" -eq 0 ]; then
-    emit_result "Docker is running but no containers are running on this host${suffix}"
-    exit 0
+    emit 0 "Docker is running but no containers are running on this host${suffix}"
 fi
 
 if [ "${#ALERTS[@]}" -gt 0 ]; then
@@ -682,32 +680,30 @@ if [ "${#ALERTS[@]}" -gt 0 ]; then
         [ "$log_late" -eq 1 ] && suffix="${suffix} (Docker did not return the logs in time)"
     fi
 
-    first="${ALERTS[0]}"
-    if [ "${#ALERTS[@]}" -eq 1 ]; then
-        emit_result "Docker: ${first}${suffix}"
-    else
-        emit_result "Docker: ${#ALERTS[@]} container problems - ${first} (and $(( ${#ALERTS[@]} - 1 )) more; see diagnostic)${suffix}"
-    fi
-
-    printf '<-Start Diagnostic->\n'
-    printf 'Docker server %s | host CPUs %s | %s running container(s) checked | previous run: %s\n' \
-        "$DOCKER_VERSION" "$HOST_CPUS" "$RUNNING_COUNT" "$STATE_AGE_MIN"
-    printf 'Thresholds: cpu>=%s%% of container allowance, mem>=%s%% of limit, %s consecutive run(s); restarts>=%s since last run; exited window %s min; health mode %s\n' \
-        "$CPU_THRESHOLD" "$MEM_THRESHOLD" "$CONSECUTIVE" "$RESTART_THRESHOLD" "$EXITED_WINDOW_MIN" "$HEALTH_MODE"
-    printf '\nConditions met:\n'
-    for a in "${ALERTS[@]}"; do printf '  - %s\n' "$a"; done
-    printf '\nAll running containers:\n'
-    for r in ${DIAG_ROWS[@]+"${DIAG_ROWS[@]}"}; do printf '  %s\n' "$r"; done
+    diag "Docker server $DOCKER_VERSION | host CPUs $HOST_CPUS | $RUNNING_COUNT running container(s) checked | previous run: $STATE_AGE_MIN"
+    diag "Thresholds: cpu>=${CPU_THRESHOLD}% of container allowance, mem>=${MEM_THRESHOLD}% of limit, $CONSECUTIVE consecutive run(s); restarts>=$RESTART_THRESHOLD since last run; exited window $EXITED_WINDOW_MIN min; health mode $HEALTH_MODE"
+    diag ""
+    diag "Conditions met:"
+    for a in "${ALERTS[@]}"; do diag "  - $a"; done
+    diag ""
+    diag "All running containers:"
+    for r in ${DIAG_ROWS[@]+"${DIAG_ROWS[@]}"}; do diag "  $r"; done
     if [ "${#EXITED_LINES[@]}" -gt 0 ]; then
-        printf '\nRecently exited (non-zero):\n'
-        for e in "${EXITED_LINES[@]}"; do printf '  %s\n' "$e"; done
+        diag ""
+        diag "Recently exited (non-zero):"
+        for e in "${EXITED_LINES[@]}"; do diag "  $e"; done
     fi
     if [ -n "$LOGS_TEXT" ]; then
-        printf '\nLast 20 log lines from up to 3 affected containers:\n'
-        printf '%s' "$LOGS_TEXT"
+        diag ""
+        diag "Last 20 log lines from up to 3 affected containers:"
+        diag "${LOGS_TEXT%$'\n'}"
     fi
-    printf '<-End Diagnostic->\n'
-    exit 1
+
+    first="${ALERTS[0]}"
+    if [ "${#ALERTS[@]}" -eq 1 ]; then
+        emit 1 "Docker: ${first}${suffix}"
+    fi
+    emit 1 "Docker: ${#ALERTS[@]} container problems - ${first} (and $(( ${#ALERTS[@]} - 1 )) more; see diagnostic)${suffix}"
 fi
 
 healthy_msg="All ${RUNNING_COUNT} running container(s) within thresholds"
@@ -717,5 +713,4 @@ fi
 if [ -n "$worst_mem_name" ]; then
     healthy_msg="${healthy_msg}, highest memory ${worst_mem}% (${worst_mem_name})"
 fi
-emit_result "${healthy_msg}${suffix}"
-exit 0
+emit 0 "${healthy_msg}${suffix}"

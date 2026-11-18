@@ -71,37 +71,58 @@
 
 set -u
 
+# >>> tc-docker result: identical in the Containers, Health and Images monitors; change them together.
+# The one result a run prints, as Datto reads it: <-Start Result->, one STATUS=
+# line, <-End Result->, on every way out. With an exit code that is not 0, and
+# only then, the lines diag collected follow as the diagnostic block.
+#   diag LINE         adds a line to the diagnostic
+#   emit CODE STATUS  prints the result (and the diagnostic), then exits CODE
+# The status is made one line (a CR, newline or tab becomes a space, a run of
+# spaces one space) and is cut at STATUS_MAX characters, so what matters most
+# goes first. A run that ends any other way (an unset variable under set -u, a
+# signal) leaves through the EXIT trap, which prints the result itself and
+# makes the exit non-zero: a monitor that exits non-zero with nothing printed
+# is an alert with no text. Before it does, it calls tc_cleanup when the
+# monitor has defined one (something to remove on every way out). Once the
+# result is being printed, HUP, INT and TERM are ignored, so it is printed
+# once and whole.
+STATUS_MAX=900
 EMITTED=0
 DIAG=""
 diag() { DIAG="${DIAG}${1}"$'\n'; }
-
-emit() {  # exit code, status line
+emit() {  # exit code, status
     local msg="$2"
+    trap '' HUP INT TERM
     msg="${msg//$'\r'/ }"; msg="${msg//$'\n'/ }"; msg="${msg//$'\t'/ }"
-    [ "${#msg}" -gt 400 ] && msg="${msg:0:397}..."
-    echo '<-Start Result->'
-    echo "STATUS=${msg}"
-    echo '<-End Result->'
+    while [ "$msg" != "${msg//  / }" ]; do msg="${msg//  / }"; done
+    msg="${msg# }"; msg="${msg% }"
+    [ -n "$msg" ] || msg="Check produced no status text"
+    [ "${#msg}" -gt "$STATUS_MAX" ] && msg="${msg:0:$((STATUS_MAX - 3))}..."
+    printf '<-Start Result->\nSTATUS=%s\n<-End Result->\n' "$msg"
     EMITTED=1
     if [ "$1" -ne 0 ] && [ -n "$DIAG" ]; then
-        echo '<-Start Diagnostic->'
-        printf '%s' "$DIAG"
-        echo '<-End Diagnostic->'
+        printf '<-Start Diagnostic->\n%s<-End Diagnostic->\n' "$DIAG"
     fi
     exit "$1"
 }
 on_exit() {
     local rc=$?
-    [ -n "${TMP:-}" ] && rm -rf -- "$TMP" 2>/dev/null
+    trap '' HUP INT TERM
+    if declare -F tc_cleanup >/dev/null; then tc_cleanup; fi
     if [ "$EMITTED" -eq 0 ]; then
-        echo '<-Start Result->'
-        echo "STATUS=Check could not run: the monitor stopped unexpectedly (exit ${rc})"
-        echo '<-End Result->'
+        printf '<-Start Result->\nSTATUS=Check could not run: the monitor stopped unexpectedly (exit %s)\n<-End Result->\n' "$rc"
         exit 1
     fi
 }
 trap on_exit EXIT
-# A signal ends the run through the EXIT trap above, with the usual 128+N status.
+# <<< tc-docker result
+
+# The scratch directory of a run (one file per registry lookup), made further
+# down and removed on every way out. Set here, before anything can exit, and
+# under a name of its own: whatever an inherited TMP names is never touched.
+SCRATCH=""
+tc_cleanup() { [ -z "$SCRATCH" ] || rm -rf -- "$SCRATCH" 2>/dev/null; return 0; }
+# A signal ends the run through the EXIT trap, with the usual 128+N status.
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 
 # One PATH rule, whatever PATH the agent gives the script: the usual system
@@ -319,8 +340,8 @@ case $? in
     *) emit 1 "Check could not run: asking whether Docker is running failed unexpectedly" ;;
 esac
 
-TMP="$(mktemp -d)" || emit 1 "Check could not run: cannot create a temporary directory"
-BREAKER="${TMP}/rate-limited"
+SCRATCH="$(mktemp -d)" || emit 1 "Check could not run: cannot create a temporary directory"
+BREAKER="${SCRATCH}/rate-limited"
 
 # ------------------------------------------------------- gather local state
 
@@ -591,13 +612,13 @@ for r in ${TO_QUERY[@]+"${TO_QUERY[@]}"}; do
     [ -e "$BREAKER" ] && break
     secs="$(lookup_secs)" || { TIMED_OUT_RUN=1; break; }
     n=$((n + 1)); QUERIED=$((QUERIED + 1))
-    lookup_digest "$r" "${TMP}/d${n}" "$secs" &
+    lookup_digest "$r" "${SCRATCH}/d${n}" "$secs" &
 done
 wait
 
 declare -A ATTEMPT=()
 for ((i = 1; i <= n; i++)); do
-    IFS=$'\t' read -r r what kind msg < "${TMP}/d${i}" 2>/dev/null || continue
+    IFS=$'\t' read -r r what kind msg < "${SCRATCH}/d${i}" 2>/dev/null || continue
     [ -n "$r" ] || continue
     case "$what" in
         sha256:*)
@@ -669,11 +690,11 @@ for r in ${MOVERS[@]+"${MOVERS[@]}"}; do
     [ -e "$BREAKER" ] && break
     secs="$(lookup_secs)" || { TIMED_OUT_RUN=1; break; }
     m=$((m + 1))
-    lookup_created "$r" "${TMP}/c${m}" "$secs" &
+    lookup_created "$r" "${SCRATCH}/c${m}" "$secs" &
 done
 wait
 for ((i = 1; i <= m; i++)); do
-    IFS=$'\t' read -r r c < "${TMP}/c${i}" 2>/dev/null || continue
+    IFS=$'\t' read -r r c < "${SCRATCH}/c${i}" 2>/dev/null || continue
     [ -n "$r" ] && [ -n "$c" ] || continue
     R_CRE[$r]="$c"
     [ "${S_DIG[$r]:-}" = "${R_DIG[$r]:-}" ] && S_CRE[$r]="$c"

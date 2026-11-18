@@ -33,6 +33,24 @@ registry, and when an image's registry has not answered for days.
 > 3 there; the bash 4.2 and stopped-Docker steps run in CI, and version 4 has
 > not run through a Datto agent. Run its script once as a **Scripts**
 > component first; see [Test order](#test-order).
+>
+> **Version 5** (2026-11-17): the result and diagnostic code is now the block
+> marked `tc-docker result`, shared with the other two Docker monitors: one
+> `emit`, one `diag`, one `EXIT` trap, one status limit. See
+> [One result block](#one-result-block). **The status is cut at 900
+> characters, not 400**, so a long status (many containers behind, several
+> stale references) now shows more of itself; a run of spaces in it becomes
+> one. **And one defect is fixed.** Versions 2 to 4 removed, on every early
+> exit, whatever directory a `TMP` variable in the monitor's environment
+> named, with everything in it: the `EXIT` trap (new in version 2) ran
+> `rm -rf "$TMP"`, and `TMP` was the script's own only once its scratch
+> directory had been made. An exit before that point (Docker not installed,
+> Docker stopped, an invalid input) with `TMP=/tmp` inherited from the agent
+> would have removed `/tmp`. Linux does not set `TMP` by default, so a host is
+> exposed only where the agent's environment carries one. Version 5 keeps its
+> scratch directory under a name of its own, set before anything can exit,
+> and never reads `TMP`. Version 1 set its trap after making the directory and
+> did not have the defect.
 
 ## What it does
 
@@ -41,7 +59,9 @@ container is running with the digest its tag currently points to in the
 registry.
 
 **Read-only.** It never pulls, so it cannot move a local tag or start an
-upgrade. The only thing it writes is its own cache file. Its network calls are
+upgrade. The only thing it keeps is its own cache file; during a run it also
+has a scratch directory from `mktemp -d` (under `$TMPDIR`, else `/tmp`), one
+small file per registry lookup, removed on every way out. Its network calls are
 registry lookups through `docker buildx imagetools inspect`, which:
 
 - uses the host's existing `docker login`,
@@ -301,6 +321,28 @@ non-default value, and save each policy again if its value was lost.
 | The script dies unexpectedly | **Exit 1** via an `EXIT` trap: "Check could not run: the monitor stopped unexpectedly (exit N)". TERM, INT and HUP go through the same trap. The script runs under `set -u`; every lookup that could be unset has a default, so the trap is a last resort, not the way an unset value is handled |
 
 Safe to assign to every Linux device, because a host without Docker exits 0.
+
+### One result block
+
+The result and diagnostic code is the block marked `tc-docker result`, the
+same in the three Docker monitors (CI's "Shared blocks match" check compares
+the copies):
+
+- **One result on every way out**: `<-Start Result->`, one `STATUS=` line,
+  `<-End Result->`. The diagnostic block follows only when the exit code is
+  not 0.
+- **The status is one line.** A carriage return, newline or tab in it becomes
+  a space, and a run of spaces becomes one.
+- **The status is cut at 900 characters** (897 and three dots), so what
+  matters most goes first.
+- **A run that ends any other way** (an unset variable, a signal) goes through
+  an `EXIT` trap that prints `Check could not run: the monitor stopped
+  unexpectedly (exit N)` and makes the exit non-zero. Once a result is being
+  printed, HUP, INT and TERM are ignored, so it is printed once and whole.
+  This monitor also traps HUP, INT and TERM (exit 129, 130, 143), so a signal
+  is acted on when the docker command or lookup in progress returns, its
+  result says `(exit 143)` and the like, and its scratch directory is removed
+  on the way out.
 
 ## How to tell it worked
 

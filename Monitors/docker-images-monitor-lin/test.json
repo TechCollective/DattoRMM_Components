@@ -2,7 +2,7 @@
  "platforms": [
   "linux"
  ],
- "description": "On a runner with Docker and systemd, against a test registry (the one from Host Maintenance's test, over HTTPS with a test CA) on ports 5055 and 4290. Two containers, one from each, are current; the second run is served from the cache, a root-only directory and file in the version 2 format. The state directory: a pre-made symlink is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the cache file is not read and is replaced, its target untouched. usrExcludePattern starting with - is a pattern. Rate limits: an error that only contains 4290 (the registry on that port stopped) is an unreadable image, not a rate limit, and the other image is still queried; a real 429 Too Many Requests trips the breaker. Staleness: a ref with no registry answer for 8 days alerts, naming it, the error kind (rate limited; refused) and since when; 2 days does not; usrStaleAfterDays 0 never does; a success clears it. Version 1 cache lines are read; malformed ones dropped. Every invalid input is refused, naming the variable. The input variables are read by their usr names; a variable set only under its old name (before version 3) is read from that, and when both are set the usr name wins. The container list is three docker commands (counted with a recording shim), retried when a container goes between docker ps and docker inspect, an error after three failed tries; a name holding a newline and tabs adds no row. A container run by image id is checked under its image's tag; one from an untagged image is skipped. A docker shim that never answers gives 'Docker did not answer within 40 seconds', exit 1, inside 90 seconds, nothing left running; TERM mid-run prints the fallback result block. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found. GNU bash 4.2 runs the main paths. The first step reads the script itself: its time-limit functions sit in one block marked tc-docker bounded (a block CI compares with the other Docker monitors' copies), and its tc-docker running block says it is identical in every tc-docker component.",
+ "description": "On a runner with Docker and systemd, against a test registry (the one from Host Maintenance's test, over HTTPS with a test CA) on ports 5055 and 4290. Two containers, one from each, are current; the second run is served from the cache, a root-only directory and file in the version 2 format. The state directory: a pre-made symlink is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the cache file is not read and is replaced, its target untouched. usrExcludePattern starting with - is a pattern. Rate limits: an error that only contains 4290 (the registry on that port stopped) is an unreadable image, not a rate limit, and the other image is still queried; a real 429 Too Many Requests trips the breaker. Staleness: a ref with no registry answer for 8 days alerts, naming it, the error kind (rate limited; refused) and since when; 2 days does not; usrStaleAfterDays 0 never does; a success clears it. Version 1 cache lines are read; malformed ones dropped. Every invalid input is refused, naming the variable. The input variables are read by their usr names; a variable set only under its old name (before version 3) is read from that, and when both are set the usr name wins. The container list is three docker commands (counted with a recording shim), retried when a container goes between docker ps and docker inspect, an error after three failed tries; a name holding a newline and tabs adds no row. A container run by image id is checked under its image's tag; one from an untagged image is skipped. A docker shim that never answers gives 'Docker did not answer within 40 seconds', exit 1, inside 90 seconds, nothing left running; TERM mid-run prints the fallback result block. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found. GNU bash 4.2 runs the main paths. The first step reads the script itself: its time-limit functions sit in one block marked tc-docker bounded (a block CI compares with the other Docker monitors' copies), and its tc-docker running block says it is identical in every tc-docker component. Version 5: the result code is one block marked tc-docker result, shared with the other two Docker monitors (a step reads the script for it). A status of over 400 characters is printed whole (the limit is 900; it was 400). The directory an inherited TMP names is left alone on an early exit (the EXIT trap used to remove it), and the monitor's own scratch directory is gone after a full run and after TERM. A run with one unreadable image exits 0 and prints no diagnostic block.",
  "steps": [
   {
    "type": "command",
@@ -13,6 +13,20 @@
     "functions inside it: 3",
     "the same functions in the whole script: 3",
     "running block first line: 1"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Result block: emit, diag and on_exit are defined once each, inside one block marked tc-docker result (a block CI compares with the other Docker monitors' copies); one length limit for the status, 900 characters; nothing outside the block prints a result or diagnostic marker; the scratch directory has a name of its own and the script never reads TMP",
+   "run": "f=Monitors/docker-images-monitor-lin/docker-images-monitor-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; b() { sed -n '/^# >>> tc-docker result: /,/^# <<< tc-docker result$/p' \"$f\"; }; echo \"result block: $(grep -c '^# >>> tc-docker result: ' $f) start, $(grep -c '^# <<< tc-docker result$' $f) end\"; echo \"functions inside it: $(b | grep -cE '^(emit|diag|on_exit)\\(\\) \\{')\"; echo \"result functions in the whole script: $(grep -cE '^(emit|emit_result|diag|on_exit)\\(\\) \\{' $f)\"; echo \"one limit: $(b | grep -c '^STATUS_MAX=900$') in the block, $(grep -cE '^[^#]*msg:0:[0-9]' $f) fixed cut(s) anywhere\"; echo \"markers printed outside the block: $(sed '/^# >>> tc-docker result: /,/^# <<< tc-docker result$/d' \"$f\" | grep -v '^[[:space:]]*#' | grep -cE '(Start|End) (Result|Diagnostic)')\"; echo \"uses of an inherited TMP: $(grep -v '^[[:space:]]*#' \"$f\" | grep -cE '\\$\\{?TMP([^A-Za-z_]|$)')\"; echo \"scratch directory set before the first exit: $(sed -n '1,/emit 1 /p' \"$f\" | grep -c '^SCRATCH=\"\"$')\"",
+   "outputContains": [
+    "result block: 1 start, 1 end",
+    "functions inside it: 3",
+    "result functions in the whole script: 3",
+    "one limit: 1 in the block, 0 fixed cut(s) anywhere",
+    "markers printed outside the block: 0",
+    "uses of an inherited TMP: 0",
+    "scratch directory set before the first exit: 1"
    ]
   },
   {
@@ -70,6 +84,27 @@
    "outputNotContains": [
     "stopped unexpectedly",
     "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "An inherited TMP: the directory it names is left alone when the monitor exits early (versions 2 to 4 removed it in the EXIT trap, with everything in it)",
+   "run": "rm -rf /root/tc-tmp-keep; mkdir -p /root/tc-tmp-keep; echo keep > /root/tc-tmp-keep/file; tc-test-run TMP=/root/tc-tmp-keep usrMinAgeDays=abc; [ \"$(cat /root/tc-tmp-keep/file 2>/dev/null)\" = keep ] && echo 'the directory TMP names is untouched'; rm -rf /root/tc-tmp-keep",
+   "outputContains": [
+    "STATUS=Check could not run: usrMinAgeDays must be a whole number from 0 to 365",
+    "exit 1 after",
+    "the directory TMP names is untouched"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Scratch directory: a full run (two registry lookups) with TMPDIR=/root/tc-scratch leaves nothing behind in it",
+   "run": "rm -rf /root/tc-scratch; mkdir /root/tc-scratch; tc-test-run TMPDIR=/root/tc-scratch usrCacheHours=0; echo \"left in /root/tc-scratch: $(ls -A /root/tc-scratch | wc -l)\"; rmdir /root/tc-scratch && echo '/root/tc-scratch itself still there, and empty'",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]",
+    "exit 0 after",
+    "left in /root/tc-scratch: 0",
+    "/root/tc-scratch itself still there, and empty"
    ]
   },
   {
@@ -230,6 +265,22 @@
    "outputContains": [
     "tc-registry.test:4290/tc-test-other:1\tsha256:",
     "\tother\t"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "One unreadable image is not an alert, so no diagnostic block is printed, although its error was collected for one: exit 0, one result block, no diagnostic markers",
+   "run": "out=$(tc-test-run usrCacheHours=0 usrMaxParallel=1); printf '%s\\n' \"$out\"; echo \"result blocks: $(printf '%s\\n' \"$out\" | grep -c '^<-Start Result->$'), STATUS lines: $(printf '%s\\n' \"$out\" | grep -c '^STATUS=')\"; echo \"diagnostic markers: $(printf '%s\\n' \"$out\" | grep -c -e '^<-Start Diagnostic->$' -e '^<-End Diagnostic->$')\"",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 1 current, 0 pinned, 1 unreadable [0 cached, 2 queried]",
+    "exit 0 after",
+    "result blocks: 1, STATUS lines: 1",
+    "diagnostic markers: 0"
+   ],
+   "outputNotContains": [
+    "registry lookup failed",
+    "stopped unexpectedly",
+    "unbound variable"
    ]
   },
   {
@@ -752,6 +803,19 @@
   },
   {
    "type": "command",
+   "label": "Unexpected exit, scratch directory: the same TERM with TMPDIR=/root/tc-scratch: the scratch directory is there 3 seconds in, and gone after the fallback result",
+   "run": "rm -rf /root/tc-scratch; mkdir /root/tc-scratch; ( sleep 3; echo \"in /root/tc-scratch 3 seconds in: $(ls -A /root/tc-scratch | wc -l)\"; pkill -TERM -f '[d]ocker-images-monitor-lin.sh' ) & out=$(tc-test-run TMPDIR=/root/tc-scratch); wait; printf '%s\\n' \"$out\"; echo \"result blocks: $(printf '%s\\n' \"$out\" | grep -c '^<-Start Result->$'), STATUS lines: $(printf '%s\\n' \"$out\" | grep -c '^STATUS=')\"; echo \"left in /root/tc-scratch: $(ls -A /root/tc-scratch | wc -l)\"; rmdir /root/tc-scratch",
+   "outputContains": [
+    "in /root/tc-scratch 3 seconds in: 1",
+    "STATUS=Check could not run: the monitor stopped unexpectedly (exit 143)",
+    "result blocks: 1, STATUS lines: 1",
+    "exit 1 after",
+    "left in /root/tc-scratch: 0"
+   ],
+   "timeoutSeconds": 150
+  },
+  {
+   "type": "command",
    "label": "Shims removed: Docker answers again",
    "run": "rm -f /usr/local/sbin/docker; hash -r; docker ps >/dev/null && echo 'docker ps answers again'",
    "outputContains": [
@@ -1049,6 +1113,26 @@
     "stopped unexpectedly",
     "unbound variable"
    ]
+  },
+  {
+   "type": "command",
+   "label": "Status length: 13 more containers on tc-cur's old image, with long names, give a status of over 400 characters; it is printed whole, naming every one (before version 5 this monitor cut it at 400); then they are removed",
+   "run": "img=$(docker inspect -f '{{.Config.Image}}' tc-cur); for i in $(seq -w 1 13); do docker run -d --name \"tc-behind-with-a-long-container-name-$i\" \"$img\" >/dev/null || echo \"COULD NOT START $i\"; done; out=$(tc-test-run usrCacheHours=0 usrMinAgeDays=0); printf '%s\\n' \"$out\" | sed -n '1,3p'; s=$(printf '%s\\n' \"$out\" | sed -n 's/^STATUS=//p'); echo \"result blocks: $(printf '%s\\n' \"$out\" | grep -c '^<-Start Result->$'), STATUS lines: $(printf '%s\\n' \"$out\" | grep -c '^STATUS=')\"; echo \"status length ${#s}\"; [ \"${#s}\" -gt 400 ] && [ \"${#s}\" -le 900 ] && echo 'over 400 and not over 900'; echo \"long-named containers in the status: $(printf '%s\\n' \"$s\" | grep -o 'tc-behind-with-a-long-container-name-[0-9]*:1 (0d)' | sort -u | wc -l)\"; case \"$s\" in *...) echo 'STATUS WAS CUT' ;; esac; printf '%s\\n' \"$out\" | tail -n 2; docker rm -f $(docker ps -aq --filter name=tc-behind-with-a-long) >/dev/null; echo \"long-named containers left: $(docker ps -aq --filter name=tc-behind-with-a-long | wc -l)\"",
+   "outputContains": [
+    "STATUS=16 checked: 14 behind, 2 current, 0 pinned, 1 not from a registry",
+    "result blocks: 1, STATUS lines: 1",
+    "over 400 and not over 900",
+    "long-named containers in the status: 13",
+    "exit 1 after",
+    "long-named containers left: 0"
+   ],
+   "outputNotContains": [
+    "STATUS WAS CUT",
+    "COULD NOT START",
+    "stopped unexpectedly",
+    "unbound variable"
+   ],
+   "timeoutSeconds": 180
   }
  ]
 }

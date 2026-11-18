@@ -74,33 +74,52 @@
 # status says so; the check itself still runs.
 
 set -u
+
+# >>> tc-docker result: identical in the Containers, Health and Images monitors; change them together.
+# The one result a run prints, as Datto reads it: <-Start Result->, one STATUS=
+# line, <-End Result->, on every way out. With an exit code that is not 0, and
+# only then, the lines diag collected follow as the diagnostic block.
+#   diag LINE         adds a line to the diagnostic
+#   emit CODE STATUS  prints the result (and the diagnostic), then exits CODE
+# The status is made one line (a CR, newline or tab becomes a space, a run of
+# spaces one space) and is cut at STATUS_MAX characters, so what matters most
+# goes first. A run that ends any other way (an unset variable under set -u, a
+# signal) leaves through the EXIT trap, which prints the result itself and
+# makes the exit non-zero: a monitor that exits non-zero with nothing printed
+# is an alert with no text. Before it does, it calls tc_cleanup when the
+# monitor has defined one (something to remove on every way out). Once the
+# result is being printed, HUP, INT and TERM are ignored, so it is printed
+# once and whole.
+STATUS_MAX=900
 EMITTED=0
-emit() {  # exit code, status line
-    local msg="${2//$'\n'/ }"
-    [ "${#msg}" -gt 400 ] && msg="${msg:0:397}..."
-    echo '<-Start Result->'
-    echo "STATUS=${msg}"
-    echo '<-End Result->'
+DIAG=""
+diag() { DIAG="${DIAG}${1}"$'\n'; }
+emit() {  # exit code, status
+    local msg="$2"
+    trap '' HUP INT TERM
+    msg="${msg//$'\r'/ }"; msg="${msg//$'\n'/ }"; msg="${msg//$'\t'/ }"
+    while [ "$msg" != "${msg//  / }" ]; do msg="${msg//  / }"; done
+    msg="${msg# }"; msg="${msg% }"
+    [ -n "$msg" ] || msg="Check produced no status text"
+    [ "${#msg}" -gt "$STATUS_MAX" ] && msg="${msg:0:$((STATUS_MAX - 3))}..."
+    printf '<-Start Result->\nSTATUS=%s\n<-End Result->\n' "$msg"
     EMITTED=1
-    if [ "$1" -ne 0 ] && [ -n "${DIAG:-}" ]; then
-        echo '<-Start Diagnostic->'
-        printf '%s' "$DIAG"
-        echo '<-End Diagnostic->'
+    if [ "$1" -ne 0 ] && [ -n "$DIAG" ]; then
+        printf '<-Start Diagnostic->\n%s<-End Diagnostic->\n' "$DIAG"
     fi
     exit "$1"
 }
 on_exit() {
     local rc=$?
+    trap '' HUP INT TERM
+    if declare -F tc_cleanup >/dev/null; then tc_cleanup; fi
     if [ "$EMITTED" -eq 0 ]; then
-        echo '<-Start Result->'
-        echo "STATUS=Check could not run: the monitor stopped unexpectedly (exit ${rc})"
-        echo '<-End Result->'
+        printf '<-Start Result->\nSTATUS=Check could not run: the monitor stopped unexpectedly (exit %s)\n<-End Result->\n' "$rc"
         exit 1
     fi
 }
 trap on_exit EXIT
-DIAG=""
-diag() { DIAG="${DIAG}${1}"$'\n'; }
+# <<< tc-docker result
 
 # One PATH rule, whatever PATH the agent gives the script: the usual system
 # directories are appended (never prepended, so what the agent's PATH finds
@@ -677,7 +696,7 @@ if [ "$PENDING_BAD" -gt 0 ]; then
 fi
 [ -n "$PENDING_STATUS" ] && SUMMARY="$PENDING_STATUS; $SUMMARY"
 # A stale prune goes first: it is what the old prune may delete that matters
-# most here, and emit cuts the status at 400 characters.
+# most here, and emit cuts the status at STATUS_MAX characters.
 [ -n "$STALE_STATUS" ] && SUMMARY="$STALE_STATUS; $SUMMARY"
 
 ALERT=0
