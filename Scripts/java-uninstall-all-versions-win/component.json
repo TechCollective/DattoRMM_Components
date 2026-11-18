@@ -1,0 +1,41 @@
+{
+  "general": {
+    "name": "Java - Uninstall All Versions [Win]",
+    "category": "scripts",
+    "description": "Uninstalls every standalone Java JRE/JDK from any vendor and cleans leftovers; Report mode lists them without changes.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/java-uninstall-all-versions-win",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "3600",
+    "securityLevel": "2",
+    "installType": "powershell"
+  },
+  "body": "java-uninstall-all-versions-win.ps1",
+  "variables": [
+    {
+      "name": "usrMode",
+      "type": "map",
+      "direction": "false",
+      "description": "Remove = uninstall every standalone Java not matched by usrKeep and clean up. Report = list what Remove would do and change nothing.",
+      "defaultVal": "Remove",
+      "options": [
+        { "name": "Remove", "value": "Remove" },
+        { "name": "Report", "value": "Report" }
+      ]
+    },
+    {
+      "name": "usrKeep",
+      "type": "string",
+      "direction": "false",
+      "description": "Optional. Comma-separated text matched against product and folder names; matches are left installed, e.g. Java 8 Update 401. Each term at least 3 characters.",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrUdfNumber",
+      "type": "string",
+      "direction": "false",
+      "description": "UDF to write a one-line summary to, 1 to 300. Blank = write no UDF. Never overwrites a value another component wrote.",
+      "defaultVal": ""
+    }
+  ]
+}
