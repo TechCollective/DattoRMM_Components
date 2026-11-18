@@ -23,7 +23,15 @@ registry, and when an image's registry has not answered for days.
 > (see [Listing the containers](#listing-the-containers)). Version 3 was
 > exercised through its Tier 1 `test.json` against a live Docker 29 daemon in
 > a sandbox, except the steps that need systemd or GNU bash 4.2 (run in CI);
-> it has not run through a Datto agent. Run its script once as a **Scripts**
+> it has not run through a Datto agent. **Version 4** (2026-11-17) changes
+> comments only: the time-limit code (`bounded`, `systemd_up`,
+> `docker_unit_loaded`) is marked as a shared block, `tc-docker bounded`, with
+> the other two Docker monitors, and the first line of the `tc-docker running`
+> block says it is identical in every tc-docker component. Every line of code
+> is the same as version 3's. Through its Tier 1 `test.json` in a sandbox with
+> no systemd and no bash 4.2, every step gave the result it gave for version
+> 3 there; the bash 4.2 and stopped-Docker steps run in CI, and version 4 has
+> not run through a Datto agent. Run its script once as a **Scripts**
 > component first; see [Test order](#test-order).
 
 ## What it does
@@ -71,8 +79,11 @@ the monitor starts. What is still running then is stopped: `timeout(1)` sends
 TERM to the process group of the docker commands this run started, then KILL to
 anything left in it. Nothing else is signalled. The whole check uses the same
 mechanism as `Docker - Containers Differ From Expected [Lin]`, and the same
-shared "is Docker running" block (`tools/check-shared-blocks.py` keeps the
-copies identical).
+shared "is Docker running" block: the time limit is the block marked
+`tc-docker bounded` (three copies, one in each Docker monitor) and the check
+is the block marked `tc-docker running` (six copies, one in every Docker
+component and in the prune). `tools/check-shared-blocks.py` keeps the copies
+identical.
 
 ### Listing the containers
 

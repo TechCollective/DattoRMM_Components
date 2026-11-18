@@ -118,7 +118,7 @@ export PATH
 # prunes of versions 9 and 10 start a Docker that was stopped on purpose, and
 # every restart: always container with it. Version 12 only changes how the
 # prune reads its own settings file, which matters after a hand edit of that
-# file, so 11 is still accepted.
+# file, and version 13 only moves code, so 11 is still accepted.
 PRUNE_MIN_VERSION=11
 PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
 PRUNE_UNIT="/etc/systemd/system/tc-docker-prune.service"
@@ -160,6 +160,7 @@ START="$(date +%s)"
 [[ "$START" =~ ^[0-9]+$ ]] || emit 1 "Check could not run: date +%s does not give the time in seconds"
 DOCKER_DEADLINE=$(( START + DOCKER_TIMEOUT ))
 
+# >>> tc-docker bounded: identical in the Containers, Health and Images monitors; change them together.
 # Runs $1 (shell code) in a new bash under timeout(1), with the rest of the
 # arguments as $1..., and returns its exit status: 124 or 137 when it was still
 # running DOCKER_TIMEOUT seconds after the monitor started. timeout(1) puts the
@@ -168,6 +169,7 @@ DOCKER_DEADLINE=$(( START + DOCKER_TIMEOUT ))
 # there). Once it has timed out, whatever is left in that group (a docker client
 # that ignored TERM after the bash above it died) is sent KILL here. Nothing
 # else is ever signalled: not the monitor's own process group, not its parent.
+# The caller sets DOCKER_DEADLINE (seconds since 1970) before the first call.
 bounded() {
     local code=$1 left pid rc
     shift
@@ -187,6 +189,7 @@ docker_unit_loaded() {
     systemd_up || return 1
     [ "$(timeout -k 2 10 systemctl show docker.service -p LoadState 2>/dev/null)" = "LoadState=loaded" ]
 }
+# <<< tc-docker bounded
 
 DOCKER="$(command -v docker 2>/dev/null || true)"
 if [ -z "$DOCKER" ]; then
@@ -268,9 +271,34 @@ tc_ignored() {
 }
 # Succeeds once a person has confirmed this host's expected list.
 tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
+
+# The well-formed lines of pending-removal file $1 (the stopped containers
+# tc-docker-prune has recorded and will remove), tab separated:
+#   id  key  name  first-recorded
+# first-recorded is seconds since 1970, printed without leading zeros. Then,
+# when the file has any other line, one last line:
+#   BAD  n  line-numbers
+# n is how many lines are not well formed, line-numbers which ones (", "
+# between them). Comment lines (#) and blank lines are neither. The file is
+# untrusted: a line is well formed only when it is exactly four fields, a 64
+# hex character id, a key, a plain name and a number of at most 10 digits; an
+# id may appear on more than one line, and the caller decides which one counts.
+# Prints nothing when $1 is missing or is not a regular file (a symlink is not
+# one) that can be read.
+tc_pending_lines() {
+    { [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ]; } || return 0
+    awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
+        /^#/ || /^[ \t]*$/ { next }
+        NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 {
+            sub(/^0+/, "", $4); if ($4 == "") $4 = "0"
+            print; next
+        }
+        { bad++; where = where (bad > 1 ? ", " : "") NR }
+        END { if (bad) print "BAD", bad, where }' "$1"
+}
 # <<< tc-docker shared
 
-# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# >>> tc-docker running: identical in every tc-docker component; change them together.
 # Whether the Docker daemon is running, found out without starting it. Where
 # systemd manages docker.service, systemd is asked, and no docker command is run
 # unless the service is active: on most installs docker.socket stays listening
@@ -281,6 +309,7 @@ tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
 # options only, so systemd 219 understands them.
 DOCKER_STATE=""
+# shellcheck disable=SC2034  # the monitors read DOCKER_STATE in the bash that bounded starts, as text shellcheck cannot follow
 tc_docker_running() {
     local load state
     DOCKER_STATE=""
@@ -604,10 +633,7 @@ PENDING=(); PENDING_DIAG=(); PENDING_ALERTABLE=0; PENDING_BAD=0; PENDING_BAD_LIN
 if [ "$usrPendingRemovalAction" != "ignore" ] && [ "$UNREVIEWED" -eq 0 ] \
    && { [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; }; then
     if [ -f "$PENDING_FILE" ] && [ ! -L "$PENDING_FILE" ] && [ -r "$PENDING_FILE" ]; then
-        PLINES="$(awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
-            /^#/ || /^[ \t]*$/ { next }
-            NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 { print $1, $2, $3, $4 + 0; next }
-            { print "BAD", NR }' "$PENDING_FILE")"
+        PLINES="$(tc_pending_lines "$PENDING_FILE")"
     else
         PLINES=""; PENDING_BAD=1; PENDING_BAD_LINES="it is not a regular file this monitor can read"
     fi
@@ -616,8 +642,8 @@ if [ "$usrPendingRemovalAction" != "ignore" ] && [ "$UNREVIEWED" -eq 0 ] \
     declare -A PSEEN=()
     while IFS=$'\t' read -r pid pkey pname pat; do
         [ -n "$pid" ] || continue
-        if [ "$pid" = "BAD" ]; then
-            PENDING_BAD=$((PENDING_BAD + 1)); PENDING_BAD_LINES="${PENDING_BAD_LINES:-line(s) }${PENDING_BAD_LINES:+, }$pkey"; continue
+        if [ "$pid" = "BAD" ]; then     # one such line at most: how many lines, and which
+            PENDING_BAD="$pkey"; PENDING_BAD_LINES="line(s) $pname"; continue
         fi
         [ -z "${PSEEN[$pid]:-}" ] || continue
         PSEEN[$pid]=1

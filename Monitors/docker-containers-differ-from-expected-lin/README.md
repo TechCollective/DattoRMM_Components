@@ -79,6 +79,31 @@ again.
 > harness against a live Docker 29 daemon in a sandbox with no systemd and no
 > bash 4.2, so the bash 4.2 and stopped-Docker steps were **not** run for this
 > version; CI runs them. Not yet through a Datto agent.
+>
+> **Version 9** (2026-11-17) moves code and changes no behaviour.
+> `/var/lib/tc-docker/pending-removal` is now read with `tc_pending_lines`, a
+> function in the block the Docker components share (`tc-docker shared`),
+> which the prune and Update Expected Containers use too, instead of a parser
+> of its own. The time-limit code (`bounded`, `systemd_up`,
+> `docker_unit_loaded`) is marked as a shared block, `tc-docker bounded`, with
+> the Health and Images monitors, so CI now fails if the three copies drift
+> apart. The first line of the `tc-docker running` block says it is identical
+> in every tc-docker component. `PRUNE_MIN_VERSION` stays **11**. Versions 8
+> and 9 were run side by side on the same 33 pending-removal files (well
+> formed, and malformed in each way the parser checks) with a stand-in
+> `docker`, under gawk, mawk 1.3.4 and busybox awk: the result block, the
+> diagnostic and the exit code were the same every time. Where `awk` is mawk
+> 1.3.3 (the default on Debian 10, Ubuntu 18.04 and older) there is one
+> difference, and it is a repair: at a record dated 2038-01-19 or later (which
+> the prune cannot write before then, so today only a hand edit puts one
+> there), version 8 hit an arithmetic error and reported neither that record
+> nor any after it; version 9 reports them. Through the Tier 1 harness against
+> a live Docker 29 daemon in a sandbox with no systemd and no bash 4.2, every
+> step gave the result it gave for version 8 there and the six new steps pass;
+> with systemd's answers simulated, every step passes except the ones that
+> need bash 4.2, which were **not** run for this version. CI builds bash 4.2
+> and has a real systemd, so read its result before merging. Not yet through
+> a Datto agent.
 
 ## What it does
 
@@ -284,10 +309,10 @@ prune is reported exactly as before.
 flagged across the fleet: bump the prune's stamp by shipping a new Host
 Maintenance version, raise the constant to that version here, and every host
 still on an older prune alerts on its next run. The constant does not have to
-follow every Host Maintenance version: it is 11 while Host Maintenance is 12,
+follow every Host Maintenance version: it is 11 while Host Maintenance is 13,
 because version 12 changes only how the prune reads its settings file (as
 text, never run, with `OLDER_THAN_HOURS` checked), which matters on a host
-where someone edited that file by hand.
+where someone edited that file by hand, and version 13 only moves code.
 
 A container's labels are untrusted: it inherits them from its image. They are
 read JSON-encoded, so a tab or newline in a label cannot add a field or a
@@ -478,14 +503,18 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
   from its id. Fix the labels, or the image they come from.
 - Under `usrUnlistedAction` Ignore, an unreadable container is still counted
   in the status, but never alerts.
-- It shares its container-identity code with the two script components, in a
-  block marked `tc-docker shared`. All four copies (Host Maintenance carries
-  two: the component and the prune script it installs) must stay
-  byte-identical; CI's "Shared blocks match" check fails the pull request
-  when they are not. Its "is Docker running" code is a third copy of Host
-  Maintenance's `tc-docker running` block, checked the same way. Its first
-  line still says the block is in Host Maintenance and its prune; that line is
-  part of what is compared, so it changes only with all three copies.
+- It shares three blocks of code with the other Docker components. Every
+  copy of a block must stay byte-identical; CI's "Shared blocks match" check
+  fails the pull request when they are not.
+  - `tc-docker shared`: how a container becomes its key, and (from version 9)
+    how the prune's `pending-removal` file is read. Four copies: this
+    monitor, Update Expected Containers, and Host Maintenance twice (the
+    component and the prune script it installs).
+  - `tc-docker running`: the "is Docker running" check. Six copies: those
+    four and the Health and Images monitors.
+  - `tc-docker bounded` (marked from version 9): the time limit on every
+    docker command. Three copies: this monitor and the Health and Images
+    monitors.
 
 ## Open questions
 

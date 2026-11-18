@@ -30,6 +30,23 @@ state**. It is the one supported way to change any of them.
 >   against a live Docker 29 daemon, with systemd's answers simulated (the
 >   sandbox has no systemd); the stopped-Docker steps have not yet run on a
 >   real systemd host, and nothing has run through a Datto agent.
+> - **Version 6** (2026-11-17) moves code and changes no behaviour. Show now
+>   reads the prune's `/var/lib/tc-docker/pending-removal` with
+>   `tc_pending_lines`, a function in the block the Docker components share
+>   (`tc-docker shared`), which the prune and the monitor use too, instead of
+>   a parser of its own; and the first line of the `tc-docker running` block
+>   says it is identical in every tc-docker component. Versions 5 and 6 were
+>   run side by side on the same 33 pending-removal files (well formed, and
+>   malformed in each way the parser checks) with a stand-in `docker`, under
+>   gawk, mawk 1.3.4 and busybox awk: Show printed the same every time. Where
+>   `awk` is mawk 1.3.3 (the default on Debian 10, Ubuntu 18.04 and older)
+>   there is one difference, and it is a repair: for a record dated
+>   2038-01-19 or later (which the prune cannot write before then, so today
+>   only a hand edit puts one there), version 5 printed an empty date and
+>   version 6 prints the date. The Tier 1 test passed against a live Docker
+>   29 daemon in a sandbox, with systemd's answers simulated for the
+>   stopped-Docker steps, as for version 5; those steps have not run on a
+>   real systemd host, and nothing has run through a Datto agent.
 
 ## What it does
 
@@ -248,7 +265,8 @@ Never a customer first.
 - **An unreadable container cannot be ignored or listed.** Its key is made
   from its id, which changes when it is recreated. Fix the labels (or the
   image they come from) instead.
-- It shares its container-identity code with Host Maintenance (twice: the
+- It shares its container-identity code, and from version 6 its reading of
+  the prune's `pending-removal` file, with Host Maintenance (twice: the
   component and the prune script it installs) and the monitor, in a block
   marked `tc-docker shared`, and its "is Docker running" check with Host
   Maintenance, the prune and the three monitors, in a block marked

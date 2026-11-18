@@ -175,6 +175,7 @@ RUN_DEADLINE=$(( START + RUN_LIMIT ))
 
 # ---------------------------------------------------------------- bounded docker
 
+# >>> tc-docker bounded: identical in the Containers, Health and Images monitors; change them together.
 # Runs $1 (shell code) in a new bash under timeout(1), with the rest of the
 # arguments as $1..., and returns its exit status: 124 or 137 when it was still
 # running DOCKER_TIMEOUT seconds after the monitor started. timeout(1) puts the
@@ -183,6 +184,7 @@ RUN_DEADLINE=$(( START + RUN_LIMIT ))
 # there). Once it has timed out, whatever is left in that group (a docker client
 # that ignored TERM after the bash above it died) is sent KILL here. Nothing
 # else is ever signalled: not the monitor's own process group, not its parent.
+# The caller sets DOCKER_DEADLINE (seconds since 1970) before the first call.
 bounded() {
     local code=$1 left pid rc
     shift
@@ -197,17 +199,19 @@ bounded() {
     return "$rc"
 }
 systemd_up() { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; }
+# docker.service is a unit systemd knows (a unit file, or generated from /etc/init.d/docker).
 docker_unit_loaded() {
     systemd_up || return 1
     [ "$(timeout -k 2 10 systemctl show docker.service -p LoadState 2>/dev/null)" = "LoadState=loaded" ]
 }
+# <<< tc-docker bounded
 docker_hung() {  # what was running
     diag "$1 had not finished $DOCKER_TIMEOUT seconds after this monitor started, so it was stopped: timeout(1) sent TERM to the process group of the docker commands this run started, then anything left in that group was sent KILL; nothing else was signalled."
     diag "A Docker daemon that accepts connections but does not answer is the usual cause. Look at dockerd: systemctl status docker; journalctl -u docker."
     emit 1 "Check could not run: Docker did not answer within $DOCKER_TIMEOUT seconds"
 }
 
-# >>> tc-docker running: identical in Host Maintenance and the prune it installs; change them together.
+# >>> tc-docker running: identical in every tc-docker component; change them together.
 # Whether the Docker daemon is running, found out without starting it. Where
 # systemd manages docker.service, systemd is asked, and no docker command is run
 # unless the service is active: on most installs docker.socket stays listening
@@ -218,6 +222,7 @@ docker_hung() {  # what was running
 # DOCKER_STATE to a short reason when it returns 1 or 2. Plain systemctl
 # options only, so systemd 219 understands them.
 DOCKER_STATE=""
+# shellcheck disable=SC2034  # the monitors read DOCKER_STATE in the bash that bounded starts, as text shellcheck cannot follow
 tc_docker_running() {
     local load state
     DOCKER_STATE=""
