@@ -131,6 +131,42 @@ first records it as waiting, and removes it only on a run at least
 >   `PRUNE_MIN_VERSION` stays `9`. Version 11 was run against a live Docker 29
 >   daemon under systemd 255 in a sandbox, and the Tier 1 test covers it on
 >   the CI runner. It has not yet run through a Datto agent.
+> - **Version 12** makes three things simpler and stricter.
+>   - **The prune reads its settings file as text and no longer runs it.** Up
+>     to version 11 the prune sourced `/etc/default/tc-docker-prune` as shell,
+>     as root, so any line in it was a command. Now it takes
+>     `OLDER_THAN_HOURS`, `GRACE_HOURS` and `PRUNE_IMAGES` from lines of the
+>     form `NAME=value` and ignores every other line. **A value in quotes, or
+>     with a comment after it, used to work and is now refused** (the prune
+>     removes nothing that depends on it and exits 1). The component never
+>     wrote the file that way, so this only matters on a host where someone
+>     edited it by hand.
+>   - **The prune checks `OLDER_THAN_HOURS` itself** (a whole number, 24 to
+>     8760), as it already checked the other two. Version 11 used whatever
+>     the file said, so `OLDER_THAN_HOURS=0` written by hand removed
+>     containers and images of any age. With a value it refuses, the prune
+>     now records and removes **nothing at all** and exits 1. The component
+>     also refuses `usrPruneOlderThanHours` above 8760 when only Prune now is
+>     used (it used to check that case for the lower limit only).
+>   - **A stopped Docker's start flags are no longer worked out from
+>     `docker.service`.** Up to version 11, with Docker stopped, the component
+>     rebuilt the `dockerd` command line from the unit, its drop-ins and its
+>     environment files. That was a second copy of systemd's own rules. Now
+>     flags are read only from a running `dockerd`. **With Docker stopped,
+>     log rotation is skipped and the run exits `3`**; build-cache limits are
+>     still added, and the next run with Docker running adds log rotation.
+>     A job that used to exit `0` on a host whose Docker is stopped now exits
+>     `3` there.
+>
+>   What the prune removes on a host whose settings file is as the component
+>   wrote it is unchanged. `TC_PRUNE_VERSION=12`. The monitor's
+>   `PRUNE_MIN_VERSION` goes to **11** in its version 8 (the first prune that
+>   never starts a stopped Docker), not to 12. Version 12's prune, with every
+>   case above, and the daemon.json part were run against a live Docker 29
+>   daemon in a sandbox **without systemd**. The steps that need systemd
+>   (the timer, the units, a stopped `docker.service`) have **not** been run
+>   for this version: the Tier 1 test runs them on the CI runner, so read
+>   that result before merging. It has not yet run through a Datto agent.
 
 ## What it does
 
@@ -148,10 +184,14 @@ started:**
 - **Docker running:** the running `dockerd`'s own command line
   (`/proc/<pid>/cmdline`), and the log driver the daemon reports
   (`docker info`).
-- **Docker stopped:** the command `docker.service` would run (`ExecStart`,
-  drop-ins included), with the variables it uses filled in from the unit's
-  `Environment=` and `EnvironmentFile=` settings, the way systemd fills them
-  in.
+- **Docker not running:** the flags are not read. The output says
+  `daemon.json: could not tell which flags Docker starts with: Docker is not running, so its start flags cannot be read.`
+  Log rotation is skipped, `builder.gc` is still added (the log flags do not
+  affect it), and the part exits `3`. **Run the component again once Docker
+  is running** and it adds log rotation then. It does not try to work the
+  flags out from `docker.service`, its drop-ins and its environment files:
+  only systemd knows exactly what those add up to, and a wrong guess here
+  writes a `daemon.json` that stops Docker starting.
 
 The output names what it found, for example
 `Docker starts with --log-driver=journald (read from the running dockerd, pid 812).`
@@ -169,7 +209,8 @@ already set:
     such as `journald`, does not take these options;
   - the daemon has no `--log-opt` flag. Docker refuses to start with
     `log-opts` both as a flag and in `daemon.json`;
-  - its start flags could be determined with confidence. See exit code `3`.
+  - its start flags could be read, which needs Docker to be running. See
+    exit code `3`.
 - **`builder.gc`.** This is added only if the file has no `builder.gc` at all.
   Docker 28 and later gets a policy with `reservedSpace` and `maxUsedSpace`.
   Older engines get `defaultKeepStorage`, because they would silently ignore
@@ -228,9 +269,12 @@ touched.
 
 **It writes nothing to the daemon configuration when:**
 
-- **The daemon reads a different file.** If `dockerd` is started with
-  `--config-file` pointing anywhere other than `/etc/docker/daemon.json`, the
-  output names that file and the part exits `3`. Neither file is edited.
+- **The daemon reads a different file.** If the running `dockerd` was started
+  with `--config-file` pointing anywhere other than `/etc/docker/daemon.json`,
+  the output names that file and the part exits `3`. Neither file is edited.
+  (With Docker stopped this cannot be seen; `builder.gc` then goes into
+  `/etc/docker/daemon.json`, which such a daemon does not read, so it does
+  no harm and no good.)
 - **The file already stops Docker starting.** Version 4 could leave a host
   with `max-size` or `max-file` in `daemon.json` that its daemon flags
   refuse. Docker keeps running until its next restart or reboot, then fails.
@@ -297,7 +341,7 @@ carried onto the new list.
 | File | What it is |
 |---|---|
 | `/usr/local/sbin/tc-docker-prune` | The prune script |
-| `/etc/default/tc-docker-prune` | Its settings: `OLDER_THAN_HOURS`, `GRACE_HOURS`, `PRUNE_IMAGES` |
+| `/etc/default/tc-docker-prune` | Its settings: `OLDER_THAN_HOURS`, `GRACE_HOURS`, `PRUNE_IMAGES`. Read as text, never run; see *The settings file* below |
 | `/var/lib/tc-docker/pending-removal` | Written by the prune: the stopped containers it has recorded and will remove. Directory `0700`, file `0600`, both root |
 | `/etc/systemd/system/tc-docker-prune.service` | Runs the script, only while Docker is running (`Requisite=docker.service`) |
 | `/etc/systemd/system/tc-docker-prune.timer` | Runs the service on `usrPruneSchedule` |
@@ -367,10 +411,12 @@ prune starts a stopped Docker:
   systemd reports running but that does not answer `docker info`, or one that
   does not answer on a host where systemd does not manage it, is still an
   `ERROR:` and exit `1`.
-- **The component with Docker stopped** still merges `daemon.json` (it reads
-  how Docker would start from `docker.service`), installs the prune and the
-  timer, and leaves Docker stopped. It does not create the list and does not
-  run Prune now: those need Docker, and each makes the run exit `3`.
+- **The component with Docker stopped** installs the prune and the timer,
+  adds build-cache limits to `daemon.json`, and leaves Docker stopped. It
+  does not add log rotation (Docker's start flags can only be read from a
+  running `dockerd`), does not create the list and does not run Prune now:
+  those need Docker, and each makes the run exit `3`. So a run against a
+  stopped Docker always exits `3`; run it again once Docker is up.
 
 **The prune is only replaced when this component runs on the host again.**
 Nothing else updates it, so a host keeps whichever prune it last received. To
@@ -387,7 +433,8 @@ accepts. When a fix to the prune ships, bump this component's version, raise
 `PRUNE_MIN_VERSION` in
 [`Docker - Containers Differ From Expected [Lin]`](../../Monitors/docker-containers-differ-from-expected-lin/)
 to that version, and every host still on an older prune alerts on its next
-check, with the fix named: run this component on it.
+check, with the fix named: run this component on it. The constant is **11**
+from the monitor's version 8.
 
 What earlier versions left on a host, which the monitor flags:
 
@@ -399,9 +446,9 @@ What earlier versions left on a host, which the monitor flags:
 | 4, 5 | Review gate | A container label can still make it delete a protected container |
 | 6 | The current rules, without a stamp | The monitor cannot tell it from an older one |
 | 7, 8 | Removes a stopped container at the first prune after it is old enough, counting from when it was **created**; removes every image no container uses | A container that crashed minutes ago is removed without warning, with its logs; an image built or loaded on the host, which exists nowhere else, is removed |
-| 9 | In `All` mode, keeps every tagged image on the containerd image store | Not unsafe, so the monitor does not flag it: `All` only does no more than `Dangling` there |
-| 10 | `Requires=docker.service`, and a `docker info` before it checks anything | The weekly timer starts a Docker that was stopped on purpose. Not flagged by the monitor (`PRUNE_MIN_VERSION` stays 9); run version 11 on the host |
-| 11 | Current | |
+| 9, 10 | `Requires=docker.service`, and a `docker info` before it checks anything. (9 also keeps every tagged image on the containerd image store in `All` mode, which is not unsafe) | The weekly timer starts a Docker that was stopped on purpose, and every `restart: always` container with it. Flagged from the monitor's version 8 (`PRUNE_MIN_VERSION` 11) |
+| 11 | Runs its settings file as shell, and does not check `OLDER_THAN_HOURS` | Only after a hand edit of `/etc/default/tc-docker-prune`: a line there is a command run as root, and `OLDER_THAN_HOURS=0` removes things of any age. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run version 12 on the host to replace it |
+| 12 | Current | |
 
 **Before the list is reviewed:** the prune removes only unused networks and
 build cache older than `usrPruneOlderThanHours`. No container and no image.
@@ -443,11 +490,45 @@ removed at the next one. The monitor
 alerts on each waiting container, with the date it goes, and says how to keep
 it (Add it to the list).
 
-`GRACE_HOURS` and `PRUNE_IMAGES` are checked again by the prune itself. A
-`GRACE_HOURS` that is not 24–8760 means no container is recorded or removed;
-a `PRUNE_IMAGES` that is not `dangling` or `all` means no image is removed;
-either way the run exits 1. A settings file with no `PRUNE_IMAGES` (one written
-by version 8) is `dangling`.
+#### The settings file
+
+`/etc/default/tc-docker-prune` is written by this component:
+
+    # Written by the Datto RMM component "Docker - Configure Host Maintenance [Lin]".
+    # Re-run the component to change these; edits here are overwritten.
+    OLDER_THAN_HOURS=168
+    GRACE_HOURS=144
+    PRUNE_IMAGES=dangling
+
+**The prune reads it as text. Nothing in it is ever run.** (Up to version 11
+the prune sourced it as shell, as root.) The rules:
+
+- A setting is one line, `NAME=value`, for one of those three names. Spaces
+  before the name and after the value are dropped.
+- If a name appears more than once, the **last** line wins.
+- **Every other line is ignored:** comments, blank lines, any other name
+  (`REQUIRED_CONTAINERS` from version 2, say), and anything a shell would
+  treat as a command. A misspelled name is one of those, so it is ignored
+  and the default applies.
+- A name with no line gets its default: 168, 144, `dangling`. So a settings
+  file with no `PRUNE_IMAGES` (one written by version 8) is `dangling`. A
+  file that is missing, or is not a regular file root can read, means all
+  three defaults.
+- **It is not a shell file.** A value in quotes (`GRACE_HOURS="144"`), with a
+  comment after it, or with `export` in front is not understood: the first
+  two are refused as below, the third is ignored.
+
+**Every value is checked by the prune itself**, whatever wrote it, and a value
+it refuses is never used:
+
+| Setting | Must be | If not |
+|---|---|---|
+| `OLDER_THAN_HOURS` | A whole number, 24–8760 | **Nothing at all** is recorded or removed (every removal goes by age): one `ERROR:` line, exit 1 |
+| `GRACE_HOURS` | A whole number, 24–8760 | No container is recorded or removed; images, networks and build cache are still handled; `ERROR:`, exit 1 |
+| `PRUNE_IMAGES` | `dangling` or `all` (any case) | No image is removed; `ERROR:`, exit 1 |
+
+The error names the setting and shows what it found, for example
+`ERROR: OLDER_THAN_HOURS in /etc/default/tc-docker-prune must be a whole number of hours, 24-8760 (it is '0'). Every removal depends on it, so nothing is recorded or removed this run. A setting is one line, NAME=value, with no quotes and nothing after the value.`
 
 #### Images
 
@@ -628,7 +709,7 @@ re-import creates a second component; see the repo's `tools/README.md`.
 | `usrBuildCacheMax` | String | `100GB` | A number plus `MB`, `GB` or `TB`. Blank leaves build-cache settings alone. Lower it on hosts with small disks. |
 | `usrBuildCacheReserved` | String | `20GB` | Same format. Docker 28 and later only. Should be smaller than the max. |
 | `usrPruneSchedule` | String | `Sun *-*-* 04:00:00` | A systemd `OnCalendar` expression in the host's local time, checked with `systemd-analyze calendar`. Blank leaves the timer alone. |
-| `usrPruneOlderThanHours` | String | `168` | 24–8760. Only unused items older than this are pruned; a stopped container counts from when it stopped. Saved to `/etc/default/tc-docker-prune`, so the most recent run sets it for the timer. |
+| `usrPruneOlderThanHours` | String | `168` | 24–8760. Only unused items older than this are pruned; a stopped container counts from when it stopped. Saved to `/etc/default/tc-docker-prune` as `OLDER_THAN_HOURS`, so the most recent run sets it for the timer. The prune checks it again and removes nothing if it is out of range. |
 | `usrPruneGraceHours` | String | `144` | 24–8760. How long a stopped container waits in `pending-removal` before the prune may remove it. 144 (6 days) means a weekly timer removes it at the run after the one that recorded it. Saved as `GRACE_HOURS`. |
 | `usrPruneImages` | **Selection** | `Dangling` | `Dangling` removes untagged images only, and makes no network call. `All` also removes tagged images no container uses, but only those whose registry confirms it still has them; it contacts registries (see *Registry lookups*). **Use `All` on CI and GitLab runner hosts.** Saved as `PRUNE_IMAGES`. |
 | `usrPruneNow` | **Selection** | `No` | `Yes` also runs the prune once, now. |
@@ -657,17 +738,9 @@ What causes exit `3`:
 - the merged file failed `dockerd --validate`
 - `daemon.json` is a symlink that does not end at a regular file (it points
   nowhere, at a directory, or loops); nothing was touched
-- Docker's start flags could not be determined with confidence, so log
-  rotation was skipped (`builder.gc` may still have been added). That
-  happens when:
-  - Docker is stopped and the host has no `docker.service` to read, or the
-    unit does not start `dockerd` directly, or has more than one
-    `ExecStart`;
-  - Docker is stopped and the unit uses a variable that cannot be resolved
-    exactly: one set from another variable, one used mid-word as `$VAR`, or
-    one that could come from an environment file this cannot read line by
-    line;
-  - Docker is stopped and a required (non `-`) environment file is missing;
+- Docker's start flags could not be read, so log rotation was skipped
+  (`builder.gc` may still have been added). That happens when:
+  - **Docker is not running.** Run the component again once it is;
   - more than one root `dockerd` is running on the host, or the running
     one's command line cannot be read
 - `dockerd` is started with `--config-file` pointing somewhere other than
@@ -691,8 +764,9 @@ The prune script on the host exits `0` when it pruned, and also when
 systemd reports Docker stopped (it prunes nothing then, and says so). It
 exits `1` on an error: the daemon unreachable, its container list not coming back (nothing is
 removed then), `pending-removal` not writable (no container removed), its
-image list not coming back (no image removed), a `GRACE_HOURS` or
-`PRUNE_IMAGES` it refuses, a container or image Docker would not remove, or a
+image list not coming back (no image removed), an `OLDER_THAN_HOURS`,
+`GRACE_HOURS` or `PRUNE_IMAGES` it refuses (see *The settings file*), a
+container or image Docker would not remove, or a
 network or build-cache step failing. A registry lookup that fails, times out or is
 rate-limited is not an error: that image is kept and the exit is still `0`.
 
@@ -720,15 +794,23 @@ A second run says `KEPT` for each key, `no change`,
 `Expected list: ... exists ... not changed`, and
 `already installed with these settings`.
 
+A run with Docker stopped exits `3`. Its `daemon.json` lines look like:
+
+    daemon.json: could not tell which flags Docker starts with: Docker is not running, so its start flags cannot be read.
+      daemon.json SKIPPED: log rotation: Docker's start flags could not be determined, so it cannot be known whether Docker would accept log-opts in daemon.json; run this component again while Docker is running
+      daemon.json ADDED: builder.gc = {"enabled":true,"policy":[...]}
+    daemon.json: merged file passes dockerd --validate.
+    daemon.json: written.
+
 A prune with Docker stopped (by hand; the timer does not start it then):
 
-    tc-docker-prune version 11
+    tc-docker-prune version 12
     Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.
 
 A prune after review reports what it recorded, what is waiting, what it
 removed and what it kept:
 
-    tc-docker-prune version 11
+    tc-docker-prune version 12
     Pruning unused items older than 168h. Volumes are never removed.
     Disk before: 30G free, 29% used
     Stopped containers recorded for removal this run (removed 144h from now if still stopped and not protected):
@@ -859,11 +941,20 @@ Never a customer first.
   the unit or a drop-in since Docker last started, the flags Docker will use
   at its next start can differ from the ones checked. Restart Docker after
   changing its unit, then run this.
-- **A stopped daemon is judged by `docker.service` only.** Docker started
-  another way (sysvinit, OpenRC, a hand-run `dockerd`) and not running now
-  cannot be read; log rotation is skipped with exit `3`.
-- **Unit arguments are split on spaces.** `systemctl show` prints the unit's
-  arguments unquoted, so an argument containing a space is misread.
+- **A stopped Docker gets no log rotation, and the run exits `3`.** Its start
+  flags are read only from a running `dockerd`. A fleet job that reaches a
+  host while its Docker is stopped shows exit `3` for that host every time,
+  until a run finds Docker up. Build-cache limits, the prune and the timer
+  are still put in place.
+- **With Docker stopped, a `--config-file` elsewhere is not seen.**
+  `builder.gc` is then added to `/etc/docker/daemon.json`, which that daemon
+  does not read. The next run with Docker running reports the other file and
+  changes nothing more.
+- **The settings file is not shell.** Only `NAME=value` lines for the three
+  settings are read. A misspelled name, or `export NAME=value`, is ignored
+  without a message, and that setting keeps its default; a value in quotes or
+  with a comment after it is refused, and the prune exits 1 until it is
+  fixed. Re-run this component to rewrite the file rather than editing it.
 - **A host version 4 already broke is reported, not repaired.** Fixing it
   needs a person: restore the named backup or remove the conflicting key,
   then restart Docker in a maintenance window.

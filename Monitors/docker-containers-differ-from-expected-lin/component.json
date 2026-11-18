@@ -5,7 +5,7 @@
     "description": "Alerts when an expected Docker container is stopped or gone (including when Docker is stopped), Docker does not answer within 40 seconds, a stopped container is waiting to be removed by the prune, the host's prune is out of date, or the list has gone unreviewed for usrUnreviewedAfterDays; reports unlisted containers, aged from when first seen. Never starts a stopped Docker; writes only its first-seen file. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "",
     "hash": "",
-    "version": "7",
+    "version": "8",
     "timeout": "120",
     "securityLevel": "4",
     "installType": "unix"

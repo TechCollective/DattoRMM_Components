@@ -6,10 +6,12 @@
 # 1. Adds log rotation and build-cache limits to /etc/docker/daemon.json.
 #    Only keys that are MISSING are added. An existing value is never changed,
 #    so a host someone already tuned keeps its tuning. First it reads how the
-#    daemon is really started (the running dockerd's command line, or
-#    docker.service when Docker is stopped). Log rotation is skipped when the
-#    daemon uses a driver that does not rotate, is started with --log-opt, or
-#    its flags cannot be determined. Nothing is written when the daemon reads a
+#    daemon is really started, from the running dockerd's command line. Log
+#    rotation is skipped when the daemon uses a driver that does not rotate,
+#    is started with --log-opt, or its flags cannot be read. They cannot be
+#    read while Docker is not running: build-cache limits are still added
+#    then, and the next run with Docker running adds log rotation (exit 3
+#    until it has). Nothing is written when the daemon reads a
 #    --config-file other than /etc/docker/daemon.json, or when the file already
 #    holds log-opts that will stop Docker starting ("DAEMON WILL NOT START").
 #    The write is a same-directory rename, so Docker never reads a half-written
@@ -41,6 +43,10 @@
 #      registry confirmed.
 #    If Docker does not return its container list, nothing at all is removed.
 #    Never volumes.
+#    The prune reads its three settings (OLDER_THAN_HOURS, GRACE_HOURS,
+#    PRUNE_IMAGES) from /etc/default/tc-docker-prune as text. Nothing in that
+#    file is run, and the prune checks each value again: with an
+#    OLDER_THAN_HOURS that is not 24-8760 it removes nothing at all.
 #    The installed prune carries its version (TC_PRUNE_VERSION=<the component's
 #    version>) and prints it first, so a host's prune can be told apart from an
 #    older one; the monitor "Docker - Containers Differ From Expected [Lin]"
@@ -60,7 +66,8 @@
 #      example because it is immutable; the old file is then unchanged)
 #   2  an input variable is invalid; nothing was changed
 #   3  could not apply safely (no JSON tool, config failed validation,
-#      Docker's start flags unknown, a --config-file elsewhere, daemon.json
+#      Docker's start flags unknown, which includes Docker not running,
+#      a --config-file elsewhere, daemon.json
 #      already stops Docker starting, daemon.json is a symlink that does not
 #      end at a regular file, no systemd, snap-packaged Docker, Docker
 #      stopped or the daemon unreachable for the list or a prune-now, or the
@@ -145,10 +152,15 @@ if [ -n "$usrBuildCacheMax" ]; then
         || fail 2 "usrBuildCacheReserved must look like 20GB (MB, GB or TB) (got '$usrBuildCacheReserved')."
 fi
 
-if [ -n "$usrPruneSchedule" ]; then
-    [[ "$usrPruneOlderThanHours" =~ ^[0-9]+$ ]] && [ "$usrPruneOlderThanHours" -ge 24 ] \
-        && [ "$usrPruneOlderThanHours" -le 8760 ] \
+# Written to the prune's settings whenever the prune is installed (a schedule or
+# Prune now), as a plain decimal number, and checked again by the prune itself.
+if [ -n "$usrPruneSchedule" ] || [ "$usrPruneNow" = "yes" ]; then
+    [[ "$usrPruneOlderThanHours" =~ ^[0-9]{1,5}$ ]] && [ $((10#$usrPruneOlderThanHours)) -ge 24 ] \
+        && [ $((10#$usrPruneOlderThanHours)) -le 8760 ] \
         || fail 2 "usrPruneOlderThanHours must be 24-8760 (got '$usrPruneOlderThanHours')."
+    usrPruneOlderThanHours=$((10#$usrPruneOlderThanHours))
+fi
+if [ -n "$usrPruneSchedule" ]; then
     case "$usrPruneSchedule" in *[\;\&\|\`\$\<\>\\\"\']*|*$'\n'*)
         fail 2 "usrPruneSchedule contains characters a systemd calendar never needs." ;; esac
     if command -v systemd-analyze >/dev/null 2>&1 \
@@ -156,12 +168,7 @@ if [ -n "$usrPruneSchedule" ]; then
         fail 2 "usrPruneSchedule '$usrPruneSchedule' is not a systemd calendar expression."
     fi
 fi
-if [ "$usrPruneNow" = "yes" ]; then
-    [[ "$usrPruneOlderThanHours" =~ ^[0-9]+$ ]] && [ "$usrPruneOlderThanHours" -ge 24 ] \
-        || fail 2 "usrPruneNow=yes needs usrPruneOlderThanHours of 24 or more (got '$usrPruneOlderThanHours')."
-fi
-# Written to the prune's settings whenever the prune is installed (a schedule or
-# Prune now), and checked again by the prune itself.
+# The same goes for the wait and the image mode.
 if [ -n "$usrPruneSchedule" ] || [ "$usrPruneNow" = "yes" ]; then
     [[ "$usrPruneGraceHours" =~ ^[0-9]{1,5}$ ]] && [ $((10#$usrPruneGraceHours)) -ge 24 ] \
         && [ $((10#$usrPruneGraceHours)) -le 8760 ] \
@@ -302,13 +309,20 @@ tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 # not catch every clash (an unknown log opt for the flag's driver only fails a
 # real start). So before merging, find out how the daemon is really started.
 #
+# Only a running dockerd is read: its own command line is what it was started
+# with. With no dockerd running the flags are unknown (exit 3): log rotation is
+# skipped, build-cache limits are still merged, and the next run with Docker
+# running does the rest. (Up to version 11 a stopped Docker's flags were worked
+# out from docker.service, its drop-ins and its environment files; that was a
+# second copy of systemd's own rules, and a guess wherever they differed.)
+#
 # Writes a JSON description to $1 and the daemon's logging flags, NUL
 # separated, to $2 (for dockerd --validate). Prints one "daemon.json:" line.
 # Exit: 0 flags known; 3 flags could not be determined with confidence;
 #       5 the daemon reads a --config-file other than $DAEMON_JSON.
 detect_daemon_flags() {
     python3 - "$DAEMON_JSON" "$1" "$2" "$DOCKER_BIN" <<'PY'
-import json, os, re, shlex, shutil, subprocess, sys
+import json, os, shutil, subprocess, sys
 target, out_json, out_args, docker = sys.argv[1:5]
 
 class Unsure(Exception):
@@ -360,102 +374,6 @@ def find_running_dockerd():
         raise Unsure(f"{len(found)} dockerd processes are running on this host")
     return found[0] if found else None
 
-def read_env_file(path):
-    # systemd EnvironmentFile= syntax. Returns {name: value}; a name whose
-    # value this cannot reproduce exactly maps to an Unsure instead.
-    vals, bad_line = {}, False
-    text = re.sub(r"\\\n", "", read(path))
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line[0] in "#;":
-            continue
-        m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)", line)
-        if not m:
-            bad_line = True
-            continue
-        k, v = m.groups()
-        if v[:1] in ("'", '"'):
-            try:
-                parts = shlex.split(v)
-            except ValueError:
-                parts = []
-            if len(parts) != 1:
-                vals[k] = Unsure(f"{path} sets {k} in a form this component cannot read")
-                continue
-            v = parts[0]
-        if "$" in v or "`" in v:
-            vals[k] = Unsure(f"{path} sets {k} from another variable")
-        else:
-            vals[k] = v
-    return vals, bad_line
-
-def unit_args():
-    # The dockerd arguments docker.service would start with, from the unit as
-    # systemd has loaded it (drop-ins included), with its variables expanded
-    # the way systemd expands them.
-    if not systemd:
-        raise Unsure("Docker is not running, and this host has no systemd unit to read its start flags from")
-    rc, o = run(["systemctl", "show", "docker.service", "-p", "LoadState",
-                 "-p", "ExecStart", "-p", "Environment", "-p", "EnvironmentFiles"])
-    if rc != 0:
-        raise Unsure("Docker is not running, and systemctl show docker.service failed")
-    props = {}
-    for line in o.splitlines():
-        k, _, v = line.partition("=")
-        props.setdefault(k, []).append(v)
-    if props.get("LoadState", [""])[0] != "loaded":
-        raise Unsure("Docker is not running, and there is no docker.service unit to read its start flags from")
-    argvs = re.findall(r"argv\[\]=(.*?) ;", " ".join(props.get("ExecStart", [])))
-    if len(argvs) != 1:
-        raise Unsure(f"Docker is not running, and docker.service has {len(argvs)} ExecStart commands")
-    words = argvs[0].split()
-    if not words or os.path.basename(words[0]) != "dockerd":
-        raise Unsure("Docker is not running, and docker.service does not start dockerd directly")
-
-    env, files_unreadable = {}, []
-    try:
-        for e in shlex.split(" ".join(props.get("Environment", []))):
-            k, _, v = e.partition("=")
-            env[k] = Unsure(f"docker.service sets {k} from another variable") if "$" in v else v
-    except ValueError:
-        files_unreadable.append("the unit's Environment= setting")
-    # Files listed later override earlier ones, and all override Environment=.
-    for path, ignore in re.findall(r"(\S+) \(ignore_errors=(yes|no)\)",
-                                   " ".join(props.get("EnvironmentFiles", []))):
-        if not os.path.exists(path):
-            if ignore == "yes":
-                continue
-            raise Unsure(f"Docker is not running, and its required environment file {path} is missing")
-        try:
-            vals, bad = read_env_file(path)
-        except OSError:
-            files_unreadable.append(path)
-            continue
-        if bad:
-            files_unreadable.append(path)
-        env.update(vals)
-
-    def lookup(name):
-        if files_unreadable:
-            raise Unsure(f"Docker is not running, and docker.service uses ${name} but {files_unreadable[0]} cannot be read with confidence")
-        v = env.get(name, "")      # systemd expands an unset variable to nothing
-        if isinstance(v, Unsure):
-            raise Unsure(f"Docker is not running, and {v}")
-        return v
-
-    args = []
-    for w in words[1:]:
-        if re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", w):
-            try:
-                args.extend(shlex.split(lookup(w[1:])))
-            except ValueError:
-                raise Unsure(f"Docker is not running, and ${w[1:]} is not a list of arguments this component can split")
-            continue
-        if "$" in re.sub(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", "", w):
-            raise Unsure(f"Docker is not running, and docker.service uses a variable in a form this component cannot expand ({w})")
-        args.append(re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: lookup(m.group(1)), w))
-    return args
-
 def parse_flags(args):
     driver, opts, cfg = None, [], None
     names = ("--log-driver", "--log-opt", "--config-file")
@@ -483,28 +401,28 @@ def parse_flags(args):
             cfg = val
     return driver, opts, cfg
 
-det = {"known": False, "why": "", "source": "", "driver_flag": None, "opt_keys": [],
-       "config_file": None, "live_driver": None}
+det = {"known": False, "why": "", "stopped": False, "source": "", "driver_flag": None,
+       "opt_keys": [], "config_file": None, "live_driver": None}
 vargs = []
 rc = 0
 try:
     pid = find_running_dockerd()
-    if pid:
-        try:
-            raw = read(f"/proc/{pid}/cmdline")
-        except OSError:
-            raise Unsure(f"the command line of the running dockerd (pid {pid}) cannot be read")
-        args = raw.split("\0")
-        if args and args[-1] == "":
-            args.pop()
-        args = args[1:]
-        det["source"] = f"the running dockerd, pid {pid}"
-        r, o = run([docker, "info", "--format", "{{.LoggingDriver}}"])
-        if r == 0 and o.strip():
-            det["live_driver"] = o.strip()
-    else:
-        args = unit_args()
-        det["source"] = "docker.service, as it would start Docker; Docker is not running"
+    if not pid:
+        det["stopped"] = True
+        raise Unsure("Docker is not running, so its start flags cannot be read")
+    try:
+        raw = read(f"/proc/{pid}/cmdline")
+    except OSError:
+        raise Unsure(f"the command line of the running dockerd (pid {pid}) cannot be read")
+    args = raw.split("\0")
+    if args and args[-1] == "":
+        args.pop()
+    args = args[1:]
+    det["source"] = f"the running dockerd, pid {pid}"
+    # Safe to ask: a dockerd is running, so this cannot be what starts one.
+    r, o = run([docker, "info", "--format", "{{.LoggingDriver}}"])
+    if r == 0 and o.strip():
+        det["live_driver"] = o.strip()
     driver, opts, cfg = parse_flags(args)
     det.update(known=True, driver_flag=driver, opt_keys=[o.split("=", 1)[0] for o in opts],
                config_file=cfg)
@@ -592,7 +510,8 @@ size, files = env.get("usrLogMaxSize", ""), env.get("usrLogMaxFile", "")
 if size:
     if not det["known"]:
         note("SKIPPED", "log rotation: Docker's start flags could not be determined, so it cannot be "
-                        "known whether Docker would accept log-opts in daemon.json")
+                        "known whether Docker would accept log-opts in daemon.json"
+                        + ("; run this component again while Docker is running" if det.get("stopped") else ""))
     elif det["opt_keys"]:
         note("SKIPPED", f"log rotation: dockerd is started with --log-opt ({', '.join(det['opt_keys'])}); "
                         "Docker will not start with log-opts both as a flag and in daemon.json")
@@ -792,7 +711,7 @@ daemon_section_run() {
     detect_daemon_flags "$det" "$vfile"; rc=$?
     case $rc in
         0) ;;
-        3) section_rc=3 ;;     # flags unknown: log rotation is skipped below
+        3) section_rc=3 ;;     # flags unknown (or Docker not running): log rotation is skipped below
         5) rm -f "$det" "$vfile"; return 3 ;;
         *) say "daemon.json: could not work out how Docker is started; not touched."
            rm -f "$det" "$vfile"; return 3 ;;
@@ -879,8 +798,8 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 #!/bin/bash
 # tc-docker-prune -- installed by the Datto RMM component
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
-# component. Settings: /etc/default/tc-docker-prune.
-TC_PRUNE_VERSION=11
+# component. Settings: /etc/default/tc-docker-prune, read as text and never run.
+TC_PRUNE_VERSION=12
 # The line above is the version of the component that installed this script,
 # and the first thing a run prints is that version, so the journal shows which
 # prune ran. "Docker - Containers Differ From Expected [Lin]" reads it to flag
@@ -919,18 +838,36 @@ TC_PRUNE_VERSION=11
 # If Docker does not return its container list, nothing at all is removed and
 # the exit is 1. If the image list or the second container list cannot be read,
 # no image is removed and the exit is 1. Never volumes. Exit: 0 done, 1 error.
+# The three settings are checked here too: with an OLDER_THAN_HOURS that is not
+# a whole number 24-8760 nothing at all is recorded or removed; with such a
+# GRACE_HOURS no container is; with a PRUNE_IMAGES that is not dangling or all
+# no image is. Each is an ERROR line and exit 1.
 # With Docker stopped (systemd says docker.service is not active) it runs no
 # docker command, says so in one line, removes nothing and exits 0.
 set -u
 echo "tc-docker-prune version $TC_PRUNE_VERSION"
-# Tests may LOWER the lookup limits through the environment. Read before the
-# settings file, and only ever lowered, so no settings line can raise them.
+# Tests may LOWER the lookup limits through the environment: a value here is
+# only ever used to lower one. The settings file cannot set them at all.
 TEST_LOOKUP_MAX="${TC_PRUNE_TEST_LOOKUP_MAX:-}"
 TEST_LOOKUP_SECONDS="${TC_PRUNE_TEST_LOOKUP_SECONDS:-}"
-OLDER_THAN_HOURS=168
-GRACE_HOURS=144
-PRUNE_IMAGES=dangling
-[ -r /etc/default/tc-docker-prune ] && . /etc/default/tc-docker-prune
+PRUNE_CONF=/etc/default/tc-docker-prune
+# The settings file is read as text and never run. A setting is a line
+# NAME=value; for each of the three names below the last such line is used, with
+# the default when there is none. Every other line is ignored (comments, blank
+# lines, names this script does not know), so nothing in the file can run a
+# command or set any other variable here. A file that is missing, or is not a
+# regular file root can read, leaves all three defaults. What comes back is not
+# trusted: each value is checked further down, before anything uses it.
+setting() {  # name, default
+    local line=""
+    if [ -f "$PRUNE_CONF" ] && [ -r "$PRUNE_CONF" ]; then
+        line="$(sed -n -e 's/[[:space:]]*$//' -e "s/^[[:space:]]*\\($1=\\)/\\1/p" "$PRUNE_CONF" 2>/dev/null | tail -n 1 | tr -d '\000')"
+    fi
+    if [ -n "$line" ]; then printf '%s' "${line#*=}"; else printf '%s' "$2"; fi
+}
+OLDER_THAN_HOURS="$(setting OLDER_THAN_HOURS 168)"
+GRACE_HOURS="$(setting GRACE_HOURS 144)"
+PRUNE_IMAGES="$(setting PRUNE_IMAGES dangling)"
 PENDING_DIR=/var/lib/tc-docker
 PENDING_FILE="$PENDING_DIR/pending-removal"
 
@@ -1049,7 +986,6 @@ tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
 root="$("$DOCKER" info --format '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/}"
 free() { df -h --output=avail,pcent "$root" 2>/dev/null | tail -n1 | awk '{print $1" free, "$2" used"}'; }
 NOW="$(date +%s)"
-cutoff=$(( NOW - OLDER_THAN_HOURS * 3600 ))
 expected=" $(tc_list "$EXPECTED_FILE" | tr '\n' ' ') "
 errors=0
 NL=$'\n'
@@ -1062,9 +998,19 @@ tc_epoch() {
 }
 # Printable, short: for echoing a setting that failed its check.
 shown() { printf '%s' "$1" | tr -cd 'a-zA-Z0-9._ -' | cut -c1-20; }
+# What a settings line has to look like, for the same messages: the file is not
+# a shell file, so a value in quotes or with a comment after it is refused.
+SETTING_FORM="A setting is one line, NAME=value, with no quotes and nothing after the value."
 
-# The settings file is written by the component, but it is checked again here:
-# a hand edit must not shorten the wait or widen which images are removed.
+# The settings file is written by the component, but every value is checked
+# again here, before it is used in any arithmetic: a hand edit must not shorten
+# either wait or widen which images are removed.
+OLDER_OK=1
+if [[ "$OLDER_THAN_HOURS" =~ ^[0-9]{1,5}$ ]] && [ $((10#$OLDER_THAN_HOURS)) -ge 24 ] && [ $((10#$OLDER_THAN_HOURS)) -le 8760 ]; then
+    OLDER_THAN_HOURS=$((10#$OLDER_THAN_HOURS))
+else
+    OLDER_OK=0
+fi
 GRACE_OK=1
 if [[ "$GRACE_HOURS" =~ ^[0-9]{1,5}$ ]] && [ $((10#$GRACE_HOURS)) -ge 24 ] && [ $((10#$GRACE_HOURS)) -le 8760 ]; then
     GRACE_HOURS=$((10#$GRACE_HOURS))
@@ -1075,8 +1021,8 @@ IMAGES_OK=1
 PRUNE_IMAGES="$(printf '%s' "${PRUNE_IMAGES:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 [ -n "$PRUNE_IMAGES" ] || PRUNE_IMAGES=dangling
 case "$PRUNE_IMAGES" in dangling|all) ;; *) IMAGES_OK=0 ;; esac
-# Registry lookups (All mode only). Set after the settings file, so it cannot
-# change them; a test can only lower the last two.
+# Registry lookups (All mode only). The settings file cannot change these; a
+# test can only lower the last two.
 LOOKUP_TIMEOUT=20
 LOOKUP_MAX=100
 LOOKUP_SECONDS=300
@@ -1084,6 +1030,14 @@ LOOKUP_SECONDS=300
     && LOOKUP_MAX=$((10#$TEST_LOOKUP_MAX))
 [[ "$TEST_LOOKUP_SECONDS" =~ ^[0-9]{1,3}$ ]] && [ $((10#$TEST_LOOKUP_SECONDS)) -lt "$LOOKUP_SECONDS" ] \
     && LOOKUP_SECONDS=$((10#$TEST_LOOKUP_SECONDS))
+
+# Everything this prune removes is chosen by its age, so without a usable
+# OLDER_THAN_HOURS there is nothing it can safely record or remove.
+if [ "$OLDER_OK" -eq 0 ]; then
+    echo "ERROR: OLDER_THAN_HOURS in $PRUNE_CONF must be a whole number of hours, 24-8760 (it is '$(shown "$OLDER_THAN_HOURS")'). Every removal depends on it, so nothing is recorded or removed this run. $SETTING_FORM"
+    exit 1
+fi
+cutoff=$(( NOW - OLDER_THAN_HOURS * 3600 ))
 
 # Read the containers before anything is removed. If Docker does not answer,
 # nothing is removed at all: an empty answer would look like "no containers".
@@ -1176,7 +1130,7 @@ if [ "$REVIEWED" -eq 1 ]; then
     if [ "$GRACE_OK" -eq 1 ]; then
         CONTAINERS=1
     else
-        echo "ERROR: GRACE_HOURS in /etc/default/tc-docker-prune must be a whole number of hours, 24-8760 (it is '$(shown "$GRACE_HOURS")'). No container is recorded or removed this run."
+        echo "ERROR: GRACE_HOURS in /etc/default/tc-docker-prune must be a whole number of hours, 24-8760 (it is '$(shown "$GRACE_HOURS")'). No container is recorded or removed this run. $SETTING_FORM"
         errors=$((errors + 1))
     fi
 fi
@@ -1493,7 +1447,7 @@ image_section() {
     local n_removed=0 n_absent=0 n_unsure=0 n_unchecked=0
     local -a img_removed=() img_kept=()
     if [ "$IMAGES_OK" -eq 0 ]; then
-        echo "ERROR: PRUNE_IMAGES in /etc/default/tc-docker-prune must be dangling or all (it is '$(shown "$PRUNE_IMAGES")'). No image was removed."
+        echo "ERROR: PRUNE_IMAGES in /etc/default/tc-docker-prune must be dangling or all (it is '$(shown "$PRUNE_IMAGES")'). No image was removed. $SETTING_FORM"
         errors=$((errors + 1)); return
     fi
     # After the containers above were removed, so an image they used can go.
