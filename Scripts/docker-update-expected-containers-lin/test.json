@@ -2,9 +2,19 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the containers present as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written. Confirm reviewed records the review with a note, refuses when no list exists, and Show reports the review state and stopped containers the list does not protect. A container whose Compose project label carries a forged row is shown as UNREADABLE by name and short id, left off by Accept current and refused by Add; the label never reaches the output or the list. When docker ps fails but docker info answers (a shim on PATH), Accept current and Add by bare name exit 3 and the list is unchanged, and Show says there is no comparison without changing the exit code. Accept current with no containers will not empty a non-empty list. Show's STOPPED, UNLISTED line follows the prune: before review it says nothing is removed until then; after review a container the prune has recorded in /var/lib/tc-docker/pending-removal is WAITING, with when it was recorded and from when it can be removed (GRACE_HOURS from the prune's settings), and one it has not is not yet recorded; a line of that file that is not well formed is not trusted. When docker info fails, Show says there is no comparison, Accept current and Add by bare name exit 3 with the list byte-for-byte unchanged, Remove takes a bare name as name:<name>, and no docker command but docker info is run. With docker only in /snap/bin, outside the harness PATH, it is found through the appended system directories. With docker.service stopped while docker.socket listens (a shim on PATH records every docker command): Show prints the lists and the review state and says Docker was left stopped; Accept current and Add with a bare name exit 3 and change nothing; Add with keys, Remove, Add ignore, Remove ignore and Confirm reviewed work; no run starts Docker or runs any docker command.",
+  "description": "On a runner with Docker: show works before any list exists; an ignore pattern keeps CI-style containers off the list; accept-current writes the containers present as Compose and name keys, leaving out ignored and --rm containers; add resolves a bare name and accepts explicit keys; remove takes them off; the previous file is kept as .prev; show reports a stopped and a missing expected container. Bad input is refused with exit 2 before anything is written. Confirm reviewed records the review with a note, refuses when no list exists, and Show reports the review state and stopped containers the list does not protect. A container whose Compose project label carries a forged row is shown as UNREADABLE by name and short id, left off by Accept current and refused by Add; the label never reaches the output or the list. When docker ps fails but docker info answers (a shim on PATH), Accept current and Add by bare name exit 3 and the list is unchanged, and Show says there is no comparison without changing the exit code. Accept current with no containers will not empty a non-empty list. Show's STOPPED, UNLISTED line follows the prune: before review it says nothing is removed until then; after review a container the prune has recorded in /var/lib/tc-docker/pending-removal is WAITING, with when it was recorded and from when it can be removed (GRACE_HOURS from the prune's settings), and one it has not is not yet recorded; a line of that file that is not well formed is not trusted. When docker info fails, Show says there is no comparison, Accept current and Add by bare name exit 3 with the list byte-for-byte unchanged, Remove takes a bare name as name:<name>, and no docker command but docker info is run. With docker only in /snap/bin, outside the harness PATH, it is found through the appended system directories. With docker.service stopped while docker.socket listens (a shim on PATH records every docker command): Show prints the lists and the review state and says Docker was left stopped; Accept current and Add with a bare name exit 3 and change nothing; Add with keys, Remove, Add ignore, Remove ignore and Confirm reviewed work; no run starts Docker or runs any docker command. Version 6: the first step reads the script itself (the pending-removal file is read with the shared tc_pending_lines, and the tc-docker running block says it is identical in every tc-docker component); and Show gives what version 5 gave for a pending-removal file with a blank line, a second line for the same container (the first is used) and a line with CRLF endings (not trusted).",
   "variables": {},
   "steps": [
+    {
+      "type": "command",
+      "label": "Shared code: the pending-removal file is read with tc_pending_lines, the function the prune and the monitor share, and no parser of this component's own is left; the tc-docker running block's first line says it is identical in every tc-docker component",
+      "run": "f=Scripts/docker-update-expected-containers-lin/docker-update-expected-containers-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; echo \"tc_pending_lines: $(grep -c '^tc_pending_lines() {$' $f) defined, $(grep -cF 'pending=\"$(tc_pending_lines \"$PENDING_FILE\")\"' $f) called\"; echo \"parsers of its own: $(grep -c '^pending_records() {$' $f)\"; echo \"running block first line: $(grep -c '^# >>> tc-docker running: identical in every tc-docker component; change them together\\.$' $f)\"",
+      "outputContains": [
+        "tc_pending_lines: 1 defined, 1 called",
+        "parsers of its own: 0",
+        "running block first line: 1"
+      ]
+    },
     {
       "type": "command",
       "label": "Four containers: plain, Compose, CI-style, --rm",
@@ -175,6 +185,27 @@
       ],
       "outputNotContains": [
         "soon",
+        "nothing is removed until the list is reviewed"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Show after review: the pending-removal file written again with a blank line, tc-old twice (2026-11-20 12:00 UTC, then a day later) and tc-old2's line with CRLF line endings",
+      "run": "set -e; f=/var/lib/tc-docker/pending-removal; o=$(docker inspect -f '{{.Id}}' tc-old); printf '%s\\n' '# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.' '' > $f; printf '%s\\tname:tc-old\\ttc-old\\t1795176000\\n' $o >> $f; printf '%s\\tname:tc-old\\ttc-old\\t1795262400\\n' $o >> $f; printf '%s\\tname:tc-old2\\ttc-old2\\t1795176000\\r\\n' $(docker inspect -f '{{.Id}}' tc-old2) >> $f; echo \"lines: $(wc -l < $f), ending in CR: $(grep -c $'\\r$' $f)\"",
+      "outputContains": [
+        "lines: 5, ending in CR: 1"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Show after review: the first line for tc-old is the one used, and tc-old2's line with CRLF endings is not trusted, so it is not yet recorded",
+      "outputContains": [
+        "STOPPED, UNLISTED  name:tc-old  - WAITING: recorded for removal 2026-11-20 12:00 UTC; the prune can remove it from 2026-11-26 12:00 UTC; Add it to keep it",
+        "STOPPED, UNLISTED  name:tc-old2  - not yet recorded for removal: the prune records it once it has been stopped 168h, then removes it 144h later; Add it to keep it"
+      ],
+      "outputNotContains": [
+        "2026-11-21",
+        "2026-11-27",
         "nothing is removed until the list is reviewed"
       ]
     },

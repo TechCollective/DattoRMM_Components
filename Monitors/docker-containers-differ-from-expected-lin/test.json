@@ -2,9 +2,21 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 11, the first prune that never starts a stopped Docker: a prune stamped 10 is stale, and ones stamped 11 and 12 are not. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. An unreviewed list is named with its age (the list file's modification time): one day old, it stays exit 0 under Warn; made 15 days old, it alerts under Warn with the default usrUnreviewedAfterDays of 14, and the diagnostic says why and names the review steps; usrUnreviewedAfterDays 0 never escalates; Ignore does not mention it; Alert alerts as before; before review a missing container is still named, not alerted on; a reviewed list 15 days old is healthy; and a usrUnreviewedAfterDays above 365 or not a number is refused. Version 7: a running unlisted container's age counts from when the monitor first saw it, kept in /var/lib/tc-docker/monitor-first-seen (root-only), so recreating or restarting it does not reset the clock; the first run without the file gives the version 6 result; time is made to pass by editing the file; a key put on the list, or not seen for 7 days, is dropped (6 days is kept); malformed lines are ignored and dropped, the first good line per key is used; an unwritable directory (chattr +i) or a symlink in the file's place falls back to the container's start time and says so, and the symlink's target is untouched. A docker shim that never answers (also one that ignores TERM, and one that hangs only the listing) gives 'Docker did not answer within 40 seconds', exit 1, inside 60 seconds, with no shim process left and a sibling in the caller's process group untouched. With docker.service stopped and docker.socket listening, no docker command is run (a recording shim proves it) and Docker stays stopped: an expected list alerts, no list or an empty list is healthy, and a stale prune is still reported first. A client with no unit, no socket and no list is healthy; with a list it cannot talk to the daemon. No docker command: healthy when nothing of Docker is there, exit 1 when its socket is. A client only in /snap/bin is found through the appended PATH. GNU bash 4.2 is built from source and the monitor's main paths, starting with an empty list and nothing else, run under it without an unbound-variable crash.",
+  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 11, the first prune that never starts a stopped Docker: a prune stamped 10 is stale, and ones stamped 11 and 12 are not. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. An unreviewed list is named with its age (the list file's modification time): one day old, it stays exit 0 under Warn; made 15 days old, it alerts under Warn with the default usrUnreviewedAfterDays of 14, and the diagnostic says why and names the review steps; usrUnreviewedAfterDays 0 never escalates; Ignore does not mention it; Alert alerts as before; before review a missing container is still named, not alerted on; a reviewed list 15 days old is healthy; and a usrUnreviewedAfterDays above 365 or not a number is refused. Version 7: a running unlisted container's age counts from when the monitor first saw it, kept in /var/lib/tc-docker/monitor-first-seen (root-only), so recreating or restarting it does not reset the clock; the first run without the file gives the version 6 result; time is made to pass by editing the file; a key put on the list, or not seen for 7 days, is dropped (6 days is kept); malformed lines are ignored and dropped, the first good line per key is used; an unwritable directory (chattr +i) or a symlink in the file's place falls back to the container's start time and says so, and the symlink's target is untouched. A docker shim that never answers (also one that ignores TERM, and one that hangs only the listing) gives 'Docker did not answer within 40 seconds', exit 1, inside 60 seconds, with no shim process left and a sibling in the caller's process group untouched. With docker.service stopped and docker.socket listening, no docker command is run (a recording shim proves it) and Docker stays stopped: an expected list alerts, no list or an empty list is healthy, and a stale prune is still reported first. A client with no unit, no socket and no list is healthy; with a list it cannot talk to the daemon. No docker command: healthy when nothing of Docker is there, exit 1 when its socket is. A client only in /snap/bin is found through the appended PATH. GNU bash 4.2 is built from source and the monitor's main paths, starting with an empty list and nothing else, run under it without an unbound-variable crash. Version 9: the first step reads the script itself (its time-limit functions sit in one block marked tc-docker bounded, its tc-docker running block says it is identical in every tc-docker component, and the pending-removal file is read with the shared tc_pending_lines). Pending-removal files with blank lines, a second line for the same container and CRLF line endings, and a symlink in the file's place, give the results the monitor's own parser gave in version 8: blank lines are not counted, the first line for a container is used, a CRLF line is counted with its line number and its container is not shown, and a symlink is not followed.",
   "variables": {},
   "steps": [
+    {
+      "type": "command",
+      "label": "Shared blocks: bounded, systemd_up and docker_unit_loaded are defined once each, inside one block marked tc-docker bounded, and the tc-docker running block's first line says it is identical in every tc-docker component; the pending-removal file is read with tc_pending_lines, the function the prune and Update Expected Containers share",
+      "run": "f=Monitors/docker-containers-differ-from-expected-lin/docker-containers-differ-from-expected-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; echo \"bounded block: $(grep -c '^# >>> tc-docker bounded: ' $f) start, $(grep -c '^# <<< tc-docker bounded$' $f) end\"; echo \"functions inside it: $(sed -n '/^# >>> tc-docker bounded: /,/^# <<< tc-docker bounded$/p' $f | grep -cE '^(bounded|systemd_up|docker_unit_loaded)\\(\\) \\{')\"; echo \"the same functions in the whole script: $(grep -cE '^(bounded|systemd_up|docker_unit_loaded)\\(\\) \\{' $f)\"; echo \"running block first line: $(grep -c '^# >>> tc-docker running: identical in every tc-docker component; change them together\\.$' $f)\"; echo \"tc_pending_lines: $(grep -c '^tc_pending_lines() {$' $f) defined, $(grep -cF 'PLINES=\"$(tc_pending_lines \"$PENDING_FILE\")\"' $f) called\"",
+      "outputContains": [
+        "bounded block: 1 start, 1 end",
+        "functions inside it: 3",
+        "the same functions in the whole script: 3",
+        "running block first line: 1",
+        "tc_pending_lines: 1 defined, 1 called"
+      ]
+    },
     {
       "type": "command",
       "label": "Test helpers: tc-test-run (runs the monitor the way the harness does, timed, under /bin/bash or bash 4.2), tc-test-fs (the first-seen file), tc-test-dstate (systemd's view of Docker), tc-test-left (docker shim processes still running)",
@@ -339,6 +351,58 @@
         "tc-evil",
         "soon",
         "name:tc-pend-b"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Pending removals: a file with a blank line, a line of spaces, tc-pend-a twice (2026-11-20 12:00 UTC, then a day later) and tc-pend-b's line with CRLF line endings",
+      "run": "set -e; f=/var/lib/tc-docker/pending-removal; a=$(docker inspect -f '{{.Id}}' tc-pend-a); b=$(docker inspect -f '{{.Id}}' tc-pend-b); printf '%s\\n' '# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.' '' > $f; printf '%s\\tname:tc-pend-a\\ttc-pend-a\\t1795176000\\n' $a >> $f; printf '%s\\n' '   ' >> $f; printf '%s\\tname:tc-pend-a\\ttc-pend-a\\t1795262400\\n' $a >> $f; printf '%s\\tname:tc-pend-b\\ttc-pend-b\\t1795262400\\r\\n' $b >> $f; echo \"lines: $(wc -l < $f), ending in CR: $(grep -c $'\\r$' $f)\"",
+      "outputContains": [
+        "lines: 6, ending in CR: 1"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Blank lines are not counted; the first line for a container is the one used; a line with CRLF endings is not well formed, so it is counted with its line number and its container is not shown",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=1 stopped container will be removed by the prune (name:tc-pend-a from 2026-11-26); pending-removal file has 1 unreadable line(s); 1 expected",
+        "PENDING   name:tc-pend-a  - stopped container tc-pend-a, recorded 2026-11-20",
+        "BAD PENDING  /var/lib/tc-docker/pending-removal: line(s) 6 not id<TAB>key<TAB>name<TAB>time"
+      ],
+      "outputNotContains": [
+        "name:tc-pend-b",
+        "2026-11-27",
+        "2026-11-21"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Pending removals: the file is a symlink to a well-formed record of tc-pend-a",
+      "run": "set -e; f=/var/lib/tc-docker/pending-removal; rm -f $f; printf '%s\\n' '# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.' > /var/lib/tc-docker/tc-test-real; printf '%s\\tname:tc-pend-a\\ttc-pend-a\\t1795176000\\n' $(docker inspect -f '{{.Id}}' tc-pend-a) >> /var/lib/tc-docker/tc-test-real; ln -s /var/lib/tc-docker/tc-test-real $f; stat -c '%F' $f",
+      "outputContains": [
+        "symbolic link"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A symlink in the pending file's place is not followed: nothing in its target is shown, it counts as one unreadable line, and alerts",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=pending-removal file has 1 unreadable line(s); 1 expected",
+        "BAD PENDING  /var/lib/tc-docker/pending-removal: it is not a regular file this monitor can read"
+      ],
+      "outputNotContains": [
+        "will be removed by the prune",
+        "name:tc-pend-a"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Pending removals: the symlink and its target removed",
+      "run": "rm -f /var/lib/tc-docker/pending-removal /var/lib/tc-docker/tc-test-real && echo removed",
+      "outputContains": [
+        "removed"
       ]
     },
     {

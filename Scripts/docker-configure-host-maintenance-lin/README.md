@@ -167,6 +167,27 @@ first records it as waiting, and removes it only on a run at least
 >   (the timer, the units, a stopped `docker.service`) have **not** been run
 >   for this version: the Tier 1 test runs them on the CI runner, so read
 >   that result before merging. It has not yet run through a Datto agent.
+> - **Version 13** (2026-11-17) moves code and changes no behaviour. The
+>   prune's reading of `/var/lib/tc-docker/pending-removal` is now the
+>   function `tc_pending_lines` in the block the Docker components share
+>   (`tc-docker shared`), so the prune, the monitor and Update Expected
+>   Containers read that file with one parser where there were three. The
+>   first line of the "is Docker running" block (`tc-docker running`) now says
+>   what has been true since the other components took a copy: it is
+>   identical in every tc-docker component. What the prune records, removes,
+>   prints and writes is the same as version 12's; only the stamp differs
+>   (`TC_PRUNE_VERSION=13`). The monitor's `PRUNE_MIN_VERSION` stays **11**.
+>   The version 12 and version 13 prunes were run side by side against the
+>   same 33 pending-removal files (well formed, and malformed in each way the
+>   parser checks) with a stand-in `docker`, under gawk, mawk 1.3.4, mawk
+>   1.3.3 and busybox awk: output, exit code, the file written and the docker
+>   commands run were identical every time. The Tier 1 test was run against
+>   a live Docker 29 daemon in a sandbox **without systemd**, with the timer
+>   and unit steps left out: each step gave the result it gave for version
+>   12 there, and the two new steps pass. The steps that need systemd (the
+>   timer, the units, a stopped `docker.service`) have **not** been run for
+>   this version: the Tier 1 test runs them on the CI runner, so read that
+>   result before merging. It has not yet run through a Datto agent.
 
 ## What it does
 
@@ -403,8 +424,8 @@ prune starts a stopped Docker:
   `docker.socket` keeps listening while the service is stopped, and any
   `docker` command would start it. Elsewhere they ask `docker info`, as
   before. The code is one function, marked `tc-docker running`, in this
-  component and in the prune it installs; CI's shared-block check keeps the
-  two copies identical.
+  component, in the prune it installs and in the other four Docker
+  components; CI's shared-block check keeps the six copies identical.
 - **The prune, run by hand or by Prune now, with Docker stopped** prints
   `Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.`
   after its version line, removes nothing and exits `0`. A Docker that
@@ -447,8 +468,9 @@ What earlier versions left on a host, which the monitor flags:
 | 6 | The current rules, without a stamp | The monitor cannot tell it from an older one |
 | 7, 8 | Removes a stopped container at the first prune after it is old enough, counting from when it was **created**; removes every image no container uses | A container that crashed minutes ago is removed without warning, with its logs; an image built or loaded on the host, which exists nowhere else, is removed |
 | 9, 10 | `Requires=docker.service`, and a `docker info` before it checks anything. (9 also keeps every tagged image on the containerd image store in `All` mode, which is not unsafe) | The weekly timer starts a Docker that was stopped on purpose, and every `restart: always` container with it. Flagged from the monitor's version 8 (`PRUNE_MIN_VERSION` 11) |
-| 11 | Runs its settings file as shell, and does not check `OLDER_THAN_HOURS` | Only after a hand edit of `/etc/default/tc-docker-prune`: a line there is a command run as root, and `OLDER_THAN_HOURS=0` removes things of any age. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run version 12 on the host to replace it |
-| 12 | Current | |
+| 11 | Runs its settings file as shell, and does not check `OLDER_THAN_HOURS` | Only after a hand edit of `/etc/default/tc-docker-prune`: a line there is a command run as root, and `OLDER_THAN_HOURS=0` removes things of any age. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run the current version on the host to replace it |
+| 12 | The current rules. Version 13's prune differs only in where its code for reading `pending-removal` lives | Nothing. Not flagged |
+| 13 | Current | |
 
 **Before the list is reviewed:** the prune removes only unused networks and
 build cache older than `usrPruneOlderThanHours`. No container and no image.
@@ -672,11 +694,13 @@ leave its unused tagged images in place.
 | [`Docker - Update Expected Containers [Lin]`](../docker-update-expected-containers-lin/) | The only thing that changes the expected list or the ignore patterns |
 | [`Docker - Containers Differ From Expected [Lin]`](../../Monitors/docker-containers-differ-from-expected-lin/) | Monitor. Alerts when an expected container is stopped or gone, or a stopped container is waiting to be removed by the prune; reports unlisted ones |
 
-All three share one block of code that turns a container into its key. It is
-marked `tc-docker shared`, and there are four copies: this component, the
-prune script it installs, and the other two. All four must stay
-byte-identical; CI's "Shared blocks match" check fails the pull request when
-they are not.
+All three share one block of code that turns a container into its key and,
+from version 13, reads the prune's `pending-removal` file. It is marked
+`tc-docker shared`, and there are four copies: this component, the prune
+script it installs, and the other two. All four must stay byte-identical;
+CI's "Shared blocks match" check fails the pull request when they are not.
+The "is Docker running" check is a second shared block, `tc-docker running`,
+with six copies: these four and the Health and Images monitors.
 
 ## Installing it in Datto
 
@@ -804,13 +828,13 @@ A run with Docker stopped exits `3`. Its `daemon.json` lines look like:
 
 A prune with Docker stopped (by hand; the timer does not start it then):
 
-    tc-docker-prune version 12
+    tc-docker-prune version 13
     Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.
 
 A prune after review reports what it recorded, what is waiting, what it
 removed and what it kept:
 
-    tc-docker-prune version 12
+    tc-docker-prune version 13
     Pruning unused items older than 168h. Volumes are never removed.
     Disk before: 30G free, 29% used
     Stopped containers recorded for removal this run (removed 144h from now if still stopped and not protected):

@@ -271,6 +271,31 @@ tc_ignored() {
 }
 # Succeeds once a person has confirmed this host's expected list.
 tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
+
+# The well-formed lines of pending-removal file $1 (the stopped containers
+# tc-docker-prune has recorded and will remove), tab separated:
+#   id  key  name  first-recorded
+# first-recorded is seconds since 1970, printed without leading zeros. Then,
+# when the file has any other line, one last line:
+#   BAD  n  line-numbers
+# n is how many lines are not well formed, line-numbers which ones (", "
+# between them). Comment lines (#) and blank lines are neither. The file is
+# untrusted: a line is well formed only when it is exactly four fields, a 64
+# hex character id, a key, a plain name and a number of at most 10 digits; an
+# id may appear on more than one line, and the caller decides which one counts.
+# Prints nothing when $1 is missing or is not a regular file (a symlink is not
+# one) that can be read.
+tc_pending_lines() {
+    { [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ]; } || return 0
+    awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
+        /^#/ || /^[ \t]*$/ { next }
+        NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 {
+            sub(/^0+/, "", $4); if ($4 == "") $4 = "0"
+            print; next
+        }
+        { bad++; where = where (bad > 1 ? ", " : "") NR }
+        END { if (bad) print "BAD", bad, where }' "$1"
+}
 # <<< tc-docker shared
 
 # >>> tc-docker running: identical in every tc-docker component; change them together.
@@ -608,10 +633,7 @@ PENDING=(); PENDING_DIAG=(); PENDING_ALERTABLE=0; PENDING_BAD=0; PENDING_BAD_LIN
 if [ "$usrPendingRemovalAction" != "ignore" ] && [ "$UNREVIEWED" -eq 0 ] \
    && { [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; }; then
     if [ -f "$PENDING_FILE" ] && [ ! -L "$PENDING_FILE" ] && [ -r "$PENDING_FILE" ]; then
-        PLINES="$(awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
-            /^#/ || /^[ \t]*$/ { next }
-            NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 { print $1, $2, $3, $4 + 0; next }
-            { print "BAD", NR }' "$PENDING_FILE")"
+        PLINES="$(tc_pending_lines "$PENDING_FILE")"
     else
         PLINES=""; PENDING_BAD=1; PENDING_BAD_LINES="it is not a regular file this monitor can read"
     fi
@@ -620,8 +642,8 @@ if [ "$usrPendingRemovalAction" != "ignore" ] && [ "$UNREVIEWED" -eq 0 ] \
     declare -A PSEEN=()
     while IFS=$'\t' read -r pid pkey pname pat; do
         [ -n "$pid" ] || continue
-        if [ "$pid" = "BAD" ]; then
-            PENDING_BAD=$((PENDING_BAD + 1)); PENDING_BAD_LINES="${PENDING_BAD_LINES:-line(s) }${PENDING_BAD_LINES:+, }$pkey"; continue
+        if [ "$pid" = "BAD" ]; then     # one such line at most: how many lines, and which
+            PENDING_BAD="$pkey"; PENDING_BAD_LINES="line(s) $pname"; continue
         fi
         [ -z "${PSEEN[$pid]:-}" ] || continue
         PSEEN[$pid]=1

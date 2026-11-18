@@ -299,6 +299,31 @@ tc_ignored() {
 }
 # Succeeds once a person has confirmed this host's expected list.
 tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
+
+# The well-formed lines of pending-removal file $1 (the stopped containers
+# tc-docker-prune has recorded and will remove), tab separated:
+#   id  key  name  first-recorded
+# first-recorded is seconds since 1970, printed without leading zeros. Then,
+# when the file has any other line, one last line:
+#   BAD  n  line-numbers
+# n is how many lines are not well formed, line-numbers which ones (", "
+# between them). Comment lines (#) and blank lines are neither. The file is
+# untrusted: a line is well formed only when it is exactly four fields, a 64
+# hex character id, a key, a plain name and a number of at most 10 digits; an
+# id may appear on more than one line, and the caller decides which one counts.
+# Prints nothing when $1 is missing or is not a regular file (a symlink is not
+# one) that can be read.
+tc_pending_lines() {
+    { [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ]; } || return 0
+    awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
+        /^#/ || /^[ \t]*$/ { next }
+        NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 {
+            sub(/^0+/, "", $4); if ($4 == "") $4 = "0"
+            print; next
+        }
+        { bad++; where = where (bad > 1 ? ", " : "") NR }
+        END { if (bad) print "BAD", bad, where }' "$1"
+}
 # <<< tc-docker shared
 
 # ---------------------------------------------------------------- daemon.json
@@ -983,6 +1008,31 @@ tc_ignored() {
 }
 # Succeeds once a person has confirmed this host's expected list.
 tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
+
+# The well-formed lines of pending-removal file $1 (the stopped containers
+# tc-docker-prune has recorded and will remove), tab separated:
+#   id  key  name  first-recorded
+# first-recorded is seconds since 1970, printed without leading zeros. Then,
+# when the file has any other line, one last line:
+#   BAD  n  line-numbers
+# n is how many lines are not well formed, line-numbers which ones (", "
+# between them). Comment lines (#) and blank lines are neither. The file is
+# untrusted: a line is well formed only when it is exactly four fields, a 64
+# hex character id, a key, a plain name and a number of at most 10 digits; an
+# id may appear on more than one line, and the caller decides which one counts.
+# Prints nothing when $1 is missing or is not a regular file (a symlink is not
+# one) that can be read.
+tc_pending_lines() {
+    { [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ]; } || return 0
+    awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
+        /^#/ || /^[ \t]*$/ { next }
+        NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 {
+            sub(/^0+/, "", $4); if ($4 == "") $4 = "0"
+            print; next
+        }
+        { bad++; where = where (bad > 1 ? ", " : "") NR }
+        END { if (bad) print "BAD", bad, where }' "$1"
+}
 # <<< tc-docker shared
 
 root="$("$DOCKER" info --format '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/}"
@@ -1075,17 +1125,6 @@ fi
 
 # ---- stopped containers: recorded first, removed GRACE_HOURS later
 
-# The well-formed lines of the pending file (id, key, name, epoch first
-# recorded; tab separated), then one "BAD<tab>n" line if n lines were not.
-pending_lines() {
-    { [ -f "$PENDING_FILE" ] && [ ! -L "$PENDING_FILE" ] && [ -r "$PENDING_FILE" ]; } || return 0
-    awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
-        /^#/ || /^[ \t]*$/ { next }
-        NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 { print; next }
-        { bad++ }
-        END { if (bad) print "BAD", bad }' "$PENDING_FILE"
-}
-
 # Replaces the pending file with a header and $1 (lines ending in newlines):
 # a new file in the same root-only directory, checked, then renamed over the
 # old one. Returns 1, with PENDING_WHY set, when it cannot.
@@ -1138,7 +1177,9 @@ if [ "$REVIEWED" -eq 1 ]; then
 fi
 if [ "$CONTAINERS" -eq 1 ]; then
     declare -A PEND_AT=() PEND_KEY=() PEND_NAME=()
-    pend="$(pending_lines)"
+    # The pending file, read by tc_pending_lines (in the shared block above):
+    # its well-formed lines, then one "BAD<tab>n<tab>..." line if n were not.
+    pend="$(tc_pending_lines "$PENDING_FILE")"
     pend_bad=0
     while IFS=$'\t' read -r pid pkey pname pat; do
         if [ "$pid" = "BAD" ]; then pend_bad="$pkey"; continue; fi

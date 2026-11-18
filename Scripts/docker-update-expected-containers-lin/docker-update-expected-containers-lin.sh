@@ -146,6 +146,31 @@ tc_ignored() {
 }
 # Succeeds once a person has confirmed this host's expected list.
 tc_reviewed() { [ -s "$REVIEWED_FILE" ]; }
+
+# The well-formed lines of pending-removal file $1 (the stopped containers
+# tc-docker-prune has recorded and will remove), tab separated:
+#   id  key  name  first-recorded
+# first-recorded is seconds since 1970, printed without leading zeros. Then,
+# when the file has any other line, one last line:
+#   BAD  n  line-numbers
+# n is how many lines are not well formed, line-numbers which ones (", "
+# between them). Comment lines (#) and blank lines are neither. The file is
+# untrusted: a line is well formed only when it is exactly four fields, a 64
+# hex character id, a key, a plain name and a number of at most 10 digits; an
+# id may appear on more than one line, and the caller decides which one counts.
+# Prints nothing when $1 is missing or is not a regular file (a symlink is not
+# one) that can be read.
+tc_pending_lines() {
+    { [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ]; } || return 0
+    awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
+        /^#/ || /^[ \t]*$/ { next }
+        NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 {
+            sub(/^0+/, "", $4); if ($4 == "") $4 = "0"
+            print; next
+        }
+        { bad++; where = where (bad > 1 ? ", " : "") NR }
+        END { if (bad) print "BAD", bad, where }' "$1"
+}
 # <<< tc-docker shared
 
 # >>> tc-docker running: identical in every tc-docker component; change them together.
@@ -274,16 +299,11 @@ write_list() {
 EXPECTED_HEADER="# Containers expected on this host, one per line.
 #   compose:<project>/<service>  a Docker Compose service
 #   name:<container name>        any other container"
-# What the prune has recorded for removal: "id<TAB>epoch first recorded" for
-# each well-formed line of its pending file (written by tc-docker-prune, version
-# 9 and later). A missing file means nothing is waiting.
+# What the prune has recorded for removal (written by tc-docker-prune, version
+# 9 and later), read with tc_pending_lines from the shared block above: Show
+# uses its well-formed lines only, and takes no notice of the others. A missing
+# file means nothing is waiting.
 PENDING_FILE="/var/lib/tc-docker/pending-removal"
-pending_records() {
-    { [ -f "$PENDING_FILE" ] && [ ! -L "$PENDING_FILE" ] && [ -r "$PENDING_FILE" ]; } || return 0
-    awk -F'\t' -v OFS='\t' -v keyre="$KEY_RE" '
-        /^#/ { next }
-        NF == 4 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 ~ keyre && $3 ~ /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/ && $4 ~ /^[0-9]+$/ && length($4) <= 10 { print $1, $2, $4 + 0 }' "$PENDING_FILE"
-}
 # A setting from the prune's settings file, as the component wrote it
 # (NAME=whole number), or $2 when it is missing or not a whole number.
 prune_setting() {
@@ -327,7 +347,7 @@ show() {
     # has been stopped OLDER_THAN_HOURS, and removes it GRACE_HOURS later.
     local older grace pending id at
     older="$(prune_setting OLDER_THAN_HOURS 168)"; grace="$(prune_setting GRACE_HOURS 144)"
-    pending="$(pending_records)"
+    pending="$(tc_pending_lines "$PENDING_FILE")"
     printf '%s\n' "$rows" | awk -F'\t' -v OFS='\t' '$4 != "true" && $9 == "n" && $8 == "n" && $5 != "always" && $5 != "unless-stopped" && $2 !~ /^unreadable:/ {print $2, $1}' \
         | sort -u | while IFS=$'\t' read -r k id; do
         tc_list "$EXPECTED_FILE" | grep -qxF -- "$k" && continue
@@ -336,7 +356,7 @@ show() {
             say "  STOPPED, UNLISTED  $k  - nothing is removed until the list is reviewed; after that the prune records it, then removes it ${grace}h later; Add it to keep it"
             continue
         fi
-        at="$(printf '%s\n' "$pending" | awk -F'\t' -v id="$id" -v k="$k" '$1 == id && $2 == k {print $3; exit}')"
+        at="$(printf '%s\n' "$pending" | awk -F'\t' -v id="$id" -v k="$k" '$1 == id && $2 == k {print $4; exit}')"
         if [ -n "$at" ]; then
             say "  STOPPED, UNLISTED  $k  - WAITING: recorded for removal $(date -d "@$at" '+%Y-%m-%d %H:%M %Z'); the prune can remove it from $(date -d "@$(( at + grace * 3600 ))" '+%Y-%m-%d %H:%M %Z'); Add it to keep it"
         else
