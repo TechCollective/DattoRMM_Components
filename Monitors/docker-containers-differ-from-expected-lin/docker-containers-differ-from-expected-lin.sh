@@ -137,14 +137,12 @@ export PATH
 # prunes of versions 9 and 10 start a Docker that was stopped on purpose, and
 # every restart: always container with it. Version 12 only changes how the
 # prune reads its own settings file, which matters after a hand edit of that
-# file, and version 13 only moves code, so 11 is still accepted.
+# file, version 13 only moves code, and version 14 only refuses a
+# /var/lib/tc-docker that is not root's, so 11 is still accepted.
 PRUNE_MIN_VERSION=11
 PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
 PRUNE_UNIT="/etc/systemd/system/tc-docker-prune.service"
 PRUNE_CONF="/etc/default/tc-docker-prune"
-PENDING_FILE="/var/lib/tc-docker/pending-removal"
-FIRST_SEEN_DIR="/var/lib/tc-docker"
-FIRST_SEEN_FILE="$FIRST_SEEN_DIR/monitor-first-seen"
 FIRST_SEEN_KEEP_DAYS=7
 DOCKER_SOCK="/var/run/docker.sock"
 # Every docker command of one run must have finished this many seconds after the
@@ -348,6 +346,64 @@ tc_docker_running() {
 }
 # <<< tc-docker running
 
+# >>> tc-docker state: identical in the prune and in the Containers, Health and Images monitors; change them together.
+# The one directory the tc-docker components keep state in, and the one way a
+# file in it is written. tc_state_write NAME CONTENT replaces
+# $TC_STATE_DIR/NAME with CONTENT, exactly as given. The new file is made in
+# the same directory (mode 0600), read back and compared (a full disk can
+# leave a short file), then renamed over the old one, so a reader sees the old
+# file or the new one and never part of one. The directory is created when it
+# is missing, and made root:root 0700 when it is root's but is not that.
+# Nothing is written, and it returns 1 with the reason in TC_STATE_WHY (and
+# the failing command's own words, when it had any, in TC_STATE_ERR), when:
+#   - the directory is a symlink, or is there and is not a directory;
+#   - NAME is there as a symlink, or as anything but a regular file (a symlink
+#     is never followed, written through or replaced);
+#   - the directory cannot be created, is not owned by root, or cannot be made
+#     root:root 0700;
+#   - no file can be created in it, what was written does not read back the
+#     same, or the rename fails.
+# What a failure means is the caller's to say: the prune removes no container
+# it could not record first. Needs GNU stat (-c), mktemp and mv (-T).
+TC_STATE_DIR=/var/lib/tc-docker
+TC_STATE_WHY=""
+TC_STATE_ERR=""
+# shellcheck disable=SC2034  # only the prune prints TC_STATE_ERR
+tc_state_write() {  # name, content
+    local d="$TC_STATE_DIR" f="$TC_STATE_DIR/$1" tmp="" err=""
+    TC_STATE_WHY=""; TC_STATE_ERR=""
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+        TC_STATE_WHY="$d is not a directory"
+    elif [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+        TC_STATE_WHY="$f is not a regular file"
+    elif ! err="$(mkdir -p -- "$d" 2>&1)"; then
+        TC_STATE_WHY="$d cannot be created"
+    elif [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then
+        TC_STATE_WHY="$d is not owned by root"
+    elif [ "$(stat -c '%u:%g:%a' -- "$d" 2>/dev/null)" != "0:0:700" ] \
+         && ! err="$( { chown 0:0 -- "$d" && chmod 700 -- "$d"; } 2>&1)"; then
+        TC_STATE_WHY="$d cannot be made root-only"
+    elif ! tmp="$(mktemp -- "$d/.$1.XXXXXX" 2>&1)"; then
+        err="$tmp"; tmp=""
+        TC_STATE_WHY="no file can be created in $d"
+    elif ! err="$( { printf '%s' "$2" >"$tmp"; } 2>&1)" || [ "$(cat -- "$tmp" 2>/dev/null; echo x)" != "${2}x" ] \
+         || ! err="$(chmod 600 -- "$tmp" 2>&1)"; then
+        TC_STATE_WHY="writing it failed"
+    elif ! err="$(mv -fT -- "$tmp" "$f" 2>&1)"; then
+        TC_STATE_WHY="the new file could not be renamed into place"
+    else
+        return 0
+    fi
+    [ -z "$tmp" ] || rm -f -- "$tmp"
+    TC_STATE_ERR="$(printf '%s' "$err" | tr -cd '[:print:]' | cut -c1-200)"
+    return 1
+}
+# <<< tc-docker state
+# The two files this monitor has in that directory: the prune's record of the
+# stopped containers it will remove (read only), and its own first-seen file.
+PENDING_FILE="$TC_STATE_DIR/pending-removal"
+FIRST_SEEN_FILE="$TC_STATE_DIR/monitor-first-seen"
+
 # A prune installed by an older Host Maintenance. Reads two files and nothing
 # else. STALE_STATUS is the status text ("" when nothing is stale or the action
 # is ignore); STALE_DIAG the diagnostic lines for an alert.
@@ -520,7 +576,7 @@ while IFS=$'\t' read -r id key name running _policy _created started _keep trans
     CAND+=("$key"); STARTED[$key]="$s"
 done <<<"$ROWS"
 
-# ---- first seen: /var/lib/tc-docker/monitor-first-seen (see the top)
+# ---- first seen: /var/lib/tc-docker/monitor-first-seen
 # The well-formed lines of the file, key<TAB>first<TAB>last, first <= last, last
 # no more than an hour ahead of now, each key once. Nothing else is trusted.
 first_seen_lines() {
@@ -530,10 +586,11 @@ first_seen_lines() {
         NF == 3 && $1 ~ keyre && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && length($2) <= 10 && length($3) <= 10 \
             && $2 + 0 <= $3 + 0 && $3 + 0 <= now + 3600 && !seen[$1]++ { print $1, $2 + 0, $3 + 0 }' "$FIRST_SEEN_FILE"
 }
-# Replaces the file with a header and $1 (lines ending in newlines): a new file
-# in the same root-only directory, checked, then renamed over the old one. A
-# symlink is never followed or written through. Returns 1, with FIRST_SEEN_WHY
-# set, when it cannot.
+# Replaces the file with a header and $1 (lines ending in newlines), through
+# tc_state_write (the tc-docker state block): a new root-only file in the same
+# root-only directory, read back, then renamed over the old one; a symlink is
+# never followed or written through. Returns 1, with FIRST_SEEN_WHY set, when
+# it cannot.
 FIRST_SEEN_WHY=""
 first_seen_text() {
     printf '%s\n' "# Running containers not on the expected list, as Docker - Containers Differ From" \
@@ -544,33 +601,11 @@ first_seen_text() {
     printf '%s' "$1"
 }
 first_seen_write() {
-    local tmp body
-    body="$(first_seen_text "$1"; echo x)"; body="${body%x}"
-    if [ -L "$FIRST_SEEN_DIR" ] || { [ -e "$FIRST_SEEN_DIR" ] && [ ! -d "$FIRST_SEEN_DIR" ]; }; then
-        FIRST_SEEN_WHY="$FIRST_SEEN_DIR is not a directory"; return 1
-    fi
-    if [ -L "$FIRST_SEEN_FILE" ] || { [ -e "$FIRST_SEEN_FILE" ] && [ ! -f "$FIRST_SEEN_FILE" ]; }; then
-        FIRST_SEEN_WHY="$FIRST_SEEN_FILE is not a regular file"; return 1
-    fi
-    if ! mkdir -p -- "$FIRST_SEEN_DIR" 2>/dev/null; then
-        FIRST_SEEN_WHY="$FIRST_SEEN_DIR cannot be created"; return 1
-    fi
-    if [ "$(stat -c '%u:%g:%a' -- "$FIRST_SEEN_DIR" 2>/dev/null)" != "0:0:700" ] \
-       && ! { chown 0:0 -- "$FIRST_SEEN_DIR" && chmod 700 -- "$FIRST_SEEN_DIR"; } 2>/dev/null; then
-        FIRST_SEEN_WHY="$FIRST_SEEN_DIR cannot be made root-only"; return 1
-    fi
-    if ! tmp="$(mktemp "$FIRST_SEEN_DIR/.monitor-first-seen.XXXXXX" 2>/dev/null)"; then
-        FIRST_SEEN_WHY="no file can be created in $FIRST_SEEN_DIR"; return 1
-    fi
-    # Compared after writing: a full disk can leave a short file.
-    if ! printf '%s' "$body" >"$tmp" 2>/dev/null || [ "$(cat -- "$tmp")" != "$(printf '%s' "$body")" ] \
-       || ! chmod 600 -- "$tmp" 2>/dev/null; then
-        rm -f -- "$tmp"; FIRST_SEEN_WHY="writing it failed"; return 1
-    fi
-    if ! mv -fT -- "$tmp" "$FIRST_SEEN_FILE" 2>/dev/null; then
-        rm -f -- "$tmp"; FIRST_SEEN_WHY="the new file could not be renamed into place"; return 1
-    fi
-    return 0
+    local body
+    body="$(first_seen_text "$1"; echo x)"
+    tc_state_write monitor-first-seen "${body%x}" && return 0
+    FIRST_SEEN_WHY="$TC_STATE_WHY"
+    return 1
 }
 declare -A FS_FIRST=() FS_LAST=() FROM=()
 while IFS=$'\t' read -r k f l; do

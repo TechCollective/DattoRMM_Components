@@ -825,7 +825,7 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # tc-docker-prune -- installed by the Datto RMM component
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune, read as text and never run.
-TC_PRUNE_VERSION=13
+TC_PRUNE_VERSION=14
 # The line above is the version of the component that installed this script,
 # and the first thing a run prints is that version, so the journal shows which
 # prune ran. "Docker - Containers Differ From Expected [Lin]" reads it to flag
@@ -894,8 +894,6 @@ setting() {  # name, default
 OLDER_THAN_HOURS="$(setting OLDER_THAN_HOURS 168)"
 GRACE_HOURS="$(setting GRACE_HOURS 144)"
 PRUNE_IMAGES="$(setting PRUNE_IMAGES dangling)"
-PENDING_DIR=/var/lib/tc-docker
-PENDING_FILE="$PENDING_DIR/pending-removal"
 
 DOCKER="$(command -v docker)" || { echo "ERROR: docker not found"; exit 1; }
 
@@ -1035,6 +1033,63 @@ tc_pending_lines() {
 }
 # <<< tc-docker shared
 
+# >>> tc-docker state: identical in the prune and in the Containers, Health and Images monitors; change them together.
+# The one directory the tc-docker components keep state in, and the one way a
+# file in it is written. tc_state_write NAME CONTENT replaces
+# $TC_STATE_DIR/NAME with CONTENT, exactly as given. The new file is made in
+# the same directory (mode 0600), read back and compared (a full disk can
+# leave a short file), then renamed over the old one, so a reader sees the old
+# file or the new one and never part of one. The directory is created when it
+# is missing, and made root:root 0700 when it is root's but is not that.
+# Nothing is written, and it returns 1 with the reason in TC_STATE_WHY (and
+# the failing command's own words, when it had any, in TC_STATE_ERR), when:
+#   - the directory is a symlink, or is there and is not a directory;
+#   - NAME is there as a symlink, or as anything but a regular file (a symlink
+#     is never followed, written through or replaced);
+#   - the directory cannot be created, is not owned by root, or cannot be made
+#     root:root 0700;
+#   - no file can be created in it, what was written does not read back the
+#     same, or the rename fails.
+# What a failure means is the caller's to say: the prune removes no container
+# it could not record first. Needs GNU stat (-c), mktemp and mv (-T).
+TC_STATE_DIR=/var/lib/tc-docker
+TC_STATE_WHY=""
+TC_STATE_ERR=""
+# shellcheck disable=SC2034  # only the prune prints TC_STATE_ERR
+tc_state_write() {  # name, content
+    local d="$TC_STATE_DIR" f="$TC_STATE_DIR/$1" tmp="" err=""
+    TC_STATE_WHY=""; TC_STATE_ERR=""
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+        TC_STATE_WHY="$d is not a directory"
+    elif [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+        TC_STATE_WHY="$f is not a regular file"
+    elif ! err="$(mkdir -p -- "$d" 2>&1)"; then
+        TC_STATE_WHY="$d cannot be created"
+    elif [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then
+        TC_STATE_WHY="$d is not owned by root"
+    elif [ "$(stat -c '%u:%g:%a' -- "$d" 2>/dev/null)" != "0:0:700" ] \
+         && ! err="$( { chown 0:0 -- "$d" && chmod 700 -- "$d"; } 2>&1)"; then
+        TC_STATE_WHY="$d cannot be made root-only"
+    elif ! tmp="$(mktemp -- "$d/.$1.XXXXXX" 2>&1)"; then
+        err="$tmp"; tmp=""
+        TC_STATE_WHY="no file can be created in $d"
+    elif ! err="$( { printf '%s' "$2" >"$tmp"; } 2>&1)" || [ "$(cat -- "$tmp" 2>/dev/null; echo x)" != "${2}x" ] \
+         || ! err="$(chmod 600 -- "$tmp" 2>&1)"; then
+        TC_STATE_WHY="writing it failed"
+    elif ! err="$(mv -fT -- "$tmp" "$f" 2>&1)"; then
+        TC_STATE_WHY="the new file could not be renamed into place"
+    else
+        return 0
+    fi
+    [ -z "$tmp" ] || rm -f -- "$tmp"
+    TC_STATE_ERR="$(printf '%s' "$err" | tr -cd '[:print:]' | cut -c1-200)"
+    return 1
+}
+# <<< tc-docker state
+# The record of the stopped containers this prune will remove: see "stopped
+# containers" below. Written with tc_state_write, read with tc_pending_lines.
+PENDING_FILE="$TC_STATE_DIR/pending-removal"
+
 root="$("$DOCKER" info --format '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/}"
 free() { df -h --output=avail,pcent "$root" 2>/dev/null | tail -n1 | awk '{print $1" free, "$2" used"}'; }
 NOW="$(date +%s)"
@@ -1125,44 +1180,18 @@ fi
 
 # ---- stopped containers: recorded first, removed GRACE_HOURS later
 
-# Replaces the pending file with a header and $1 (lines ending in newlines):
-# a new file in the same root-only directory, checked, then renamed over the
-# old one. Returns 1, with PENDING_WHY set, when it cannot.
-PENDING_WHY=""
+# Replaces the pending file with a header and $1 (lines ending in newlines),
+# through tc_state_write (the tc-docker state block above): a new root-only
+# file in the same root-only directory, read back, then renamed over the old
+# one. Returns 1 when it cannot, with the reason in TC_STATE_WHY (and
+# TC_STATE_ERR); the caller then removes no container.
 pending_write() {
-    local tmp body
-    body="# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.
+    tc_state_write pending-removal "# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.
 # id<TAB>key<TAB>name<TAB>first recorded (seconds since 1970). The prune removes a
 # container GRACE_HOURS after it first recorded it, if it is still stopped and
 # unprotected then; otherwise the line is dropped. To keep one, add it to the
 # expected list with Docker - Update Expected Containers [Lin] (Add).
 $1"
-    if [ -L "$PENDING_DIR" ] || { [ -e "$PENDING_DIR" ] && [ ! -d "$PENDING_DIR" ]; }; then
-        PENDING_WHY="$PENDING_DIR is not a directory"; return 1
-    fi
-    if [ -L "$PENDING_FILE" ] || { [ -e "$PENDING_FILE" ] && [ ! -f "$PENDING_FILE" ]; }; then
-        PENDING_WHY="$PENDING_FILE is not a regular file"; return 1
-    fi
-    local err
-    if ! err="$(mkdir -p -- "$PENDING_DIR" 2>&1)"; then
-        PENDING_WHY="${err:-mkdir failed}"; return 1
-    fi
-    if ! err="$( { chown 0:0 -- "$PENDING_DIR" && chmod 700 -- "$PENDING_DIR"; } 2>&1)"; then
-        PENDING_WHY="$PENDING_DIR cannot be made root-only (0700): ${err:-failed}"; return 1
-    fi
-    if ! err="$(mktemp "$PENDING_DIR/.pending-removal.XXXXXX" 2>&1)"; then
-        PENDING_WHY="${err:-no file can be created in $PENDING_DIR}"; return 1
-    fi
-    tmp="$err"
-    # Compared after writing: a full disk can leave a short file.
-    if ! printf '%s' "$body" >"$tmp" 2>/dev/null || [ "$(cat -- "$tmp")" != "$(printf '%s' "$body")" ] \
-       || ! chmod 600 -- "$tmp" 2>/dev/null; then
-        rm -f -- "$tmp"; PENDING_WHY="writing it failed (is the disk full?)"; return 1
-    fi
-    if ! mv -fT -- "$tmp" "$PENDING_FILE" 2>/dev/null; then
-        rm -f -- "$tmp"; PENDING_WHY="the new file could not be renamed into place"; return 1
-    fi
-    return 0
 }
 
 kept=(); recorded=(); waiting=(); due=(); removed=(); removed_ids=()
@@ -1223,7 +1252,7 @@ if [ "$CONTAINERS" -eq 1 ]; then
     # The record comes first. Without it nothing is removed: a removal nobody
     # could see coming is what the wait exists to prevent.
     if ! pending_write "$new_pending"; then
-        echo "ERROR: could not write $PENDING_FILE: $PENDING_WHY. No container was removed this run."
+        echo "ERROR: could not write $PENDING_FILE: $TC_STATE_WHY${TC_STATE_ERR:+ ($TC_STATE_ERR)}. No container was removed this run."
         errors=$((errors + 1))
         [ "${#recorded[@]}" -eq 0 ] || echo "Not recorded, so not waiting yet: ${#recorded[@]} stopped container(s)."
         recorded=(); waiting=(); due=()
@@ -1239,7 +1268,7 @@ if [ "$CONTAINERS" -eq 1 ]; then
     if [ "${#removed_ids[@]}" -gt 0 ]; then
         rest="$(printf '%s' "$new_pending" | grep -vF -f <(printf '%s\n' "${removed_ids[@]}"))"
         if ! pending_write "${rest:+$rest$NL}"; then
-            echo "ERROR: could not update $PENDING_FILE after removing containers: $PENDING_WHY. The next run drops the lines of containers that are gone."
+            echo "ERROR: could not update $PENDING_FILE after removing containers: $TC_STATE_WHY${TC_STATE_ERR:+ ($TC_STATE_ERR)}. The next run drops the lines of containers that are gone."
             errors=$((errors + 1))
         fi
     fi

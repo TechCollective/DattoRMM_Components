@@ -2,7 +2,7 @@
  "platforms": [
   "linux"
  ],
- "description": "On a runner with Docker and systemd, against a test registry (the one from Host Maintenance's test, over HTTPS with a test CA) on ports 5055 and 4290. Two containers, one from each, are current; the second run is served from the cache, a root-only directory and file in the version 2 format. The state directory: a pre-made symlink is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the cache file is not read and is replaced, its target untouched. usrExcludePattern starting with - is a pattern. Rate limits: an error that only contains 4290 (the registry on that port stopped) is an unreadable image, not a rate limit, and the other image is still queried; a real 429 Too Many Requests trips the breaker. Staleness: a ref with no registry answer for 8 days alerts, naming it, the error kind (rate limited; refused) and since when; 2 days does not; usrStaleAfterDays 0 never does; a success clears it. Version 1 cache lines are read; malformed ones dropped. Every invalid input is refused, naming the variable. The input variables are read by their usr names; a variable set only under its old name (before version 3) is read from that, and when both are set the usr name wins. The container list is three docker commands (counted with a recording shim), retried when a container goes between docker ps and docker inspect, an error after three failed tries; a name holding a newline and tabs adds no row. A container run by image id is checked under its image's tag; one from an untagged image is skipped. A docker shim that never answers gives 'Docker did not answer within 40 seconds', exit 1, inside 90 seconds, nothing left running; TERM mid-run prints the fallback result block. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found. GNU bash 4.2 runs the main paths. The first step reads the script itself: its time-limit functions sit in one block marked tc-docker bounded (a block CI compares with the other Docker monitors' copies), and its tc-docker running block says it is identical in every tc-docker component. Version 5: the result code is one block marked tc-docker result, shared with the other two Docker monitors (a step reads the script for it). A status of over 400 characters is printed whole (the limit is 900; it was 400). The directory an inherited TMP names is left alone on an early exit (the EXIT trap used to remove it), and the monitor's own scratch directory is gone after a full run and after TERM. A run with one unreadable image exits 0 and prints no diagnostic block.",
+ "description": "On a runner with Docker and systemd, against a test registry (the one from Host Maintenance's test, over HTTPS with a test CA) on ports 5055 and 4290. Two containers, one from each, are current; the second run is served from the cache, a root-only directory and file in the version 2 format. The state directory: a pre-made symlink is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the cache file is not read and is replaced, its target untouched. usrExcludePattern starting with - is a pattern. Rate limits: an error that only contains 4290 (the registry on that port stopped) is an unreadable image, not a rate limit, and the other image is still queried; a real 429 Too Many Requests trips the breaker. Staleness: a ref with no registry answer for 8 days alerts, naming it, the error kind (rate limited; refused) and since when; 2 days does not; usrStaleAfterDays 0 never does; a success clears it. Version 1 cache lines are read; malformed ones dropped. Every invalid input is refused, naming the variable. The input variables are read by their usr names; a variable set only under its old name (before version 3) is read from that, and when both are set the usr name wins. The container list is three docker commands (counted with a recording shim), retried when a container goes between docker ps and docker inspect, an error after three failed tries; a name holding a newline and tabs adds no row. A container run by image id is checked under its image's tag; one from an untagged image is skipped. A docker shim that never answers gives 'Docker did not answer within 40 seconds', exit 1, inside 90 seconds, nothing left running; TERM mid-run prints the fallback result block. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found. GNU bash 4.2 runs the main paths. The first step reads the script itself: its time-limit functions sit in one block marked tc-docker bounded (a block CI compares with the other Docker monitors' copies), and its tc-docker running block says it is identical in every tc-docker component. Version 5: the result code is one block marked tc-docker result, shared with the other two Docker monitors (a step reads the script for it). A status of over 400 characters is printed whole (the limit is 900; it was 400). The directory an inherited TMP names is left alone on an early exit (the EXIT trap used to remove it), and the monitor's own scratch directory is gone after a full run and after TERM. The cache file is in /var/lib/tc-docker, written with tc_state_write, in the block marked tc-docker state, the same in the prune and the three Docker monitors (a step reads the script for it): a symlinked directory is not followed, a directory not owned by root is not used, and a symlink at the cache file is not read, written through or replaced (the check still runs and says the state was not saved, and why). A cache an earlier version left in /var/lib/tc-docker-monitor is read once, when root's, and that directory is never changed or made again. A run with one unreadable image exits 0 and prints no diagnostic block.",
  "steps": [
   {
    "type": "command",
@@ -31,8 +31,21 @@
   },
   {
    "type": "command",
+   "label": "State: one directory, /var/lib/tc-docker, and one way to write a file there: tc_state_write, in the block marked tc-docker state (the same in the prune and the three Docker monitors); no rename code outside that block; the old directory, /var/lib/tc-docker-monitor, is named only in the block that reads a moved cache file",
+   "run": "f=Monitors/docker-images-monitor-lin/docker-images-monitor-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; echo \"state block: $(grep -c '^# >>> tc-docker state: ' $f) start, $(grep -c '^# <<< tc-docker state$' $f) end\"; echo \"state directory: $(grep -c '^TC_STATE_DIR=/var/lib/tc-docker$' $f)\"; echo \"tc_state_write: $(grep -c '^tc_state_write() {' $f) defined, $(grep -cF 'tc_state_write \"$STATE_NAME\" \"$out\"' $f) used\"; echo \"renames and temporary files outside the block: $(sed '/^# >>> tc-docker state: /,/^# <<< tc-docker state$/d' \"$f\" | grep -v '^[[:space:]]*#' | grep -cE 'mv -fT|mktemp --')\"; echo \"old directory outside the monitor state block: $(sed '/^# >>> tc-docker monitor state: /,/^# <<< tc-docker monitor state$/d' \"$f\" | grep -c '/var/lib/tc-docker-monitor')\"; echo \"read function: $(sed -n '/^# >>> tc-docker monitor state: /,/^# <<< tc-docker monitor state$/p' \"$f\" | grep -c '^tc_state_read() {')\"",
+   "outputContains": [
+    "state block: 1 start, 1 end",
+    "state directory: 1",
+    "tc_state_write: 1 defined, 1 used",
+    "renames and temporary files outside the block: 0",
+    "old directory outside the monitor state block: 0",
+    "read function: 1"
+   ]
+  },
+  {
+   "type": "command",
    "label": "Test helpers and a test registry: tc-test-run (runs the monitor the way the harness does, timed, under /bin/bash or bash 4.2), tc-test-left, tc-test-dstate, tc-test-state, tc-test-reg; the registry server from Host Maintenance's test, over HTTPS with a test CA at tc-registry.test (127.0.0.1 on this runner), on ports 5055 and 4290; one tiny image pushed to each",
-   "run": "set -e\nM=\"$PWD/Monitors/docker-images-monitor-lin/docker-images-monitor-lin.sh\"\ntest -f \"$M\"\ncat > /usr/local/sbin/tc-test-registry <<'EOF'\n#!/usr/bin/env python3\n# tc-test-registry PORT DIR [CERT KEY]: a minimal image registry (the Docker\n# Registry HTTP API v2, enough for docker push, docker pull and a manifest\n# lookup) on 127.0.0.1, so a test can give an image a real registry digest\n# without the internet. With CERT and KEY it serves HTTPS. Files in DIR change\n# how it answers, so a test can switch them on and off:\n#   htpasswd   \"user:password\": every request needs that Basic login\n#   ratelimit  manifest requests get 429 Too Many Requests, as Docker Hub's do\n#   delay      manifest requests wait this many seconds first\n# Every manifest request is appended to DIR/requests.log.\nimport base64, hashlib, os, ssl, sys, time, uuid\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nfrom urllib.parse import urlparse, parse_qs\nPORT, DIR = int(sys.argv[1]), sys.argv[2]\nfor sub in (\"blobs\", \"uploads\", \"manifests\"):\n    os.makedirs(os.path.join(DIR, sub), exist_ok=True)\ndef safe(s): return s.replace(\"/\", \"_\").replace(\":\", \"_\")\ndef sha(b): return \"sha256:\" + hashlib.sha256(b).hexdigest()\ndef flag(n):\n    try: return open(os.path.join(DIR, n)).read().strip()\n    except OSError: return None\nclass H(BaseHTTPRequestHandler):\n    protocol_version = \"HTTP/1.1\"\n    def log_message(self, *a): pass\n    def send(self, code, body=b\"\", headers=None):\n        self.send_response(code)\n        for k, v in (headers or {}).items(): self.send_header(k, v)\n        self.send_header(\"Content-Length\", str(len(body)))\n        self.send_header(\"Docker-Distribution-API-Version\", \"registry/2.0\")\n        self.end_headers()\n        if self.command != \"HEAD\": self.wfile.write(body)\n    def body(self):\n        n = int(self.headers.get(\"Content-Length\") or 0)\n        if n: return self.rfile.read(n)\n        if self.headers.get(\"Transfer-Encoding\", \"\").lower() != \"chunked\": return b\"\"\n        out = b\"\"\n        while True:\n            size = int(self.rfile.readline().strip().split(b\";\")[0], 16)\n            if size == 0: self.rfile.readline(); return out\n            out += self.rfile.read(size); self.rfile.readline()\n    def route(self):\n        u = urlparse(self.path); p = u.path; q = parse_qs(u.query)\n        login = flag(\"htpasswd\")\n        if login:\n            want = \"Basic \" + base64.b64encode(login.encode()).decode()\n            if self.headers.get(\"Authorization\") != want:\n                self.body()\n                return self.send(401, b'{\"errors\":[{\"code\":\"UNAUTHORIZED\",\"message\":\"authentication required\"}]}',\n                                 {\"WWW-Authenticate\": 'Basic realm=\"tc-test-registry\"', \"Content-Type\": \"application/json\"})\n        if p in (\"/v2\", \"/v2/\"): return self.send(200, b\"{}\")\n        if \"/blobs/uploads/\" in p:\n            name, rest = p[4:].split(\"/blobs/uploads/\", 1)\n            if self.command == \"POST\":\n                uid = uuid.uuid4().hex\n                open(f\"{DIR}/uploads/{uid}\", \"wb\").close()\n                return self.send(202, headers={\"Location\": f\"/v2/{name}/blobs/uploads/{uid}\", \"Range\": \"0-0\", \"Docker-Upload-UUID\": uid})\n            uid = rest.strip(\"/\"); f = f\"{DIR}/uploads/{uid}\"\n            with open(f, \"ab\") as fh: fh.write(self.body())\n            if self.command == \"PATCH\":\n                return self.send(202, headers={\"Location\": f\"/v2/{name}/blobs/uploads/{uid}\", \"Range\": f\"0-{max(os.path.getsize(f) - 1, 0)}\", \"Docker-Upload-UUID\": uid})\n            d = q[\"digest\"][0]\n            if sha(open(f, \"rb\").read()) != d: return self.send(400, b'{\"errors\":[{\"code\":\"DIGEST_INVALID\"}]}')\n            os.replace(f, f\"{DIR}/blobs/{safe(d)}\")\n            return self.send(201, headers={\"Location\": f\"/v2/{name}/blobs/{d}\", \"Docker-Content-Digest\": d})\n        if \"/blobs/\" in p:\n            d = p.rsplit(\"/blobs/\", 1)[1]; f = f\"{DIR}/blobs/{safe(d)}\"\n            if not os.path.exists(f): return self.send(404, b'{\"errors\":[{\"code\":\"BLOB_UNKNOWN\"}]}')\n            return self.send(200, open(f, \"rb\").read(), {\"Docker-Content-Digest\": d, \"Content-Type\": \"application/octet-stream\"})\n        if \"/manifests/\" in p:\n            name, ref = p[4:].rsplit(\"/manifests/\", 1)\n            if self.command == \"PUT\":\n                data = self.body(); d = sha(data)\n                for r in (ref, d):\n                    open(f\"{DIR}/manifests/{safe(name)}@{safe(r)}\", \"wb\").write(data)\n                    open(f\"{DIR}/manifests/{safe(name)}@{safe(r)}.type\", \"w\").write(self.headers.get(\"Content-Type\", \"\"))\n                return self.send(201, headers={\"Location\": f\"/v2/{name}/manifests/{d}\", \"Docker-Content-Digest\": d})\n            with open(f\"{DIR}/requests.log\", \"a\") as log: log.write(f\"{self.command} {p}\\n\")\n            delay = flag(\"delay\")\n            if delay: time.sleep(int(delay))\n            if flag(\"ratelimit\") is not None:\n                return self.send(429, b'{\"errors\":[{\"code\":\"TOOMANYREQUESTS\",\"message\":\"You have reached your pull rate limit.\"}]}', {\"Content-Type\": \"application/json\"})\n            f = f\"{DIR}/manifests/{safe(name)}@{safe(ref)}\"\n            if not os.path.exists(f): return self.send(404, b'{\"errors\":[{\"code\":\"MANIFEST_UNKNOWN\",\"message\":\"manifest unknown\"}]}', {\"Content-Type\": \"application/json\"})\n            data = open(f, \"rb\").read()\n            return self.send(200, data, {\"Docker-Content-Digest\": sha(data), \"Content-Type\": open(f + \".type\").read()})\n        return self.send(404)\n    do_GET = do_HEAD = do_POST = do_PATCH = do_PUT = route\nsrv = ThreadingHTTPServer((\"127.0.0.1\", PORT), H)\nif len(sys.argv) > 4:\n    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(sys.argv[3], sys.argv[4])\n    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)\nsrv.serve_forever()\nEOF\ncat > /usr/local/bin/tc-test-run <<'EOF'\n#!/bin/bash\n# tc-test-run [--bash42] [VAR=value...]: run the monitor as the harness does (a clean\n# environment and the agent's root PATH); print its output, exit code and seconds taken.\nb=/bin/bash; if [ \"${1:-}\" = --bash42 ]; then b=/opt/tc-bash42/bin/bash; shift; fi\nt0=$(date +%s)\nenv -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \"$@\" \"$b\" \"@MONITOR@\"\nrc=$?\nsecs=$(( $(date +%s) - t0 ))\necho \"exit $rc after $secs seconds, under $(\"$b\" -c 'echo \"bash $BASH_VERSION\"')\"\n[ \"$secs\" -lt 90 ] && echo \"result inside 90 seconds\"\nexit 0\nEOF\nsed -i \"s|@MONITOR@|$M|\" /usr/local/bin/tc-test-run\ncat > /usr/local/bin/tc-test-left <<'EOF'\n#!/bin/bash\n# tc-test-left: any docker shim or client process still running, from ps.\nsleep 1\necho \"--- ps -eo pid,ppid,pgid,etime,args, docker shims, clients and their children:\"\nps -eo pid,ppid,pgid,etime,args | grep -E '[/]usr/local/sbin/docker|[s]leep 600|[t]c-test-shim|[b]uildx imagetools' || echo \"no docker client or shim process left\"\nEOF\ncat > /usr/local/bin/tc-test-dstate <<'EOF'\n#!/bin/bash\n# tc-test-dstate LABEL: what systemd says about Docker.\necho \"$1: systemctl is-active docker.service docker.socket -> $(systemctl is-active docker.service docker.socket | paste -sd' ')\"\nEOF\ncat > /usr/local/bin/tc-test-state <<'EOF'\n#!/bin/bash\n# tc-test-state: the state directory and the cache file, or that they are not there.\nd=/var/lib/tc-docker-monitor; f=$d/image-digests.tsv\nls -lad \"$d\" 2>&1\nif [ -f \"$f\" ] && [ ! -L \"$f\" ]; then echo \"--- $f (now $(date +%s)):\"; ls -la \"$f\"; cat \"$f\"; else echo \"(no cache file)\"; fi\nEOF\ncat > /usr/local/bin/tc-test-reg <<'EOF'\n#!/bin/bash\n# tc-test-reg start|stop PORT: a test registry at https://tc-registry.test:PORT, its\n# files (and switches: ratelimit, htpasswd, delay) in /tmp/tc-test-registry-PORT.\n# tc-test-reg image NAME PORT: build a tiny image (sleep only), push it to that\n# registry as tc-registry.test:PORT/tc-test-NAME:1 and print the digest.\n# tc-test-reg run NAME PORT: run a container tc-NAME from that image.\nD=/tmp/tc-test-registry-$3; [ \"$1\" = start ] || [ \"$1\" = stop ] && D=/tmp/tc-test-registry-$2\ncase \"$1\" in\nstart)\n    mkdir -p \"$D\"; [ -s \"$D.pid\" ] && kill \"$(cat \"$D.pid\")\" 2>/dev/null; sleep 1\n    setsid nohup python3 /usr/local/sbin/tc-test-registry \"$2\" \"$D\" /etc/tc-test-pki/registry.crt /etc/tc-test-pki/registry.key >\"$D.log\" 2>&1 </dev/null &\n    echo $! > \"$D.pid\"\n    for i in $(seq 20); do curl -fsS \"https://tc-registry.test:$2/v2/\" >/dev/null 2>&1 && break; sleep 1; done\n    curl -fsS \"https://tc-registry.test:$2/v2/\" >/dev/null && echo \"test registry answers on https://tc-registry.test:$2\" ;;\nstop)\n    [ -s \"$D.pid\" ] && kill \"$(cat \"$D.pid\")\" 2>/dev/null; rm -f \"$D.pid\"; sleep 1\n    curl -fsS \"https://tc-registry.test:$2/v2/\" >/dev/null 2>&1 && echo \"test registry STILL ANSWERS\" || echo \"test registry on $2 stopped\" ;;\nimage)\n    r=$(mktemp -d); mkdir -p \"$r/bin\"; cp /bin/sleep \"$r/bin/\"\n    for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p \"$r$(dirname \"$l\")\"; cp \"$l\" \"$r$l\"; done\n    ref=\"tc-registry.test:$3/tc-test-$2:1\"\n    tar -C \"$r\" -c . | docker import --change \"LABEL tc.nonce=$(date +%s%N)\" --change 'CMD [\"/bin/sleep\",\"86400\"]' - \"$ref\" >/dev/null\n    rm -rf \"$r\"\n    docker push -q \"$ref\" >/dev/null || echo \"PUSH FAILED: $ref\"\n    docker image inspect -f \"$ref {{json .RepoDigests}}\" \"$ref\" ;;\nrun)\n    docker rm -f \"tc-$2\" >/dev/null 2>&1\n    docker run -d --name \"tc-$2\" \"tc-registry.test:$3/tc-test-$2:1\" >/dev/null && echo \"running tc-$2\" ;;\nesac\nEOF\nchmod 755 /usr/local/sbin/tc-test-registry /usr/local/bin/tc-test-run /usr/local/bin/tc-test-left /usr/local/bin/tc-test-dstate /usr/local/bin/tc-test-state /usr/local/bin/tc-test-reg\nmkdir -p /etc/tc-test-pki; cd /etc/tc-test-pki\nopenssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=tc-test-ca -keyout ca.key -out ca.crt -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign 2>/dev/null\nopenssl req -newkey rsa:2048 -nodes -subj /CN=tc-registry.test -keyout registry.key -out registry.csr 2>/dev/null\nprintf 'subjectAltName=DNS:tc-registry.test\\nbasicConstraints=CA:FALSE\\nextendedKeyUsage=serverAuth\\n' > ext\nopenssl x509 -req -in registry.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 2 -out registry.crt -extfile ext 2>/dev/null\ngrep -q ' tc-registry.test$' /etc/hosts || echo '127.0.0.1 tc-registry.test' >> /etc/hosts\nfor p in 5055 4290; do mkdir -p /etc/docker/certs.d/tc-registry.test:$p && cp ca.crt /etc/docker/certs.d/tc-registry.test:$p/ca.crt; done\ncp ca.crt /usr/local/share/ca-certificates/tc-test-ca.crt && update-ca-certificates >/dev/null 2>&1\ncd /\ndocker rm -f $(docker ps -aq) >/dev/null 2>&1 || true\nrm -rf /var/lib/tc-docker-monitor\ntc-test-reg start 5055\ntc-test-reg start 4290\ntc-test-reg image cur 5055\ntc-test-reg image other 4290\necho \"helpers installed for $M\"\n",
+   "run": "set -e\nM=\"$PWD/Monitors/docker-images-monitor-lin/docker-images-monitor-lin.sh\"\ntest -f \"$M\"\ncat > /usr/local/sbin/tc-test-registry <<'EOF'\n#!/usr/bin/env python3\n# tc-test-registry PORT DIR [CERT KEY]: a minimal image registry (the Docker\n# Registry HTTP API v2, enough for docker push, docker pull and a manifest\n# lookup) on 127.0.0.1, so a test can give an image a real registry digest\n# without the internet. With CERT and KEY it serves HTTPS. Files in DIR change\n# how it answers, so a test can switch them on and off:\n#   htpasswd   \"user:password\": every request needs that Basic login\n#   ratelimit  manifest requests get 429 Too Many Requests, as Docker Hub's do\n#   delay      manifest requests wait this many seconds first\n# Every manifest request is appended to DIR/requests.log.\nimport base64, hashlib, os, ssl, sys, time, uuid\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nfrom urllib.parse import urlparse, parse_qs\nPORT, DIR = int(sys.argv[1]), sys.argv[2]\nfor sub in (\"blobs\", \"uploads\", \"manifests\"):\n    os.makedirs(os.path.join(DIR, sub), exist_ok=True)\ndef safe(s): return s.replace(\"/\", \"_\").replace(\":\", \"_\")\ndef sha(b): return \"sha256:\" + hashlib.sha256(b).hexdigest()\ndef flag(n):\n    try: return open(os.path.join(DIR, n)).read().strip()\n    except OSError: return None\nclass H(BaseHTTPRequestHandler):\n    protocol_version = \"HTTP/1.1\"\n    def log_message(self, *a): pass\n    def send(self, code, body=b\"\", headers=None):\n        self.send_response(code)\n        for k, v in (headers or {}).items(): self.send_header(k, v)\n        self.send_header(\"Content-Length\", str(len(body)))\n        self.send_header(\"Docker-Distribution-API-Version\", \"registry/2.0\")\n        self.end_headers()\n        if self.command != \"HEAD\": self.wfile.write(body)\n    def body(self):\n        n = int(self.headers.get(\"Content-Length\") or 0)\n        if n: return self.rfile.read(n)\n        if self.headers.get(\"Transfer-Encoding\", \"\").lower() != \"chunked\": return b\"\"\n        out = b\"\"\n        while True:\n            size = int(self.rfile.readline().strip().split(b\";\")[0], 16)\n            if size == 0: self.rfile.readline(); return out\n            out += self.rfile.read(size); self.rfile.readline()\n    def route(self):\n        u = urlparse(self.path); p = u.path; q = parse_qs(u.query)\n        login = flag(\"htpasswd\")\n        if login:\n            want = \"Basic \" + base64.b64encode(login.encode()).decode()\n            if self.headers.get(\"Authorization\") != want:\n                self.body()\n                return self.send(401, b'{\"errors\":[{\"code\":\"UNAUTHORIZED\",\"message\":\"authentication required\"}]}',\n                                 {\"WWW-Authenticate\": 'Basic realm=\"tc-test-registry\"', \"Content-Type\": \"application/json\"})\n        if p in (\"/v2\", \"/v2/\"): return self.send(200, b\"{}\")\n        if \"/blobs/uploads/\" in p:\n            name, rest = p[4:].split(\"/blobs/uploads/\", 1)\n            if self.command == \"POST\":\n                uid = uuid.uuid4().hex\n                open(f\"{DIR}/uploads/{uid}\", \"wb\").close()\n                return self.send(202, headers={\"Location\": f\"/v2/{name}/blobs/uploads/{uid}\", \"Range\": \"0-0\", \"Docker-Upload-UUID\": uid})\n            uid = rest.strip(\"/\"); f = f\"{DIR}/uploads/{uid}\"\n            with open(f, \"ab\") as fh: fh.write(self.body())\n            if self.command == \"PATCH\":\n                return self.send(202, headers={\"Location\": f\"/v2/{name}/blobs/uploads/{uid}\", \"Range\": f\"0-{max(os.path.getsize(f) - 1, 0)}\", \"Docker-Upload-UUID\": uid})\n            d = q[\"digest\"][0]\n            if sha(open(f, \"rb\").read()) != d: return self.send(400, b'{\"errors\":[{\"code\":\"DIGEST_INVALID\"}]}')\n            os.replace(f, f\"{DIR}/blobs/{safe(d)}\")\n            return self.send(201, headers={\"Location\": f\"/v2/{name}/blobs/{d}\", \"Docker-Content-Digest\": d})\n        if \"/blobs/\" in p:\n            d = p.rsplit(\"/blobs/\", 1)[1]; f = f\"{DIR}/blobs/{safe(d)}\"\n            if not os.path.exists(f): return self.send(404, b'{\"errors\":[{\"code\":\"BLOB_UNKNOWN\"}]}')\n            return self.send(200, open(f, \"rb\").read(), {\"Docker-Content-Digest\": d, \"Content-Type\": \"application/octet-stream\"})\n        if \"/manifests/\" in p:\n            name, ref = p[4:].rsplit(\"/manifests/\", 1)\n            if self.command == \"PUT\":\n                data = self.body(); d = sha(data)\n                for r in (ref, d):\n                    open(f\"{DIR}/manifests/{safe(name)}@{safe(r)}\", \"wb\").write(data)\n                    open(f\"{DIR}/manifests/{safe(name)}@{safe(r)}.type\", \"w\").write(self.headers.get(\"Content-Type\", \"\"))\n                return self.send(201, headers={\"Location\": f\"/v2/{name}/manifests/{d}\", \"Docker-Content-Digest\": d})\n            with open(f\"{DIR}/requests.log\", \"a\") as log: log.write(f\"{self.command} {p}\\n\")\n            delay = flag(\"delay\")\n            if delay: time.sleep(int(delay))\n            if flag(\"ratelimit\") is not None:\n                return self.send(429, b'{\"errors\":[{\"code\":\"TOOMANYREQUESTS\",\"message\":\"You have reached your pull rate limit.\"}]}', {\"Content-Type\": \"application/json\"})\n            f = f\"{DIR}/manifests/{safe(name)}@{safe(ref)}\"\n            if not os.path.exists(f): return self.send(404, b'{\"errors\":[{\"code\":\"MANIFEST_UNKNOWN\",\"message\":\"manifest unknown\"}]}', {\"Content-Type\": \"application/json\"})\n            data = open(f, \"rb\").read()\n            return self.send(200, data, {\"Docker-Content-Digest\": sha(data), \"Content-Type\": open(f + \".type\").read()})\n        return self.send(404)\n    do_GET = do_HEAD = do_POST = do_PATCH = do_PUT = route\nsrv = ThreadingHTTPServer((\"127.0.0.1\", PORT), H)\nif len(sys.argv) > 4:\n    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(sys.argv[3], sys.argv[4])\n    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)\nsrv.serve_forever()\nEOF\ncat > /usr/local/bin/tc-test-run <<'EOF'\n#!/bin/bash\n# tc-test-run [--bash42] [VAR=value...]: run the monitor as the harness does (a clean\n# environment and the agent's root PATH); print its output, exit code and seconds taken.\nb=/bin/bash; if [ \"${1:-}\" = --bash42 ]; then b=/opt/tc-bash42/bin/bash; shift; fi\nt0=$(date +%s)\nenv -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \"$@\" \"$b\" \"@MONITOR@\"\nrc=$?\nsecs=$(( $(date +%s) - t0 ))\necho \"exit $rc after $secs seconds, under $(\"$b\" -c 'echo \"bash $BASH_VERSION\"')\"\n[ \"$secs\" -lt 90 ] && echo \"result inside 90 seconds\"\nexit 0\nEOF\nsed -i \"s|@MONITOR@|$M|\" /usr/local/bin/tc-test-run\ncat > /usr/local/bin/tc-test-left <<'EOF'\n#!/bin/bash\n# tc-test-left: any docker shim or client process still running, from ps.\nsleep 1\necho \"--- ps -eo pid,ppid,pgid,etime,args, docker shims, clients and their children:\"\nps -eo pid,ppid,pgid,etime,args | grep -E '[/]usr/local/sbin/docker|[s]leep 600|[t]c-test-shim|[b]uildx imagetools' || echo \"no docker client or shim process left\"\nEOF\ncat > /usr/local/bin/tc-test-dstate <<'EOF'\n#!/bin/bash\n# tc-test-dstate LABEL: what systemd says about Docker.\necho \"$1: systemctl is-active docker.service docker.socket -> $(systemctl is-active docker.service docker.socket | paste -sd' ')\"\nEOF\ncat > /usr/local/bin/tc-test-state <<'EOF'\n#!/bin/bash\n# tc-test-state: the state directory and the cache file, or that they are not there.\nd=/var/lib/tc-docker; f=$d/image-digests.tsv\nls -lad \"$d\" 2>&1\nif [ -f \"$f\" ] && [ ! -L \"$f\" ]; then echo \"--- $f (now $(date +%s)):\"; ls -la \"$f\"; cat \"$f\"; else echo \"(no cache file)\"; fi\nEOF\ncat > /usr/local/bin/tc-test-reg <<'EOF'\n#!/bin/bash\n# tc-test-reg start|stop PORT: a test registry at https://tc-registry.test:PORT, its\n# files (and switches: ratelimit, htpasswd, delay) in /tmp/tc-test-registry-PORT.\n# tc-test-reg image NAME PORT: build a tiny image (sleep only), push it to that\n# registry as tc-registry.test:PORT/tc-test-NAME:1 and print the digest.\n# tc-test-reg run NAME PORT: run a container tc-NAME from that image.\nD=/tmp/tc-test-registry-$3; [ \"$1\" = start ] || [ \"$1\" = stop ] && D=/tmp/tc-test-registry-$2\ncase \"$1\" in\nstart)\n    mkdir -p \"$D\"; [ -s \"$D.pid\" ] && kill \"$(cat \"$D.pid\")\" 2>/dev/null; sleep 1\n    setsid nohup python3 /usr/local/sbin/tc-test-registry \"$2\" \"$D\" /etc/tc-test-pki/registry.crt /etc/tc-test-pki/registry.key >\"$D.log\" 2>&1 </dev/null &\n    echo $! > \"$D.pid\"\n    for i in $(seq 20); do curl -fsS \"https://tc-registry.test:$2/v2/\" >/dev/null 2>&1 && break; sleep 1; done\n    curl -fsS \"https://tc-registry.test:$2/v2/\" >/dev/null && echo \"test registry answers on https://tc-registry.test:$2\" ;;\nstop)\n    [ -s \"$D.pid\" ] && kill \"$(cat \"$D.pid\")\" 2>/dev/null; rm -f \"$D.pid\"; sleep 1\n    curl -fsS \"https://tc-registry.test:$2/v2/\" >/dev/null 2>&1 && echo \"test registry STILL ANSWERS\" || echo \"test registry on $2 stopped\" ;;\nimage)\n    r=$(mktemp -d); mkdir -p \"$r/bin\"; cp /bin/sleep \"$r/bin/\"\n    for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p \"$r$(dirname \"$l\")\"; cp \"$l\" \"$r$l\"; done\n    ref=\"tc-registry.test:$3/tc-test-$2:1\"\n    tar -C \"$r\" -c . | docker import --change \"LABEL tc.nonce=$(date +%s%N)\" --change 'CMD [\"/bin/sleep\",\"86400\"]' - \"$ref\" >/dev/null\n    rm -rf \"$r\"\n    docker push -q \"$ref\" >/dev/null || echo \"PUSH FAILED: $ref\"\n    docker image inspect -f \"$ref {{json .RepoDigests}}\" \"$ref\" ;;\nrun)\n    docker rm -f \"tc-$2\" >/dev/null 2>&1\n    docker run -d --name \"tc-$2\" \"tc-registry.test:$3/tc-test-$2:1\" >/dev/null && echo \"running tc-$2\" ;;\nesac\nEOF\nchmod 755 /usr/local/sbin/tc-test-registry /usr/local/bin/tc-test-run /usr/local/bin/tc-test-left /usr/local/bin/tc-test-dstate /usr/local/bin/tc-test-state /usr/local/bin/tc-test-reg\nmkdir -p /etc/tc-test-pki; cd /etc/tc-test-pki\nopenssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=tc-test-ca -keyout ca.key -out ca.crt -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign 2>/dev/null\nopenssl req -newkey rsa:2048 -nodes -subj /CN=tc-registry.test -keyout registry.key -out registry.csr 2>/dev/null\nprintf 'subjectAltName=DNS:tc-registry.test\\nbasicConstraints=CA:FALSE\\nextendedKeyUsage=serverAuth\\n' > ext\nopenssl x509 -req -in registry.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 2 -out registry.crt -extfile ext 2>/dev/null\ngrep -q ' tc-registry.test$' /etc/hosts || echo '127.0.0.1 tc-registry.test' >> /etc/hosts\nfor p in 5055 4290; do mkdir -p /etc/docker/certs.d/tc-registry.test:$p && cp ca.crt /etc/docker/certs.d/tc-registry.test:$p/ca.crt; done\ncp ca.crt /usr/local/share/ca-certificates/tc-test-ca.crt && update-ca-certificates >/dev/null 2>&1\ncd /\ndocker rm -f $(docker ps -aq) >/dev/null 2>&1 || true\nrm -rf /var/lib/tc-docker-monitor\ntc-test-reg start 5055\ntc-test-reg start 4290\ntc-test-reg image cur 5055\ntc-test-reg image other 4290\necho \"helpers installed for $M\"\n",
    "outputContains": [
     "test registry answers on https://tc-registry.test:5055",
     "test registry answers on https://tc-registry.test:4290",
@@ -110,7 +123,7 @@
   {
    "type": "command",
    "label": "Cache file: a root-only directory and file; six tab-separated fields per line (ref, digest, created, last ok, error kind, error since)",
-   "run": "tc-test-state; awk -F'\\t' 'NF == 6 && $2 ~ /^sha256:/ && $5 == \"none\" && $6 == 0 {n++} END {print n \" well-formed success lines\"}' /var/lib/tc-docker-monitor/image-digests.tsv",
+   "run": "tc-test-state; awk -F'\\t' 'NF == 6 && $2 ~ /^sha256:/ && $5 == \"none\" && $6 == 0 {n++} END {print n \" well-formed success lines\"}' /var/lib/tc-docker/image-digests.tsv",
    "outputContains": [
     "drwx------ 2 root root",
     "-rw------- 1 root root",
@@ -133,17 +146,17 @@
   },
   {
    "type": "command",
-   "label": "State directory a symlink: /var/lib/tc-docker-monitor set aside, and a symlink to /tmp/tc-elsewhere made in its place (another user could have made one where the old fallback was)",
-   "run": "set -e; mv /var/lib/tc-docker-monitor /var/tmp/tc-state.real; rm -rf /tmp/tc-elsewhere; mkdir -m 755 /tmp/tc-elsewhere; ln -s /tmp/tc-elsewhere /var/lib/tc-docker-monitor; ls -la /var/lib/tc-docker-monitor /tmp/tc-elsewhere",
+   "label": "State directory a symlink: /var/lib/tc-docker set aside, and a symlink to /tmp/tc-elsewhere made in its place",
+   "run": "set -e; mv /var/lib/tc-docker /var/tmp/tc-state.real; rm -rf /tmp/tc-elsewhere; mkdir -m 755 /tmp/tc-elsewhere; ln -s /tmp/tc-elsewhere /var/lib/tc-docker; ls -la /var/lib/tc-docker /tmp/tc-elsewhere",
    "outputContains": [
-    "/var/lib/tc-docker-monitor -> /tmp/tc-elsewhere"
+    "/var/lib/tc-docker -> /tmp/tc-elsewhere"
    ]
   },
   {
    "type": "runComponent",
-   "label": "Symlink: not followed, the check still runs without saved state, and says so",
+   "label": "Symlink: not followed, the check still runs, and the status says the state was not saved and why",
    "outputContains": [
-    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]; no saved state (/var/lib/tc-docker-monitor is a symlink)"
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]; state not saved (/var/lib/tc-docker is not a directory), so nothing is cached and lookup failures are not tracked over time"
    ],
    "outputNotContains": [
     "stopped unexpectedly",
@@ -153,7 +166,7 @@
   {
    "type": "command",
    "label": "Symlink: nothing written through it, its target still 0755 and empty",
-   "run": "ls -la /var/lib/tc-docker-monitor /tmp/tc-elsewhere; [ -z \"$(ls -A /tmp/tc-elsewhere)\" ] && echo 'target empty'; stat -c 'target mode %a' /tmp/tc-elsewhere",
+   "run": "ls -la /var/lib/tc-docker /tmp/tc-elsewhere; [ -z \"$(ls -A /tmp/tc-elsewhere)\" ] && echo 'target empty'; stat -c 'target mode %a' /tmp/tc-elsewhere",
    "outputContains": [
     "target empty",
     "target mode 755"
@@ -162,7 +175,7 @@
   {
    "type": "command",
    "label": "State directory not owned by root: a real directory owned by nobody, with a cache file in it that names a digest",
-   "run": "set -e; rm -f /var/lib/tc-docker-monitor; mkdir -m 755 /var/lib/tc-docker-monitor; printf 'tc-registry.test:5055/tc-test-cur:1\\tsha256:%064d\\t-\\t%s\\tnone\\t0\\n' 0 \"$(date +%s)\" > /var/lib/tc-docker-monitor/image-digests.tsv; chown -R 65534:65534 /var/lib/tc-docker-monitor; ls -la /var/lib/tc-docker-monitor",
+   "run": "set -e; rm -f /var/lib/tc-docker; mkdir -m 755 /var/lib/tc-docker; printf 'tc-registry.test:5055/tc-test-cur:1\\tsha256:%064d\\t-\\t%s\\tnone\\t0\\n' 0 \"$(date +%s)\" > /var/lib/tc-docker/image-digests.tsv; chown -R 65534:65534 /var/lib/tc-docker; ls -la /var/lib/tc-docker",
    "outputContains": [
     "image-digests.tsv"
    ]
@@ -171,7 +184,7 @@
    "type": "runComponent",
    "label": "Wrong owner: not used (its cache is not read), the check still runs, the status says why",
    "outputContains": [
-    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]; no saved state (/var/lib/tc-docker-monitor is not owned by root)"
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]; state not saved (/var/lib/tc-docker is not owned by root)"
    ],
    "outputNotContains": [
     "stopped unexpectedly",
@@ -182,7 +195,7 @@
   {
    "type": "command",
    "label": "Wrong owner: owner, mode and file unchanged",
-   "run": "ls -la /var/lib/tc-docker-monitor; stat -c 'owner %u mode %a' /var/lib/tc-docker-monitor; grep -c 0000000000 /var/lib/tc-docker-monitor/image-digests.tsv",
+   "run": "ls -la /var/lib/tc-docker; stat -c 'owner %u mode %a' /var/lib/tc-docker; grep -c 0000000000 /var/lib/tc-docker/image-digests.tsv",
    "outputContains": [
     "owner 65534 mode 755"
    ]
@@ -190,32 +203,113 @@
   {
    "type": "command",
    "label": "State: the real directory put back, made 0755, with a symlink where the cache file goes",
-   "run": "set -e; rm -rf /var/lib/tc-docker-monitor; mv /var/tmp/tc-state.real /var/lib/tc-docker-monitor; chmod 755 /var/lib/tc-docker-monitor; echo sentinel > /tmp/tc-target; ln -sf /tmp/tc-target /var/lib/tc-docker-monitor/image-digests.tsv; ls -la /var/lib/tc-docker-monitor",
+   "run": "set -e; rm -rf /var/lib/tc-docker; mv /var/tmp/tc-state.real /var/lib/tc-docker; chmod 755 /var/lib/tc-docker; echo sentinel > /tmp/tc-target; ln -sf /tmp/tc-target /var/lib/tc-docker/image-digests.tsv; ls -la /var/lib/tc-docker",
    "outputContains": [
     "image-digests.tsv -> /tmp/tc-target"
    ]
   },
   {
    "type": "runComponent",
-   "label": "A symlink at the cache file: not read, so nothing cached; replaced by a real file",
+   "label": "A symlink at the cache file: not read, so nothing cached; not written through and not replaced, and the status says why",
    "outputContains": [
-    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]"
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]; state not saved (/var/lib/tc-docker/image-digests.tsv is not a regular file)"
    ],
    "outputNotContains": [
     "stopped unexpectedly",
-    "unbound variable",
-    "no saved state"
+    "unbound variable"
    ]
   },
   {
    "type": "command",
-   "label": "The symlink's target is untouched; the cache file is a root-only regular file again; the directory made 0700",
-   "run": "cat /tmp/tc-target; tc-test-state",
+   "label": "The symlink and its target are as they were; with the symlink removed, the next run writes a root-only cache file and makes the directory 0700",
+   "run": "cat /tmp/tc-target; [ -L /var/lib/tc-docker/image-digests.tsv ] && echo 'still a symlink'; rm -f /var/lib/tc-docker/image-digests.tsv; tc-test-run | grep '^STATUS='; tc-test-state",
    "outputContains": [
     "sentinel",
+    "still a symlink",
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]",
     "drwx------ 2 root root",
     "-rw------- 1 root root",
     "tc-registry.test:5055/tc-test-cur:1\tsha256:"
+   ],
+   "outputNotContains": [
+    "state not saved"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Moved state: the cache file put in the old directory, /var/lib/tc-docker-monitor (0700 root), as an earlier version left it, and /var/lib/tc-docker removed",
+   "run": "set -e; rm -rf /var/lib/tc-docker-monitor; mkdir -m 700 /var/lib/tc-docker-monitor; cp -p /var/lib/tc-docker/image-digests.tsv /var/lib/tc-docker-monitor/; cp -p /var/lib/tc-docker/image-digests.tsv /root/tc-old-cache.copy; rm -rf /var/lib/tc-docker; ls -la /var/lib/tc-docker-monitor; echo \"lines in the old cache: $(grep -c sha256: /var/lib/tc-docker-monitor/image-digests.tsv)\"",
+   "outputContains": [
+    "image-digests.tsv",
+    "lines in the old cache: 2"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Moved state: the old cache is read while the new file does not exist: both from the cache",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [2 cached, 0 queried]"
+   ],
+   "outputNotContains": [
+    "state not saved",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Moved state: that run wrote the new cache file in /var/lib/tc-docker (0700 root, the file 0600 root); the old directory and its file are exactly as they were",
+   "run": "tc-test-state; cmp /var/lib/tc-docker-monitor/image-digests.tsv /root/tc-old-cache.copy && echo 'old file unchanged'; stat -c 'old directory: %a %U:%G' /var/lib/tc-docker-monitor; echo \"files in the old directory: $(ls -A /var/lib/tc-docker-monitor | wc -l)\"",
+   "outputContains": [
+    "drwx------ 2 root root",
+    "-rw------- 1 root root",
+    "tc-registry.test:5055/tc-test-cur:1\tsha256:",
+    "old file unchanged",
+    "old directory: 700 root:root",
+    "files in the old directory: 1"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Moved state: the old file is read once: with a digest of zeros for tc-cur's image put in it, the next run still reads the new file (both current, both from the cache)",
+   "run": "printf 'tc-registry.test:5055/tc-test-cur:1\\tsha256:%064d\\t-\\t%s\\tnone\\t0\\n' 0 \"$(date +%s)\" > /var/lib/tc-docker-monitor/image-digests.tsv; tc-test-run",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [2 cached, 0 queried]",
+    "exit 0 after"
+   ],
+   "outputNotContains": [
+    "1 behind",
+    "newer than",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Moved state: an old file that is not root's is not read: with no new file and the old one (the digest of zeros) owned by another user, both images are looked up, and the old file is left as it is",
+   "run": "rm -rf /var/lib/tc-docker; chown 65534 /var/lib/tc-docker-monitor/image-digests.tsv; tc-test-run; stat -c 'old file owner still %u' /var/lib/tc-docker-monitor/image-digests.tsv; grep -c 0000000000 /var/lib/tc-docker-monitor/image-digests.tsv",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]",
+    "exit 0 after",
+    "old file owner still 65534"
+   ],
+   "outputNotContains": [
+    "state not saved",
+    "1 behind",
+    "newer than"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Moved state: clean up; with no old directory, a run does not make one",
+   "run": "rm -rf /var/lib/tc-docker-monitor /root/tc-old-cache.copy; tc-test-run | grep '^STATUS='; tc-test-state | head -n 1; test -e /var/lib/tc-docker-monitor || echo 'the old directory is not made again'",
+   "outputContains": [
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [2 cached, 0 queried]",
+    "drwx------ 2 root root",
+    "the old directory is not made again"
+   ],
+   "outputNotContains": [
+    "state not saved"
    ]
   },
   {
@@ -316,7 +410,7 @@
   {
    "type": "command",
    "label": "Staleness: tc-registry.test:4290/tc-test-other:1 given no registry answer for 8 days, rate limited all that time",
-   "run": "set -e; f=/var/lib/tc-docker-monitor/image-digests.tsv; t=$(( $(date +%s) - 8 * 86400 )); awk -F'\\t' -v OFS='\\t' -v t=\"$t\" -v k=ratelimited '$1 == \"tc-registry.test:4290/tc-test-other:1\" {$4 = t; $5 = k; $6 = t} {print}' $f > $f.new; cat $f.new > $f; rm -f $f.new; tc-test-state",
+   "run": "set -e; f=/var/lib/tc-docker/image-digests.tsv; t=$(( $(date +%s) - 8 * 86400 )); awk -F'\\t' -v OFS='\\t' -v t=\"$t\" -v k=ratelimited '$1 == \"tc-registry.test:4290/tc-test-other:1\" {$4 = t; $5 = k; $6 = t} {print}' $f > $f.new; cat $f.new > $f; rm -f $f.new; tc-test-state",
    "outputContains": [
     "\tratelimited\t"
    ]
@@ -374,7 +468,7 @@
   {
    "type": "command",
    "label": "Staleness: the same, but for 2 days",
-   "run": "set -e; f=/var/lib/tc-docker-monitor/image-digests.tsv; t=$(( $(date +%s) - 2 * 86400 )); awk -F'\\t' -v OFS='\\t' -v t=\"$t\" -v k=ratelimited '$1 == \"tc-registry.test:4290/tc-test-other:1\" {$4 = t; $5 = k; $6 = t} {print}' $f > $f.new; cat $f.new > $f; rm -f $f.new; tc-test-state",
+   "run": "set -e; f=/var/lib/tc-docker/image-digests.tsv; t=$(( $(date +%s) - 2 * 86400 )); awk -F'\\t' -v OFS='\\t' -v t=\"$t\" -v k=ratelimited '$1 == \"tc-registry.test:4290/tc-test-other:1\" {$4 = t; $5 = k; $6 = t} {print}' $f > $f.new; cat $f.new > $f; rm -f $f.new; tc-test-state",
    "outputContains": [
     "\tratelimited\t"
    ]
@@ -398,7 +492,7 @@
   {
    "type": "command",
    "label": "Refused: the registry on 4290 stops rate limiting and asks for a login nobody has; the ref given 8 days with no answer",
-   "run": "rm -f /tmp/tc-test-registry-4290/ratelimit; echo 'tc-user:tc-not-a-real-password' > /tmp/tc-test-registry-4290/htpasswd; set -e; f=/var/lib/tc-docker-monitor/image-digests.tsv; t=$(( $(date +%s) - 8 * 86400 )); awk -F'\\t' -v OFS='\\t' -v t=\"$t\" -v k=refused '$1 == \"tc-registry.test:4290/tc-test-other:1\" {$4 = t; $5 = k; $6 = t} {print}' $f > $f.new; cat $f.new > $f; rm -f $f.new; tc-test-state",
+   "run": "rm -f /tmp/tc-test-registry-4290/ratelimit; echo 'tc-user:tc-not-a-real-password' > /tmp/tc-test-registry-4290/htpasswd; set -e; f=/var/lib/tc-docker/image-digests.tsv; t=$(( $(date +%s) - 8 * 86400 )); awk -F'\\t' -v OFS='\\t' -v t=\"$t\" -v k=refused '$1 == \"tc-registry.test:4290/tc-test-other:1\" {$4 = t; $5 = k; $6 = t} {print}' $f > $f.new; cat $f.new > $f; rm -f $f.new; tc-test-state",
    "outputContains": [
     "\trefused\t"
    ]
@@ -445,7 +539,7 @@
   {
    "type": "command",
    "label": "Cleared in the cache file: no error, last ok now",
-   "run": "tc-test-state; grep -P '^tc-registry.test:4290/tc-test-other:1\\tsha256:[0-9a-f]{64}\\t-\\t[0-9]+\\tnone\\t0$' /var/lib/tc-docker-monitor/image-digests.tsv && echo 'cleared'",
+   "run": "tc-test-state; grep -P '^tc-registry.test:4290/tc-test-other:1\\tsha256:[0-9a-f]{64}\\t-\\t[0-9]+\\tnone\\t0$' /var/lib/tc-docker/image-digests.tsv && echo 'cleared'",
    "outputContains": [
     "cleared"
    ]
@@ -453,7 +547,7 @@
   {
    "type": "command",
    "label": "Version 1 cache lines (ref, digest, created, checked) are read as successes; a malformed line is dropped",
-   "run": "set -e; f=/var/lib/tc-docker-monitor/image-digests.tsv; now=$(date +%s); d=$(awk -F'\\t' '$1 ~ /5055/ {print $2}' $f); printf 'tc-registry.test:5055/tc-test-cur:1\\t%s\\t\\t%s\\nnot a line\\n' \"$d\" \"$now\" > $f; tc-test-state",
+   "run": "set -e; f=/var/lib/tc-docker/image-digests.tsv; now=$(date +%s); d=$(awk -F'\\t' '$1 ~ /5055/ {print $2}' $f); printf 'tc-registry.test:5055/tc-test-cur:1\\t%s\\t\\t%s\\nnot a line\\n' \"$d\" \"$now\" > $f; tc-test-state",
    "outputContains": [
     "not a line"
    ]
@@ -472,7 +566,7 @@
   {
    "type": "command",
    "label": "The cache rewritten in the version 2 format, the malformed line gone",
-   "run": "tc-test-state; grep -c 'not a line' /var/lib/tc-docker-monitor/image-digests.tsv || true",
+   "run": "tc-test-state; grep -c 'not a line' /var/lib/tc-docker/image-digests.tsv || true",
    "outputContains": [
     "tc-registry.test:5055/tc-test-cur:1\tsha256:"
    ],

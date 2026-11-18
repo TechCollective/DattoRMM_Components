@@ -188,6 +188,27 @@ first records it as waiting, and removes it only on a run at least
 >   timer, the units, a stopped `docker.service`) have **not** been run for
 >   this version: the Tier 1 test runs them on the CI runner, so read that
 >   result before merging. It has not yet run through a Datto agent.
+> - **Version 14** (2026-11-17) changes how the prune writes
+>   `/var/lib/tc-docker/pending-removal`, and one thing it does. The write is
+>   now `tc_state_write`, one function in a block the prune shares with the
+>   three Docker monitors (`tc-docker state`), which write their own state
+>   files in the same directory the same way. The file it writes is the same,
+>   byte for byte, and so is every refusal the prune already had: a directory
+>   that is a symlink or not a directory, a symlink or anything but a regular
+>   file in the record's place, a directory that cannot be made root-only, a
+>   short write, a failed rename. Each still means **no container is removed**
+>   and exit 1. **One refusal is new:** a `/var/lib/tc-docker` that is **not
+>   owned by root** is not used. Versions 9 to 13 made such a directory
+>   root's and went on, believing a record in it that another user could have
+>   written, and removing the containers it named as due. Version 14 leaves
+>   the directory as it is, removes no container, says
+>   `ERROR: could not write /var/lib/tc-docker/pending-removal: /var/lib/tc-docker is not owned by root`
+>   and exits 1 until a person has looked at it. Nothing in these components
+>   makes that directory anything but root's. The words after
+>   `could not write ...:` differ in three other cases (they now end with the
+>   failing command's own message in brackets); see *If it cannot be written*
+>   below. `TC_PRUNE_VERSION=14`; the monitor's `PRUNE_MIN_VERSION` stays
+>   **11**. Nothing else in the component changed.
 
 ## What it does
 
@@ -363,7 +384,7 @@ carried onto the new list.
 |---|---|
 | `/usr/local/sbin/tc-docker-prune` | The prune script |
 | `/etc/default/tc-docker-prune` | Its settings: `OLDER_THAN_HOURS`, `GRACE_HOURS`, `PRUNE_IMAGES`. Read as text, never run; see *The settings file* below |
-| `/var/lib/tc-docker/pending-removal` | Written by the prune: the stopped containers it has recorded and will remove. Directory `0700`, file `0600`, both root |
+| `/var/lib/tc-docker/pending-removal` | Written by the prune: the stopped containers it has recorded and will remove. Directory `0700`, file `0600`, both root. The Docker monitors keep their state files in the same directory |
 | `/etc/systemd/system/tc-docker-prune.service` | Runs the script, only while Docker is running (`Requisite=docker.service`) |
 | `/etc/systemd/system/tc-docker-prune.timer` | Runs the service on `usrPruneSchedule` |
 
@@ -469,8 +490,8 @@ What earlier versions left on a host, which the monitor flags:
 | 7, 8 | Removes a stopped container at the first prune after it is old enough, counting from when it was **created**; removes every image no container uses | A container that crashed minutes ago is removed without warning, with its logs; an image built or loaded on the host, which exists nowhere else, is removed |
 | 9, 10 | `Requires=docker.service`, and a `docker info` before it checks anything. (9 also keeps every tagged image on the containerd image store in `All` mode, which is not unsafe) | The weekly timer starts a Docker that was stopped on purpose, and every `restart: always` container with it. Flagged from the monitor's version 8 (`PRUNE_MIN_VERSION` 11) |
 | 11 | Runs its settings file as shell, and does not check `OLDER_THAN_HOURS` | Only after a hand edit of `/etc/default/tc-docker-prune`: a line there is a command run as root, and `OLDER_THAN_HOURS=0` removes things of any age. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run the current version on the host to replace it |
-| 12 | The current rules. Version 13's prune differs only in where its code for reading `pending-removal` lives | Nothing. Not flagged |
-| 13 | Current | |
+| 12, 13 | The current rules, except that a `/var/lib/tc-docker` owned by another user is made root's and the record in it believed. Version 13's prune differs from 12's only in where its code for reading `pending-removal` lives | Only on a host where that directory is not root's, which nothing in these components causes: a record another user wrote there can get an unprotected stopped container removed without its wait. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run the current version on the host to replace it |
+| 14 | Current | |
 
 **Before the list is reviewed:** the prune removes only unused networks and
 build cache older than `usrPruneOlderThanHours`. No container and no image.
@@ -500,10 +521,50 @@ review, so a later review starts every wait again.
 Every line of `pending-removal` whose container is gone, running again, now
 protected, or no longer old enough (it ran and stopped again) is dropped, so
 its wait starts again if it comes back. The file is written before anything is
-removed, as a new file renamed over the old one. **If it cannot be written**
-(a read-only or full filesystem, `/var/lib/tc-docker` not a directory), the
-prune removes **no container** that run, says why, and exits 1; images,
+removed, as a new file renamed over the old one. **If it cannot be written**,
+the prune removes **no container** that run, says why, and exits 1; images,
 networks and build cache are still handled. There is no fallback location.
+
+How it is written, and when it is not (the same rules for every file the
+Docker components keep in that directory):
+
+- **One directory**, `/var/lib/tc-docker`, for everything the Docker components
+  keep on a host: the prune's `pending-removal`, the Containers monitor's
+  `monitor-first-seen`, the Health monitor's `monitor-state.tsv` and the
+  Images monitor's `image-digests.tsv`. There is no fallback directory.
+- **One way to write a file there**, `tc_state_write`, in the block marked
+  `tc-docker state` (four copies: the prune and the three monitors; CI's
+  "Shared blocks match" check compares them). A new file (0600) is made in the
+  directory, written, read back and compared, then renamed over the old one,
+  so a reader sees the old file or the new one and never part of one.
+- **The directory** is created when missing and made `root:root 0700` when it
+  is root's but is not that.
+- **Nothing is written** when the directory is a symlink or is not a
+  directory, **is not owned by root**, or cannot be created or made
+  root-only; when the file's name is there as a symlink or as anything but a
+  regular file (a symlink is never followed, written through or replaced);
+  when no file can be created in the directory; when what was written does
+  not read back the same (a full disk); or when the rename fails.
+
+The error line names the reason and, in brackets, the failing command's own
+message when it gave one:
+
+| Reason | When |
+|---|---|
+| `/var/lib/tc-docker is not a directory` | It is a symlink, or a file |
+| `/var/lib/tc-docker/pending-removal is not a regular file` | A symlink, a directory or anything else is in the record's place |
+| `/var/lib/tc-docker cannot be created (mkdir: ...)` | |
+| `/var/lib/tc-docker is not owned by root` | New in version 14; see the version note at the top |
+| `/var/lib/tc-docker cannot be made root-only (chown: ...)` | Its group or mode is wrong and cannot be changed (a read-only filesystem) |
+| `no file can be created in /var/lib/tc-docker (mktemp: ...)` | A read-only filesystem, an immutable directory |
+| `writing it failed (...: No space left on device)` | A full disk; also when the file does not read back as written |
+| `the new file could not be renamed into place (mv: ...)` | An immutable file |
+
+Up to version 13 the same cases read `mkdir: ...` alone, `... cannot be made
+root-only (0700): chown: ...`, `mktemp: ...` alone, and `writing it failed (is
+the disk full?)`. On a read-only filesystem version 13 stopped at `chown`;
+version 14 leaves a directory that is already `root:root 0700` alone, so it
+stops at `mktemp`.
 
 With the weekly timer and the defaults (168 hours, then 144), a container is
 recorded at the first Sunday prune after it has been stopped a week, and
@@ -700,7 +761,10 @@ from version 13, reads the prune's `pending-removal` file. It is marked
 script it installs, and the other two. All four must stay byte-identical;
 CI's "Shared blocks match" check fails the pull request when they are not.
 The "is Docker running" check is a second shared block, `tc-docker running`,
-with six copies: these four and the Health and Images monitors.
+with six copies: these four and the Health and Images monitors. From version
+14 the prune carries a third, `tc-docker state` (how a file in
+`/var/lib/tc-docker` is written), with four copies: the prune and the three
+Docker monitors.
 
 ## Installing it in Datto
 
@@ -828,13 +892,13 @@ A run with Docker stopped exits `3`. Its `daemon.json` lines look like:
 
 A prune with Docker stopped (by hand; the timer does not start it then):
 
-    tc-docker-prune version 13
+    tc-docker-prune version 14
     Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.
 
 A prune after review reports what it recorded, what is waiting, what it
 removed and what it kept:
 
-    tc-docker-prune version 13
+    tc-docker-prune version 14
     Pruning unused items older than 168h. Volumes are never removed.
     Disk before: 30G free, 29% used
     Stopped containers recorded for removal this run (removed 144h from now if still stopped and not protected):
@@ -1016,9 +1080,9 @@ Never a customer first.
   journal and `systemctl --failed`. Disk space monitoring is the backstop.
 - **Removing it** is manual: `systemctl disable --now tc-docker-prune.timer`,
   then delete the two unit files, `/usr/local/sbin/tc-docker-prune`,
-  `/etc/default/tc-docker-prune`, `/etc/tc-docker/` and `/var/lib/tc-docker/`,
-  and run
-  `systemctl daemon-reload`.
+  `/etc/default/tc-docker-prune`, `/etc/tc-docker/` and `/var/lib/tc-docker/`
+  (which also holds the Docker monitors' state files; they write them again
+  on their next run), and run `systemctl daemon-reload`.
 
 ## Open questions
 

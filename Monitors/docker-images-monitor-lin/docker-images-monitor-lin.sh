@@ -263,50 +263,82 @@ tc_docker_running() {
 }
 # <<< tc-docker running
 
+# >>> tc-docker state: identical in the prune and in the Containers, Health and Images monitors; change them together.
+# The one directory the tc-docker components keep state in, and the one way a
+# file in it is written. tc_state_write NAME CONTENT replaces
+# $TC_STATE_DIR/NAME with CONTENT, exactly as given. The new file is made in
+# the same directory (mode 0600), read back and compared (a full disk can
+# leave a short file), then renamed over the old one, so a reader sees the old
+# file or the new one and never part of one. The directory is created when it
+# is missing, and made root:root 0700 when it is root's but is not that.
+# Nothing is written, and it returns 1 with the reason in TC_STATE_WHY (and
+# the failing command's own words, when it had any, in TC_STATE_ERR), when:
+#   - the directory is a symlink, or is there and is not a directory;
+#   - NAME is there as a symlink, or as anything but a regular file (a symlink
+#     is never followed, written through or replaced);
+#   - the directory cannot be created, is not owned by root, or cannot be made
+#     root:root 0700;
+#   - no file can be created in it, what was written does not read back the
+#     same, or the rename fails.
+# What a failure means is the caller's to say: the prune removes no container
+# it could not record first. Needs GNU stat (-c), mktemp and mv (-T).
+TC_STATE_DIR=/var/lib/tc-docker
+TC_STATE_WHY=""
+TC_STATE_ERR=""
+# shellcheck disable=SC2034  # only the prune prints TC_STATE_ERR
+tc_state_write() {  # name, content
+    local d="$TC_STATE_DIR" f="$TC_STATE_DIR/$1" tmp="" err=""
+    TC_STATE_WHY=""; TC_STATE_ERR=""
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+        TC_STATE_WHY="$d is not a directory"
+    elif [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+        TC_STATE_WHY="$f is not a regular file"
+    elif ! err="$(mkdir -p -- "$d" 2>&1)"; then
+        TC_STATE_WHY="$d cannot be created"
+    elif [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then
+        TC_STATE_WHY="$d is not owned by root"
+    elif [ "$(stat -c '%u:%g:%a' -- "$d" 2>/dev/null)" != "0:0:700" ] \
+         && ! err="$( { chown 0:0 -- "$d" && chmod 700 -- "$d"; } 2>&1)"; then
+        TC_STATE_WHY="$d cannot be made root-only"
+    elif ! tmp="$(mktemp -- "$d/.$1.XXXXXX" 2>&1)"; then
+        err="$tmp"; tmp=""
+        TC_STATE_WHY="no file can be created in $d"
+    elif ! err="$( { printf '%s' "$2" >"$tmp"; } 2>&1)" || [ "$(cat -- "$tmp" 2>/dev/null; echo x)" != "${2}x" ] \
+         || ! err="$(chmod 600 -- "$tmp" 2>&1)"; then
+        TC_STATE_WHY="writing it failed"
+    elif ! err="$(mv -fT -- "$tmp" "$f" 2>&1)"; then
+        TC_STATE_WHY="the new file could not be renamed into place"
+    else
+        return 0
+    fi
+    [ -z "$tmp" ] || rm -f -- "$tmp"
+    TC_STATE_ERR="$(printf '%s' "$err" | tr -cd '[:print:]' | cut -c1-200)"
+    return 1
+}
+# <<< tc-docker state
+
 # >>> tc-docker monitor state: identical in the Health and Images monitors; change them together.
-# The state directory these monitors share. There is no other directory: no
-# fallback to /var/tmp, where another local user could have made the path first.
-# tc_state_dir uses it only if it is a real directory (not a symlink) owned by
-# root, creating it 0700 when it is missing and making it 0700 when it is not.
-# It sets STATE_DIR, or leaves STATE_DIR empty and sets STATE_WHY. Never fatal:
-# a monitor without its state directory runs without saved state and says so.
-# tc_state_read NAME prints the file only when it is a regular file (not a
-# symlink) owned by root; the caller keeps only the lines it can check.
-# tc_state_write NAME replaces the file with its stdin by renaming a new
-# root-only file into place, so a symlink there is replaced, never followed.
-# Needs GNU stat (-c) and mv (-T).
-TC_STATE_DIR=/var/lib/tc-docker-monitor
-STATE_DIR=""
-STATE_WHY=""
-tc_state_dir() {
+# tc_state_read NAME prints state file NAME from $TC_STATE_DIR (the tc-docker
+# state block), and only when it can be this monitor's own: the directory is a
+# real directory (not a symlink) owned by root, and the file a regular file
+# (not a symlink) owned by root. Otherwise it prints nothing, and the caller
+# starts without saved state. The caller still keeps only the lines it can
+# check.
+# MOVED STATE. Until Health version 2 and Images version 4 these two monitors
+# kept their state in /var/lib/tc-docker-monitor. While NAME is not in
+# $TC_STATE_DIR at all, the file of that name in the old directory is printed
+# instead, under the same rule. The run's tc_state_write then makes the new
+# file, so the old one is read once. Nothing here changes or removes the old
+# directory or what is in it. Remove this fallback (TC_STATE_OLD_DIR and the
+# line that uses it) once no host has state only in the old directory.
+# Needs GNU stat (-c).
+TC_STATE_OLD_DIR=/var/lib/tc-docker-monitor
+tc_state_read() {  # name
     local d="$TC_STATE_DIR"
-    STATE_DIR=""; STATE_WHY=""
-    if [ -L "$d" ]; then STATE_WHY="$d is a symlink"; return 1; fi
-    if [ ! -e "$d" ]; then
-        ( umask 077 && mkdir -m 700 -- "$d" ) 2>/dev/null
-    fi
-    if [ -L "$d" ] || [ ! -d "$d" ]; then STATE_WHY="$d is not a directory"; return 1; fi
-    if [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then STATE_WHY="$d is not owned by root"; return 1; fi
-    if [ "$(stat -c %a -- "$d" 2>/dev/null)" != "700" ] && ! chmod 700 -- "$d" 2>/dev/null; then
-        STATE_WHY="$d cannot be made 0700"; return 1
-    fi
-    STATE_DIR="$d"
-    return 0
-}
-tc_state_read() {
-    local f="$STATE_DIR/$1"
-    [ -n "$STATE_DIR" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ "$(stat -c %u -- "$f" 2>/dev/null)" = "0" ] || return 0
-    cat -- "$f" 2>/dev/null
-    return 0
-}
-tc_state_write() {
-    local f="$STATE_DIR/$1" tmp
-    [ -n "$STATE_DIR" ] || return 1
-    tmp="$(mktemp -- "$STATE_DIR/.$1.XXXXXX" 2>/dev/null)" || return 1
-    if ! cat > "$tmp" 2>/dev/null || ! chmod 600 -- "$tmp" 2>/dev/null || ! mv -fT -- "$tmp" "$f" 2>/dev/null; then
-        rm -f -- "$tmp" 2>/dev/null
-        return 1
-    fi
+    if [ ! -e "$d/$1" ] && [ ! -L "$d/$1" ]; then d="$TC_STATE_OLD_DIR"; fi
+    [ -d "$d" ] && [ ! -L "$d" ] && [ "$(stat -c %u -- "$d" 2>/dev/null)" = "0" ] \
+        && [ -f "$d/$1" ] && [ ! -L "$d/$1" ] && [ "$(stat -c %u -- "$d/$1" 2>/dev/null)" = "0" ] || return 0
+    cat -- "$d/$1" 2>/dev/null
     return 0
 }
 # <<< tc-docker monitor state
@@ -475,7 +507,6 @@ day() { date -u -d "@$1" +%Y-%m-%d 2>/dev/null || printf '%s' "$1"; }
 
 # ---------------------------------------------------------------------- state
 
-tc_state_dir
 declare -A S_DIG=() S_CRE=() S_OK=() S_ERR=() S_SINCE=()
 S_ORDER=()
 while IFS=$'\t' read -r -a f; do
@@ -500,29 +531,27 @@ while IFS=$'\t' read -r -a f; do
     S_ORDER+=("$r")
 done < <(tc_state_read "$STATE_NAME")
 
+# Never fatal: a run that cannot save its state says so in the status.
 STATE_NOTE=""
-[ -z "$STATE_DIR" ] && STATE_NOTE="; no saved state ($STATE_WHY), so nothing is cached and lookup failures are not tracked over time"
-
 save_state() {
-    [ -n "$STATE_DIR" ] || return 0
-    local r newest
+    local r newest out=""
     declare -A wrote=()
-    {
-        for r in ${UNIQ[@]+"${UNIQ[@]}"} ${S_ORDER[@]+"${S_ORDER[@]}"}; do
-            [ -n "$r" ] && [ -n "${S_OK[$r]+x}" ] && [ -z "${wrote[$r]+x}" ] || continue
-            wrote[$r]=1
-            if [ -z "${IN_USE[$r]+x}" ]; then
-                newest="${S_OK[$r]}"; [ "${S_SINCE[$r]:-0}" -gt "$newest" ] && newest="${S_SINCE[$r]:-0}"
-                [ $(( NOW - newest )) -lt $(( STATE_KEEP_DAYS * 86400 )) ] || continue
-            fi
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "${S_DIG[$r]:--}" "${S_CRE[$r]:--}" "${S_OK[$r]}" "${S_ERR[$r]:-none}" "${S_SINCE[$r]:-0}"
-        done
-    } | tc_state_write "$STATE_NAME" || STATE_NOTE="; saved state could not be written to $STATE_DIR"
+    for r in ${UNIQ[@]+"${UNIQ[@]}"} ${S_ORDER[@]+"${S_ORDER[@]}"}; do
+        [ -n "$r" ] && [ -n "${S_OK[$r]+x}" ] && [ -z "${wrote[$r]+x}" ] || continue
+        wrote[$r]=1
+        if [ -z "${IN_USE[$r]+x}" ]; then
+            newest="${S_OK[$r]}"; [ "${S_SINCE[$r]:-0}" -gt "$newest" ] && newest="${S_SINCE[$r]:-0}"
+            [ $(( NOW - newest )) -lt $(( STATE_KEEP_DAYS * 86400 )) ] || continue
+        fi
+        out="${out}${r}"$'\t'"${S_DIG[$r]:--}"$'\t'"${S_CRE[$r]:--}"$'\t'"${S_OK[$r]}"$'\t'"${S_ERR[$r]:-none}"$'\t'"${S_SINCE[$r]:-0}"$'\n'
+    done
+    tc_state_write "$STATE_NAME" "$out" \
+        || STATE_NOTE="; state not saved ($TC_STATE_WHY), so nothing is cached and lookup failures are not tracked over time"
 }
 
 if [ "${#NAMES[@]}" -eq 0 ]; then
     emit 0 "$(printf '%d container(s) running, none checkable (%d excluded, %d without a registry image)' \
-        "$TOTAL" "$EXCLUDED" "${#SKIPPED[@]}")${STATE_NOTE}"
+        "$TOTAL" "$EXCLUDED" "${#SKIPPED[@]}")"
 fi
 
 # A long TTL means every host refreshes in one burst. Hosts built from the same
@@ -759,7 +788,7 @@ kind_text() {
     esac
 }
 STALE_REFS=()
-if [ "$STALE_DAYS" -gt 0 ] && [ -n "$STATE_DIR" ]; then
+if [ "$STALE_DAYS" -gt 0 ]; then
     for r in ${UNIQ[@]+"${UNIQ[@]}"}; do
         [ -n "${S_ERR[$r]:-}" ] && [ "${S_ERR[$r]}" != none ] || continue
         if [ "${S_OK[$r]:-0}" -gt 0 ]; then base="${S_OK[$r]}"; since="no registry answer since $(day "${S_OK[$r]}")"

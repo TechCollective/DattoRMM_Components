@@ -50,7 +50,18 @@ registry, and when an image's registry has not answered for days.
 > exposed only where the agent's environment carries one. Version 5 keeps its
 > scratch directory under a name of its own, set before anything can exit,
 > and never reads `TMP`. Version 1 set its trap after making the directory and
-> did not have the defect.
+> did not have the defect. **The cache file moves** from
+> `/var/lib/tc-docker-monitor` to `/var/lib/tc-docker`, the directory the
+> prune and the Containers monitor already use, and is written with the
+> function they use (`tc_state_write`, in the shared block `tc-docker
+> state`). The first run of version 5 reads the old file once, so nothing is
+> looked up again and no error history is lost; the old directory is never
+> changed or removed, and can be deleted by hand once every monitor on the
+> host is on its new version. Two things differ from version 4: **a symlink
+> in the cache file's place is refused**, not replaced (the run then caches
+> nothing and says so), and the status says `state not saved (<why>)` where
+> version 4 said `no saved state (<why>)` or `saved state could not be
+> written to ...`. See [State file](#state-file).
 
 ## What it does
 
@@ -59,7 +70,8 @@ container is running with the digest its tag currently points to in the
 registry.
 
 **Read-only.** It never pulls, so it cannot move a local tag or start an
-upgrade. The only thing it keeps is its own cache file; during a run it also
+upgrade. The only thing it keeps is its own cache file, in `/var/lib/tc-docker`
+(which it creates, root-only, when it is not there); during a run it also
 has a scratch directory from `mktemp -d` (under `$TMPDIR`, else `/tmp`), one
 small file per registry lookup, removed on every way out. Its network calls are
 registry lookups through `docker buildx imagetools inspect`, which:
@@ -102,8 +114,11 @@ mechanism as `Docker - Containers Differ From Expected [Lin]`, and the same
 shared "is Docker running" block: the time limit is the block marked
 `tc-docker bounded` (three copies, one in each Docker monitor) and the check
 is the block marked `tc-docker running` (six copies, one in every Docker
-component and in the prune). `tools/check-shared-blocks.py` keeps the copies
-identical.
+component and in the prune). From version 5 the result code is the block
+`tc-docker result` (the three monitors), the cache file is written by
+`tc-docker state` (the three monitors and the prune) and read by `tc-docker
+monitor state` (this monitor and the Health monitor).
+`tools/check-shared-blocks.py` keeps the copies identical.
 
 ### Listing the containers
 
@@ -193,25 +208,50 @@ never stale; only failed lookups age it.
 
 ### State file
 
-`/var/lib/tc-docker-monitor/image-digests.tsv`, shared directory with
-`Docker - Container Health and Resource Usage [Lin]`. The directory is used
-only when it is a real directory, not a symlink, **owned by root**. It is
-created 0700 when it is missing, and made 0700 when it is not (version 1 left
-it 0755). The file is written by renaming a new root-only file into place, so
-a symlink at the file is replaced, never followed. Only well-formed lines are
-read.
+`/var/lib/tc-docker/image-digests.tsv`: the cache of registry answers, and
+each reference's error history.
 
-**There is no fallback directory.** Version 1 fell back to
-`/var/tmp/tc-docker-monitor`, where any local user could have made the path
-first, as a directory or a symlink, and so chosen where a root process writes
-and `chmod`s, or supplied the cache the comparison trusts. If
-`/var/lib/tc-docker-monitor` cannot be used, the check runs without saved state
-(every lookup is made, nothing is tracked over time) and the status says so:
+How it is written, and when it is not (the same rules, and from version 5 the
+same code, for every file the Docker components keep in that directory):
 
-    STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]; no saved state (/var/lib/tc-docker-monitor is not owned by root), so nothing is cached and lookup failures are not tracked over time
+- **One directory**, `/var/lib/tc-docker`, for everything the Docker components
+  keep on a host: the prune's `pending-removal`, the Containers monitor's
+  `monitor-first-seen`, the Health monitor's `monitor-state.tsv` and the
+  Images monitor's `image-digests.tsv`. There is no fallback directory.
+- **One way to write a file there**, `tc_state_write`, in the block marked
+  `tc-docker state` (four copies: the prune and the three monitors; CI's
+  "Shared blocks match" check compares them). A new file (0600) is made in the
+  directory, written, read back and compared, then renamed over the old one,
+  so a reader sees the old file or the new one and never part of one.
+- **The directory** is created when missing and made `root:root 0700` when it
+  is root's but is not that.
+- **Nothing is written** when the directory is a symlink or is not a
+  directory, **is not owned by root**, or cannot be created or made
+  root-only; when the file's name is there as a symlink or as anything but a
+  regular file (a symlink is never followed, written through or replaced);
+  when no file can be created in the directory; when what was written does
+  not read back the same (a full disk); or when the rename fails.
 
-It never fails the check for this. A host that ran version 1 with an unwritable
-`/var/lib` may have a `/var/tmp/tc-docker-monitor`; version 2 ignores it.
+**How it is read.** Only when `/var/lib/tc-docker` is a real directory (not a
+symlink) owned by root and the file is a regular file (not a symlink) owned by
+root, and then only its well-formed lines. So a cache someone else could have
+written is never what the comparison trusts.
+
+**It never fails the check.** A run that cannot save its state still makes
+every lookup, and the status says why:
+
+    STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]; state not saved (/var/lib/tc-docker is not owned by root), so nothing is cached and lookup failures are not tracked over time
+
+**Moved in version 5.** Versions 1 to 4 kept this file in
+`/var/lib/tc-docker-monitor` (version 1 could also fall back to
+`/var/tmp/tc-docker-monitor`, which no later version reads). While
+`/var/lib/tc-docker/image-digests.tsv` does not exist, the file of that name
+in `/var/lib/tc-docker-monitor` is read instead, under the same rule (a real
+directory and a regular file, both root's). That run writes the new file, so
+the old one is read once. **The old directory is never changed or removed**;
+delete it by hand once the Health and Images monitors on the host are both on
+their new versions. This fallback is temporary: the block marked `tc-docker
+monitor state` says what to remove.
 
 Six tab-separated columns, one line per image reference:
 
@@ -316,7 +356,7 @@ non-default value, and save each policy again if its value was lost.
 | A reference with no registry answer for `usrStaleAfterDays` | **Exit 1**, naming it, the error kind and since when |
 | Every lookup failed (not rate limiting) | **Exit 1**: "no image could be read from any registry" |
 | Rate limited, or deferred by the time limit | **Exit 0**, reported in the status |
-| State directory unusable | Runs without saved state; the status says why. Never fails |
+| The state file cannot be saved | The check still runs; the status says `state not saved (<why>)`. Never fails |
 | An input variable is invalid | **Exit 1**: "Check could not run: ..." |
 | The script dies unexpectedly | **Exit 1** via an `EXIT` trap: "Check could not run: the monitor stopped unexpectedly (exit N)". TERM, INT and HUP go through the same trap. The script runs under `set -u`; every lookup that could be unset has a default, so the trap is a last resort, not the way an unset value is handled |
 
@@ -351,8 +391,8 @@ A healthy status reads like:
     STATUS=4 checked: 0 behind, 3 current, 1 pinned [0 cached, 4 queried]
 
 On the next run within `usrCacheHours`, it should show the lookups as cached
-(`[4 cached, 0 queried]`). If it never does, the status says why there is no
-saved state.
+(`[4 cached, 0 queried]`). If it never does, the status says why the state
+was not saved.
 
 ## Test order
 
@@ -383,7 +423,7 @@ saved state.
 - It only checks *running* containers.
 - "Docker is stopped" relies on systemd. Without systemd, `docker info` is
   asked, and on such a host a socket-activated daemon could be started by it.
-- Staleness needs the state directory: without saved state nothing is tracked
+- Staleness needs the state file: while it cannot be saved nothing is tracked
   over time, and the status says so.
 - On a host with very many uncached references and a slow registry, one run
   may not reach them all inside its 75 seconds; the rest are deferred to the
