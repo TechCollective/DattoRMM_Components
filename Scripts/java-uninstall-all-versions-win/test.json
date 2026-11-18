@@ -1,0 +1,99 @@
+{
+  "platforms": ["windows"],
+  "description": "Proves bad input is refused, that Report and Remove on a runner with no standalone Java report CLEAN and change nothing, that the UDF summary is written, and that a second run is harmless. GitHub's runner keeps its JDKs in a tool cache outside the vendor folders, so a CLEAN result also shows those are not treated as standalone installs. Real uninstalls, the keep list and shared cleanup are Tier 2 on an internal VM, because the Windows harness has no step to install Java first.",
+  "variables": {
+    "usrUdfNumber": "250"
+  },
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Unknown mode is refused",
+      "expectExitCode": 1,
+      "variables": { "usrMode": "Nuke" },
+      "outputContains": [ "STATUS=REFUSED", "usrMode" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A keep term under 3 characters is refused",
+      "expectExitCode": 1,
+      "variables": { "usrKeep": "Java 8 Update 401, Ja" },
+      "outputContains": [ "STATUS=REFUSED", "usrKeep" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "UDF number 301 is refused",
+      "expectExitCode": 1,
+      "variables": { "usrUdfNumber": "301" },
+      "outputContains": [ "STATUS=REFUSED", "usrUdfNumber" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Report on a runner with no standalone Java is clean",
+      "expectExitCode": 0,
+      "variables": { "usrMode": "Report" },
+      "outputContains": [ "Mode: Report", "Registered Java: 0", "Report only, nothing changed", "UDF=WRITTEN", "STATUS=CLEAN" ]
+    },
+    {
+      "type": "registry",
+      "label": "UDF summary written where the Datto agent reads it",
+      "path": "HKLM:\\SOFTWARE\\CentraStage",
+      "name": "Custom250",
+      "matches": "^Java: NONE \\| Kept 0 \\| \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$"
+    },
+    {
+      "type": "runComponent",
+      "label": "Remove with nothing to remove changes nothing",
+      "expectExitCode": 0,
+      "outputContains": [ "Mode: Remove", "nothing changed", "STATUS=CLEAN" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Second Remove run is harmless",
+      "expectExitCode": 0,
+      "outputContains": [ "STATUS=CLEAN" ]
+    },
+    {
+      "type": "file",
+      "label": "No uninstall log folder is left behind when nothing was uninstalled",
+      "path": "%ProgramData%\\TechCollective\\JavaRemoval",
+      "exists": false
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: on an internal VM with Oracle Java 8, Eclipse Temurin JDK 17 and Amazon Corretto 11 installed, Report lists all three and changes nothing",
+      "tier": 2,
+      "variables": { "usrMode": "Report" },
+      "expectExitCode": 0,
+      "outputContains": [ "[remove] Java 8 Update", "[remove] Eclipse Temurin JDK", "[remove] Amazon Corretto", "STATUS=FOUND" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: Remove with usrKeep Corretto uninstalls Oracle and Temurin, keeps Corretto, and leaves the JavaSoft key and PATH alone",
+      "tier": 2,
+      "variables": { "usrKeep": "Corretto" },
+      "expectExitCode": 0,
+      "outputContains": [ "[ok] Java 8 Update", "[ok] Eclipse Temurin JDK", "[keep] Amazon Corretto", "Shared Java settings", "STATUS=REMOVED" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: Remove with no keep list uninstalls Corretto and cleans the shared leftovers",
+      "tier": 2,
+      "expectExitCode": 0,
+      "outputContains": [ "[ok] Amazon Corretto", "Shared Java leftovers:", "STATUS=REMOVED" ]
+    },
+    {
+      "type": "file",
+      "label": "Tier 2: a JRE bundled inside an application folder on that VM is untouched",
+      "tier": 2,
+      "path": "%ProgramFiles%\\TestApp\\jre\\bin\\java.exe"
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: Report afterwards finds nothing",
+      "tier": 2,
+      "variables": { "usrMode": "Report" },
+      "expectExitCode": 0,
+      "outputContains": [ "Registered Java: 0", "STATUS=CLEAN" ]
+    }
+  ]
+}
