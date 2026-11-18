@@ -134,11 +134,35 @@ again.
 > its two files: the result block, the diagnostic, the exit code and the
 > files left behind were the same every time, except where the directory was
 > not root's. Not yet through a Datto agent.
+>
+> **Version 11** (2026-11-18) drops the check for the **version 1 layout** of
+> the prune, and changes nothing else. Version 10 also read
+> `/etc/systemd/system/tc-docker-prune.service` and reported a prune service
+> whose `ExecStart` was not `/usr/local/sbin/tc-docker-prune` (`prune service
+> on this host does not run /usr/local/sbin/tc-docker-prune (version 1
+> layout)`). Version 11 no longer reads the unit: the prune check reads the
+> prune script alone. **A host still on Host Maintenance version 1 is no
+> longer flagged.** Version 1 installed no script, only a service that runs
+> `docker system prune --all` itself, so such a host now reads as "no prune
+> installed", which is not stale: with no list it is healthy (`No
+> expected-containers list on this host yet`), and nothing tells you its
+> unsafe prune is still there. Drop the check only once no host carries a
+> version 1 prune. A version 2 to 10 prune is reported exactly as before
+> (a script with no `TC_PRUNE_VERSION` line, or one below 11, is stale), and
+> `PRUNE_MIN_VERSION` stays **11**. The status text
+> `prune service on this host does not run ...` no longer appears. Through
+> its Tier 1 `test.json` in a sandbox with systemd's answers simulated and no
+> bash 4.2, every other step gave the result it gave for version 10 (144
+> pass; the 11 bash 4.2 steps fail there for both versions and run in CI),
+> and the new step passes; against the version 10 script it fails. Not yet
+> run through a Datto agent.
 
 ## What it does
 
-It reads `docker info`, `docker ps`, `docker inspect` and six files (and the
-modification time of the list). It makes no network calls.
+It reads `docker info`, `docker ps`, `docker inspect` and seven files: the
+list, its reviewed and ignore files, the prune's script, settings file and
+pending-removal record, and its own first-seen file (and the modification time
+of the list). It makes no network calls.
 
 **It writes one file**, `/var/lib/tc-docker/monitor-first-seen`, and nothing
 else: when it first saw each running container that is not on the list, so
@@ -325,32 +349,36 @@ hand), bringing every `restart: always` container back with it.
 Since version 7 of Host Maintenance, the installed script
 `/usr/local/sbin/tc-docker-prune` carries a line `TC_PRUNE_VERSION=<n>`, where
 `<n>` is the component's version, and prints `tc-docker-prune version <n>` as
-its first output line. This monitor reads that line and, from the unit,
-`/etc/systemd/system/tc-docker-prune.service`. A host has a **stale prune**
-when any of these is true:
+its first output line. This monitor reads that line, and nothing else, for the
+check. A host has a **stale prune** when either of these is true:
 
-- the unit exists and its `ExecStart` is not exactly
-  `/usr/local/sbin/tc-docker-prune` (the version 1 layout);
 - the script exists with no `TC_PRUNE_VERSION=` line (every version before 7),
   or one whose value is not a whole number;
 - the script's `TC_PRUNE_VERSION` is lower than `PRUNE_MIN_VERSION`, a constant
   near the top of the script (**11** now: the first prune that never starts a
   stopped Docker).
 
-A host with neither file has no prune installed, which is not stale. A
+A host with no script has no prune installed, which is not stale. A
 leading zero in the stamp is read as decimal.
 
+**A version 1 prune is not flagged** (from version 11 of this monitor).
+Version 1 of Host Maintenance installed no script: its service ran
+`docker system prune --all --force` itself. Up to version 10 this monitor read
+the service's `ExecStart` to find that layout; version 11 does not read the
+unit, so a version 1 host reads as having no prune installed, and with no list
+its result is the healthy "no list yet". This assumes no host still carries a
+version 1 prune.
+
 The status names what was found, for example `prune on this host is version 3,
-older than 11`, `prune on this host has no version (installed before version
-7)`, or `prune service on this host does not run
-/usr/local/sbin/tc-docker-prune (version 1 layout)`. It goes first in the
+older than 11`, or `prune on this host has no version (installed before version
+7)`. It goes first in the
 status, because the status is cut at 900 characters (400 before version
 10). On an alert the
 diagnostic says to run Docker - Configure Host Maintenance [Lin] on the host,
 and that until then **the old prune's rules apply**.
 
-The check runs before the "no list yet" exit on purpose: version 1 and 2 hosts
-have no list, and they are the ones it exists to find. A host with a current
+The check runs before the "no list yet" exit on purpose: a version 2 host has
+no list, and is one it exists to find. A host with a current
 prune is reported exactly as before.
 
 **Raising `PRUNE_MIN_VERSION`** is how a future safety fix to the prune gets
@@ -428,7 +456,7 @@ No customer-specific value is hardcoded. An invalid value makes it report
 | systemd says `docker.service` is not active, and there is no list or it is empty | **Exit 0**: "Docker is stopped (…); no expected-containers list on this host yet, so nothing is expected to run" (or "…its expected-containers list is empty…") |
 | `docker info` fails, and there is no `docker.service`, no `/var/run/docker.sock` and no list (a docker client with no daemon on this host) | **Exit 0**: "Docker client installed (…) but no Docker daemon on this host (no docker.service, no /var/run/docker.sock); nothing to check" |
 | Docker installed, no list yet, prune current or not installed | **Exit 0**: says Host Maintenance creates it |
-| Prune stale, `usrStalePruneAction` Alert, with or without a list, and with Docker stopped or absent (the check reads two files and needs no daemon) | **Exit 1**, the finding first in the status, and `STALE PRUNE` in the diagnostic saying to run Host Maintenance. After a `Check could not run: …` it comes second. |
+| Prune stale, `usrStalePruneAction` Alert, with or without a list, and with Docker stopped or absent (the check reads one file and needs no daemon) | **Exit 1**, the finding first in the status, and `STALE PRUNE` in the diagnostic saying to run Host Maintenance. After a `Check could not run: …` it comes second. |
 | Prune stale, `usrStalePruneAction` Warn | **Exit 0**, the finding named in the status; the rest of the result is as before |
 | Prune stale, `usrStalePruneAction` Ignore | **Exit 0**, not named; the check is not made |
 | Daemon should be there (a list, a socket or a `docker.service`) and `docker info` fails | **Exit 1**: "Check could not run: cannot talk to the Docker daemon", quoting Docker's error and systemd's view in the diagnostic |
@@ -457,7 +485,7 @@ Exactly one result block, with `STATUS=` and no space after the equals, on
 every path.
 
 **The order of the checks.** Before any docker command: is there a `docker`
-command; then the prune check (two files, no daemon needed); then whether
+command; then the prune check (one file, no daemon needed); then whether
 Docker is running, asked of systemd first. A stale prune is therefore named on
 every result after the first two rows of the table, and alerts under Alert.
 Only then is the list looked for ("no list yet"), and only then the
@@ -522,9 +550,11 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
 
 ## Known limits
 
-- **The prune check reads two files and nothing else.** A host whose prune is
-  run some other way, or whose unit is overridden by a drop-in
-  (`tc-docker-prune.service.d/`), is judged by the two files alone. The stamp
+- **The prune check reads one file and nothing else**, the prune script
+  (from version 11; up to version 10 it also read the unit). A host whose
+  prune is run some other way (a version 1 unit that runs docker itself, a
+  hand-written unit, a drop-in in `tc-docker-prune.service.d/`) is judged by
+  the script alone, and with no script it reads as no prune installed. The stamp
   is what Host Maintenance wrote, not a checksum: a script someone edited by
   hand and left the stamp on still reads as current.
 - The "Docker is not installed" and "no docker command" exits come before the

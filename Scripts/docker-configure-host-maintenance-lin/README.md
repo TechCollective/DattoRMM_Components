@@ -431,11 +431,14 @@ to that version, and every host still on an older prune alerts on its next
 check, with the fix named: run this component on it. The constant is **11**
 from the monitor's version 8.
 
-What earlier versions left on a host, which the monitor flags:
+What earlier versions left on a host, which the monitor flags (all but
+version 1: from its version 11 the monitor no longer reads the unit, so a
+version 1 host, which has no script, reads as having no prune installed and
+is **not flagged**):
 
 | Version | What it left | Why it is unsafe |
 |---|---|---|
-| 1 | No script. The service's `ExecStart` runs `docker system prune --all --force` directly | No list, no review |
+| 1 | No script. The service's `ExecStart` runs `docker system prune --all --force` directly | No list, no review. **Not flagged** from the monitor's version 11 |
 | 2 | The script, running `docker system prune --all` behind a `REQUIRED_CONTAINERS` check | No expected-containers list |
 | 3 | Per-container protection | No review gate |
 | 4, 5 | Review gate | A container label can still make it delete a protected container |
