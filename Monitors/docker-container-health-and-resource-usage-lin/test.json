@@ -74,8 +74,8 @@
   },
   {
    "type": "command",
-   "label": "OOM: tc-oom, memory limit 16 MiB and no swap, runs a shell that doubles a string until the kernel kills it",
-   "run": "docker run --name tc-oom -m 16m --memory-swap 16m tc-test-base:1 /bin/sh -c 'a=xxxxxxxxxxxxxxxx; while :; do a=\"$a$a\"; done'; docker inspect -f 'tc-oom: exit {{.State.ExitCode}} OOMKilled {{.State.OOMKilled}}' tc-oom",
+   "label": "OOM: tc-oom, memory limit 16 MiB and no swap, runs a shell that doubles a string until the kernel kills it; Docker can record OOMKilled a moment after the exit, so this waits up to 30 seconds for it",
+   "run": "docker run --name tc-oom -m 16m --memory-swap 16m tc-test-base:1 /bin/sh -c 'a=xxxxxxxxxxxxxxxx; while :; do a=\"$a$a\"; done'; for i in $(seq 30); do [ \"$(docker inspect -f '{{.State.OOMKilled}}' tc-oom)\" = true ] && break; sleep 1; done; docker inspect -f 'tc-oom: exit {{.State.ExitCode}} OOMKilled {{.State.OOMKilled}}' tc-oom",
    "outputContains": [
     "tc-oom: exit 137 OOMKilled true"
    ],
