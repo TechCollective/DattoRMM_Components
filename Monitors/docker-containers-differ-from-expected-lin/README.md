@@ -357,12 +357,16 @@ prune is reported exactly as before.
 flagged across the fleet: bump the prune's stamp by shipping a new Host
 Maintenance version, raise the constant to that version here, and every host
 still on an older prune alerts on its next run. The constant does not have to
-follow every Host Maintenance version: it is 11 while Host Maintenance is 14,
+follow every Host Maintenance version: it is 11 while Host Maintenance is 15,
 because version 12 changes only how the prune reads its settings file (as
 text, never run, with `OLDER_THAN_HOURS` checked), which matters on a host
-where someone edited that file by hand, version 13 only moves code, and
+where someone edited that file by hand, version 13 only moves code,
 version 14 only refuses a `/var/lib/tc-docker` that is not owned by root,
-which nothing in these components causes.
+which nothing in these components causes, and version 15 changes nothing in
+the prune but its stamp (it moves the `daemon.json` part of Host Maintenance
+to
+[`Docker - Configure Daemon Limits [Lin]`](../../Scripts/docker-configure-daemon-limits-lin/),
+which this monitor does not read or check).
 
 A container's labels are untrusted: it inherits them from its image. They are
 read JSON-encoded, so a tab or newline in a label cannot add a field or a
@@ -587,8 +591,9 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
     how the prune's `pending-removal` file is read. Four copies: this
     monitor, Update Expected Containers, and Host Maintenance twice (the
     component and the prune script it installs).
-  - `tc-docker running`: the "is Docker running" check. Six copies: those
-    four and the Health and Images monitors.
+  - `tc-docker running`: the "is Docker running" check. Seven copies: those
+    four, the Health and Images monitors, and
+    [`Docker - Configure Daemon Limits [Lin]`](../../Scripts/docker-configure-daemon-limits-lin/).
   - `tc-docker bounded` (marked from version 9): the time limit on every
     docker command. Three copies: this monitor and the Health and Images
     monitors.
