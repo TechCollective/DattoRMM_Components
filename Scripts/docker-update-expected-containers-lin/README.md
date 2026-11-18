@@ -68,6 +68,11 @@ creates both files once, from what is running at the time, and never changes
 them again. This component changes them, so every change is a Datto job, with
 its time, its author and its output on record.
 
+Log rotation and build-cache limits in Docker's `daemon.json` are a separate
+component,
+[`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/)
+(part of Host Maintenance up to its version 14). It reads none of these files.
+
 A key identifies a container:
 
 | Key | Used for |
@@ -113,8 +118,8 @@ whose restart policy is `always`. So where systemd manages `docker.service`,
 the component asks systemd first, and when systemd says the service is not
 active it runs no docker command at all. Only when the service is active, or
 systemd does not manage Docker, does it ask `docker info`. This is the same
-check Host Maintenance, its prune and the monitors use (the shared block
-`tc-docker running`).
+check Host Maintenance, its prune, Daemon Limits and the monitors use (the
+shared block `tc-docker running`).
 
 | Docker is | Show | Accept current; Add with a bare name | Add with a key; Remove; Add ignore; Remove ignore; Confirm reviewed |
 |---|---|---|---|
@@ -274,8 +279,10 @@ Never a customer first.
   the prune's `pending-removal` file, with Host Maintenance (twice: the
   component and the prune script it installs) and the monitor, in a block
   marked `tc-docker shared`, and its "is Docker running" check with Host
-  Maintenance, the prune and the three monitors, in a block marked
-  `tc-docker running`. Every copy of a block must stay byte-identical; CI's
+  Maintenance, the prune, the three monitors and (from its version 1)
+  [`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/),
+  in a block marked `tc-docker running`, seven copies in all. Every copy of a
+  block must stay byte-identical; CI's
   "Shared blocks match" check fails the pull request when they are not.
 
 ## Open questions

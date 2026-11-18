@@ -1,13 +1,15 @@
 # Docker - Configure Host Maintenance [Lin]
 
 A Datto RMM script component for Linux Docker hosts. It stops a Docker host's
-disk filling up over time:
+disk filling up over time with containers and images nothing uses:
 
-- It adds log rotation and build-cache limits to the Docker daemon's
-  configuration.
 - It records which containers the host is expected to run.
 - It installs a weekly prune that removes what is unused and leaves those
   expected containers, and their images, alone.
+
+Log rotation and build-cache limits in Docker's `daemon.json`, which this
+component also set up to version 14, are a component of their own:
+[`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/).
 
 **Nothing of a host's is deleted until a person has reviewed its list.**
 Until then, the prune only clears build cache and unused networks. After
@@ -17,6 +19,12 @@ first records it as waiting, and removes it only on a run at least
 
 > **Status: Not Validated.** Written 2026-11-09. Version 3 ran through a Datto
 > agent on one internal Docker host.
+>
+> **Version 15 no longer touches `daemon.json`.** Log rotation and
+> build-cache limits moved to
+> [`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/).
+> A job that used this component to set them must add that one. See
+> *Version 15* at the end of this list.
 >
 > **Version 9 switches every host to removing untagged ("dangling") images
 > only.** Versions up to 8 removed every image no container used. A host that
@@ -222,125 +230,57 @@ first records it as waiting, and removes it only on a run at least
 >   stopped `docker.service`) have **not** been run for this version: the
 >   Tier 1 test runs them on the CI runner, so read that result before
 >   merging. It has not yet run through a Datto agent.
+> - **Version 15** (2026-11-18) takes the `daemon.json` part out. Reading the
+>   daemon's start flags, merging log rotation and build-cache limits into
+>   `/etc/docker/daemon.json`, `dockerd --validate`, the write, the backups
+>   and `RESTART PENDING` are now
+>   [`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/)
+>   version 1: the same code, moved, with its tests and its part of this
+>   README. What changes here:
+>   - **Four input variables are gone:** `usrLogMaxSize`, `usrLogMaxFile`,
+>     `usrBuildCacheMax` and `usrBuildCacheReserved`. A Datto job that still
+>     passes them runs as before; they are ignored, whatever their value
+>     (version 14 refused a bad one with exit `2`). **A job that relied on
+>     this component for those limits must add the new component**, with the
+>     same four values.
+>   - **This component no longer reads or writes `daemon.json`**, and no
+>     longer needs `python3`. Its output has no `daemon.json:` lines, no
+>     `RESTART PENDING` and no `DAEMON WILL NOT START`; a post-condition on
+>     either string belongs on the new component now.
+>   - **Exit `3` has fewer causes.** The ones that came from `daemon.json`
+>     (Docker's start flags unknown, a `daemon.json` that is not valid JSON,
+>     a failed `dockerd --validate`, and the rest) are the new component's.
+>     So **a run against a stopped Docker is no longer always exit `3`**: it
+>     is exit `0` when the list is there already and `usrPruneNow` is `No`.
+>   - **Nothing on a host changes.** A `daemon.json` that version 14 or
+>     earlier wrote stays as it is, with its backups; the list, the prune's
+>     settings, the units and the timer are written exactly as version 14
+>     wrote them. The prune script is version 14's with one line different,
+>     the stamp: `TC_PRUNE_VERSION=15`, so running version 15 on a host
+>     rewrites that file and reloads systemd, and does not restart the timer.
+>     The monitor's `PRUNE_MIN_VERSION` stays **11**.
+>
+>   The Tier 1 test was split with the code. Its steps for the list, the
+>   prune and the images were run against a live Docker 29 daemon in a
+>   sandbox **without systemd**, with the timer and unit steps left out: each
+>   gave the result it gave for version 14 there, and the new steps pass (a
+>   run that still passes the four variables; `daemon.json` byte-for-byte
+>   untouched after every run). The stopped-Docker and no-`docker.service`
+>   steps in which the component itself runs, the two whose exit code changed
+>   among them, ran there against a stand-in for `systemctl` and for
+>   `docker.socket`. The steps that need a real systemd (the timer, starting
+>   the prune's unit) have **not** been run for this version: the Tier 1 test
+>   runs them on the CI runner, so read that result before merging. It has
+>   not yet run through a Datto agent.
 
 ## What it does
 
-It **changes the endpoint**. One run does up to four things.
+It **changes the endpoint**. One run does up to three things. It does not
+read or write `/etc/docker/daemon.json`: see
+[`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/)
+for log rotation and build-cache limits.
 
-### 1. Merges limits into `/etc/docker/daemon.json`
-
-`daemon.json` is not the whole of Docker's configuration. The daemon can also
-be given `--log-driver`, `--log-opt` and `--config-file` on its command line,
-by the systemd unit, a drop-in, or an environment file such as
-`/etc/default/docker`. A `daemon.json` that clashes with those flags stops
-Docker at its next start. So **first it reads how the daemon is really
-started:**
-
-- **Docker running:** the running `dockerd`'s own command line
-  (`/proc/<pid>/cmdline`), and the log driver the daemon reports
-  (`docker info`).
-- **Docker not running:** the flags are not read. The output says
-  `daemon.json: could not tell which flags Docker starts with: Docker is not running, so its start flags cannot be read.`
-  Log rotation is skipped, `builder.gc` is still added (the log flags do not
-  affect it), and the part exits `3`. **Run the component again once Docker
-  is running** and it adds log rotation then. It does not try to work the
-  flags out from `docker.service`, its drop-ins and its environment files:
-  only systemd knows exactly what those add up to, and a wrong guess here
-  writes a `daemon.json` that stops Docker starting.
-
-The output names what it found, for example
-`Docker starts with --log-driver=journald (read from the running dockerd, pid 812).`
-Only the names of `--log-opt` flags are printed, never their values, because
-a logging driver's options can carry a token.
-
-Then it adds only keys that are missing, and never changes a value that is
-already set:
-
-- **`log-opts.max-size` and `log-opts.max-file`.** These are added only when
-  all of these hold, and otherwise the output says `SKIPPED:` and why:
-  - the log driver Docker will use is `json-file` (Docker's default) or
-    `local`. The driver is taken from the `--log-driver` flag, else
-    `daemon.json`, else what the running daemon reports. Any other driver,
-    such as `journald`, does not take these options;
-  - the daemon has no `--log-opt` flag. Docker refuses to start with
-    `log-opts` both as a flag and in `daemon.json`;
-  - its start flags could be read, which needs Docker to be running. See
-    exit code `3`.
-- **`builder.gc`.** This is added only if the file has no `builder.gc` at all.
-  Docker 28 and later gets a policy with `reservedSpace` and `maxUsedSpace`.
-  Older engines get `defaultKeepStorage`, because they would silently ignore
-  the newer keys. The log flags do not affect it, so it is still added when
-  log rotation is skipped.
-
-Before it writes, it checks the merged file with `dockerd --validate` when
-the engine has that option, **with the daemon's own `--log-driver` and
-`--log-opt` flags**, so the check covers the combination that will actually
-run. If the check fails, nothing is written. `--validate` alone does not
-catch every clash (it passes a `journald` daemon with `max-size` in the file,
-which then fails at a real start), which is why the driver is also checked
-directly.
-
-**How it writes the file.** Docker must never read a half-written
-`daemon.json`, and the file's owner, mode and link must survive:
-
-1. In `Apply` mode only, it builds the new file inside the directory of the
-   real file (`/etc/docker/.daemon.json.tc-XXXXXX`), so the last step is a
-   rename on one filesystem. The merge itself, and its `dockerd --validate`
-   check, run on a scratch file under `$TMPDIR`, as before; that is the only
-   file `Report` mode makes, and nothing in `/etc/docker`. The new file is
-   `0600` while it is written, is compared with the validated one, and only
-   then takes the **mode, owner and group of the file it replaces**. A
-   `daemon.json` that did not exist is created `0644 root:root`.
-2. **A symlinked `daemon.json` stays a symlink.** The change goes to the file
-   it points to, with that file's mode, owner and group. A link that points
-   nowhere, at a directory or at anything else but a regular file, or loops, is
-   not touched: the output says so and the part exits `3`. `Report` mode says
-   the same.
-3. It saves the old file as `/etc/docker/daemon.json.tc-bak-<timestamp>`, with
-   `cp -p`, so the backup has the old file's mode and owner. (When
-   `daemon.json` is a link, the backup is still beside the link and holds the
-   target's content.) A second backup in the same second gets `-1`, `-2` added
-   to its name.
-4. It flushes the new file to disk (`sync <file>`, coreutils 8.24 or later;
-   best effort), renames it over the old one, then runs `restorecon` on it
-   when that command exists (best effort), so an SELinux host keeps the right
-   label.
-5. After a successful write it keeps the **newest 5** backups and removes the
-   older ones. Only names of the form `daemon.json.tc-bak-<14 digits>` (with
-   the optional `-n`) are counted or removed, so a backup someone saved by
-   hand under another name is never touched. They are ordered by name, which
-   is time order; a file's date cannot be used, because `cp -p` gives a
-   backup its source's date.
-6. **Nothing is left behind.** The new file is removed on every way out:
-   success, a failed validation, a failed backup, a failed rename, and a run
-   that is stopped. At the start of an `Apply` run it also removes any
-   `.daemon.json.tc-*` file an earlier run left when it crashed. (`Report`
-   mode removes nothing.)
-
-If the rename fails (an immutable file, say), the part exits `1`, says what
-failed, removes the backup it had just made, and leaves the old file exactly as
-it was. If the disk is full, writing the new file fails before the old file is
-touched.
-
-**It writes nothing to the daemon configuration when:**
-
-- **The daemon reads a different file.** If the running `dockerd` was started
-  with `--config-file` pointing anywhere other than `/etc/docker/daemon.json`,
-  the output names that file and the part exits `3`. Neither file is edited.
-  (With Docker stopped this cannot be seen; `builder.gc` then goes into
-  `/etc/docker/daemon.json`, which such a daemon does not read, so it does
-  no harm and no good.)
-- **The file already stops Docker starting.** Version 4 could leave a host
-  with `max-size` or `max-file` in `daemon.json` that its daemon flags
-  refuse. Docker keeps running until its next restart or reboot, then fails.
-  Version 5 reports such a host with a line starting `DAEMON WILL NOT START:`
-  that names the conflict and the newest `daemon.json.tc-bak-*` file, and
-  exits `3`. It does **not** revert or edit the file, and does not add
-  `builder.gc` either: whether to restore that backup or remove the
-  conflicting setting is a person's decision. Set a post-condition on
-  `DAEMON WILL NOT START` to make it stand out.
-
-### 2. Creates the expected-containers list, once
+### 1. Creates the expected-containers list, once
 
 If `/etc/tc-docker/expected-containers` does not exist, it is created from
 **every container present now, running or stopped**. A container that exists
@@ -391,7 +331,7 @@ left stopped: the output says
 A host that ran version 2 with `usrRequiredContainers` set has those names
 carried onto the new list.
 
-### 3. Installs the weekly prune
+### 2. Installs the weekly prune
 
 | File | What it is |
 |---|---|
@@ -458,8 +398,8 @@ prune starts a stopped Docker:
   `docker.socket` keeps listening while the service is stopped, and any
   `docker` command would start it. Elsewhere they ask `docker info`, as
   before. The code is one function, marked `tc-docker running`, in this
-  component, in the prune it installs and in the other four Docker
-  components; CI's shared-block check keeps the six copies identical.
+  component, in the prune it installs and in the other five Docker
+  components; CI's shared-block check keeps the seven copies identical.
 - **The prune, run by hand or by Prune now, with Docker stopped** prints
   `Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.`
   after its version line, removes nothing and exits `0`. A Docker that
@@ -467,11 +407,11 @@ prune starts a stopped Docker:
   does not answer on a host where systemd does not manage it, is still an
   `ERROR:` and exit `1`.
 - **The component with Docker stopped** installs the prune and the timer,
-  adds build-cache limits to `daemon.json`, and leaves Docker stopped. It
-  does not add log rotation (Docker's start flags can only be read from a
-  running `dockerd`), does not create the list and does not run Prune now:
-  those need Docker, and each makes the run exit `3`. So a run against a
-  stopped Docker always exits `3`; run it again once Docker is up.
+  and leaves Docker stopped. It does not create the list and does not run
+  Prune now: those need Docker, and each makes the run exit `3`; run it
+  again once Docker is up. A run that needs neither (the list is there
+  already, and `usrPruneNow` is `No`) exits `0`. Up to version 14 every run
+  against a stopped Docker was exit `3`, because of the `daemon.json` part.
 
 **The prune is only replaced when this component runs on the host again.**
 Nothing else updates it, so a host keeps whichever prune it last received. To
@@ -504,7 +444,8 @@ What earlier versions left on a host, which the monitor flags:
 | 9, 10 | `Requires=docker.service`, and a `docker info` before it checks anything. (9 also keeps every tagged image on the containerd image store in `All` mode, which is not unsafe) | The weekly timer starts a Docker that was stopped on purpose, and every `restart: always` container with it. Flagged from the monitor's version 8 (`PRUNE_MIN_VERSION` 11) |
 | 11 | Runs its settings file as shell, and does not check `OLDER_THAN_HOURS` | Only after a hand edit of `/etc/default/tc-docker-prune`: a line there is a command run as root, and `OLDER_THAN_HOURS=0` removes things of any age. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run the current version on the host to replace it |
 | 12, 13 | The current rules, except that a `/var/lib/tc-docker` owned by another user is made root's and the record in it believed. Version 13's prune differs from 12's only in where its code for reading `pending-removal` lives | Only on a host where that directory is not root's, which nothing in these components causes: a record another user wrote there can get an unprotected stopped container removed without its wait. **Not flagged** by the monitor (`PRUNE_MIN_VERSION` is 11); run the current version on the host to replace it |
-| 14 | Current | |
+| 14 | The current rules. Version 15's prune differs from 14's only in its stamp | Nothing; there is no need to replace it |
+| 15 | Current | |
 
 **Before the list is reviewed:** the prune removes only unused networks and
 build cache older than `usrPruneOlderThanHours`. No container and no image.
@@ -720,7 +661,7 @@ The prune always runs. A stopped container is protected rather than blocking
 the prune, so one container stopped on purpose can't stop the disk from being
 cleaned.
 
-### 4. Optionally prunes once, now
+### 3. Optionally prunes once, now
 
 With `usrPruneNow`, it runs the same script immediately and reports free disk
 space before and after. If Docker is not running, it does not run the prune,
@@ -732,11 +673,10 @@ and the run exits `3`. A daemon that does not answer is the same, with
 ### What it never does
 
 **It never starts or restarts Docker.** See *It never starts Docker* above
-for a stopped one. A `daemon.json` change only takes effect when
-Docker restarts or the host reboots. Log rotation then applies only to
-containers created after that. The output prints `RESTART PENDING` whenever a
-restart is still needed. Set a post-condition on that string to turn the job
-orange.
+for a stopped one. Nothing it does needs a restart.
+
+**It never reads or writes `daemon.json`** (from version 15). That is
+[`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/).
 
 If Docker is not installed, it exits 0 and changes nothing. That makes it safe
 to target at every Linux device.
@@ -756,10 +696,13 @@ Two TechCollective Docker hosts filled their disks in 2026:
   images.
 - **An internal Docker host.** Its root filesystem reached 99%.
 
-This component combines both fixes: limits that stop growth, and a scheduled
-prune that removes what the limits don't cover. From version 9 a host like the
-GitLab server needs `usrPruneImages` = `All`: the default, `Dangling`, would
-leave its unused tagged images in place.
+Two fixes came out of that: limits that stop growth, and a scheduled prune
+that removes what the limits don't cover. Up to version 14 this component
+did both. From version 15 it is the prune, and the limits are
+[`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/);
+a host like those two wants both. From version 9 a host like the GitLab
+server needs `usrPruneImages` = `All`: the default, `Dangling`, would leave
+its unused tagged images in place.
 
 ## Related components
 
@@ -767,14 +710,18 @@ leave its unused tagged images in place.
 |---|---|
 | [`Docker - Update Expected Containers [Lin]`](../docker-update-expected-containers-lin/) | The only thing that changes the expected list or the ignore patterns |
 | [`Docker - Containers Differ From Expected [Lin]`](../../Monitors/docker-containers-differ-from-expected-lin/) | Monitor. Alerts when an expected container is stopped or gone, or a stopped container is waiting to be removed by the prune; reports unlisted ones |
+| [`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/) | Log rotation and build-cache limits in Docker's `daemon.json`. Part of this component up to version 14; shares none of its files |
+| [`Docker - Container Health and Resource Usage [Lin]`](../../Monitors/docker-container-health-and-resource-usage-lin/) | Monitor. Unhealthy, restarting and resource-hungry containers. Keeps its state file in `/var/lib/tc-docker`, beside the prune's record |
+| [`Docker Images monitor [Lin]`](../../Monitors/docker-images-monitor-lin/) | Monitor. Running containers whose image has a newer version in its registry. Keeps its cache in `/var/lib/tc-docker` too |
 
-All three share one block of code that turns a container into its key and,
+The first two and this component share one block of code that turns a container into its key and,
 from version 13, reads the prune's `pending-removal` file. It is marked
 `tc-docker shared`, and there are four copies: this component, the prune
 script it installs, and the other two. All four must stay byte-identical;
 CI's "Shared blocks match" check fails the pull request when they are not.
 The "is Docker running" check is a second shared block, `tc-docker running`,
-with six copies: these four and the Health and Images monitors. From version
+with seven copies: these four, the Health and Images monitors, and (from
+version 15) Docker - Configure Daemon Limits [Lin]. From version
 14 the prune carries a third, `tc-docker state` (how a file in
 `/var/lib/tc-docker` is written), with four copies: the prune and the three
 Docker monitors.
@@ -782,8 +729,12 @@ Docker monitors.
 ## Installing it in Datto
 
 **Updating an existing copy:** open it in Datto, paste the script over the
-body, and make the variables and description match the tables below. A
-re-import creates a second component; see the repo's `tools/README.md`.
+body, and make the variables and description match the tables below. For
+version 15 that means deleting four variables (`usrLogMaxSize`,
+`usrLogMaxFile`, `usrBuildCacheMax`, `usrBuildCacheReserved`), changing the
+description, and removing a post-condition on `RESTART PENDING` or
+`DAEMON WILL NOT START` if one was set. A re-import creates a second
+component; see the repo's `tools/README.md`.
 
 **New install:** Automation → Components → New Component, or import the
 `.cpt` from the latest release.
@@ -791,24 +742,19 @@ re-import creates a second component; see the repo's `tools/README.md`.
 | Field | Value |
 |---|---|
 | Name | `Docker - Configure Host Maintenance [Lin]` |
-| Description | Sets Docker log and build-cache limits, seeds the expected-containers list, and a weekly prune that deletes nothing until the list is reviewed, then waits before removing a stopped container. |
+| Description | Seeds the expected-containers list and installs a weekly prune that deletes nothing until the list is reviewed, then waits before removing a stopped container. |
 | Category | **Scripts** |
 | Script type | Shell (Unix) |
 | Target OS | Linux |
 | Level | Not standardised yet; decide at save time (`component.json` carries 5) |
 | Timeout | 900 seconds. A first prune on a full host can take minutes. |
 | Attachments | none |
-| Post-condition | Optional: warn when output **contains** `RESTART PENDING`; fail when it **contains** `DAEMON WILL NOT START` |
 
 ## Input variables
 
 | Name | Type | Default | Safe range / notes |
 |---|---|---|---|
 | `usrMode` | **Selection** | `Apply` | `Apply` / `Report`. Report prints what it would change, including the list it would create, and changes nothing. Use it first on any host you have not looked at. |
-| `usrLogMaxSize` | String | `10m` | A number plus `k`, `m` or `g`. Blank leaves log settings alone. |
-| `usrLogMaxFile` | String | `3` | 1–20. Worst-case log disk per container is size × files. |
-| `usrBuildCacheMax` | String | `100GB` | A number plus `MB`, `GB` or `TB`. Blank leaves build-cache settings alone. Lower it on hosts with small disks. |
-| `usrBuildCacheReserved` | String | `20GB` | Same format. Docker 28 and later only. Should be smaller than the max. |
 | `usrPruneSchedule` | String | `Sun *-*-* 04:00:00` | A systemd `OnCalendar` expression in the host's local time, checked with `systemd-analyze calendar`. Blank leaves the timer alone. |
 | `usrPruneOlderThanHours` | String | `168` | 24–8760. Only unused items older than this are pruned; a stopped container counts from when it stopped. Saved to `/etc/default/tc-docker-prune` as `OLDER_THAN_HOURS`, so the most recent run sets it for the timer. The prune checks it again and removes nothing if it is out of range. |
 | `usrPruneGraceHours` | String | `144` | 24–8760. How long a stopped container waits in `pending-removal` before the prune may remove it. 144 (6 days) means a weekly timer removes it at the run after the one that recorded it. Saved as `GRACE_HOURS`. |
@@ -823,31 +769,24 @@ target every host.
 An invalid value makes the component refuse to run with exit `2`. It checks
 every input before it changes anything.
 
+**Removed in version 15:** `usrLogMaxSize`, `usrLogMaxFile`,
+`usrBuildCacheMax` and `usrBuildCacheReserved`. They belong to
+[`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/)
+now. **If a Datto job still passes them, they are simply ignored:** the
+script does not read them, so there is no error and no message, even for a
+value version 14 refused. The job still runs; it just no longer sets those
+limits. Add the new component to the job to keep setting them.
+
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | Done, or nothing needed doing. Also returned when Docker is not installed. |
-| `1` | Unexpected failure, such as a write, `systemctl` call or prune step failing. A `daemon.json` that could not be replaced (immutable, a full disk, a read-only filesystem) is this; the old file is unchanged. |
+| `1` | Unexpected failure, such as a write, `systemctl` call or prune step failing. |
 | `2` | An input variable is invalid. Nothing was changed. |
 | `3` | One part could not be applied safely, and was not changed. Other parts may still have run, and the output says which. See the list below. |
 
 What causes exit `3`:
-
-- no `python3` to merge the JSON
-- the existing `daemon.json` is not valid JSON
-- the merged file failed `dockerd --validate`
-- `daemon.json` is a symlink that does not end at a regular file (it points
-  nowhere, at a directory, or loops); nothing was touched
-- Docker's start flags could not be read, so log rotation was skipped
-  (`builder.gc` may still have been added). That happens when:
-  - **Docker is not running.** Run the component again once it is;
-  - more than one root `dockerd` is running on the host, or the running
-    one's command line cannot be read
-- `dockerd` is started with `--config-file` pointing somewhere other than
-  `/etc/docker/daemon.json`; nothing was written
-- `DAEMON WILL NOT START`: `daemon.json` already holds `max-size` or
-  `max-file` that this daemon's flags refuse; nothing was written
 
 - the host is not running systemd
 - Docker is the snap package
@@ -857,9 +796,10 @@ What causes exit `3`:
 - `usrPruneNow` = `Yes` and Docker was stopped or unreachable, so the prune
   did not run
 
-Log rotation skipped because the driver does not take these options
-(`journald`, say) or because the daemon has a `--log-opt` flag is a normal
-outcome, not exit `3`.
+Up to version 14 the list was longer: everything that could go wrong with
+`daemon.json` was exit `3` here. Those causes are
+[`Docker - Configure Daemon Limits [Lin]`](../docker-configure-daemon-limits-lin/)'s
+now.
 
 The prune script on the host exits `0` when it pruned, and also when
 systemd reports Docker stopped (it prunes nothing then, and says so). It
@@ -876,42 +816,26 @@ rate-limited is not an error: that image is kept and the exit is still `0`.
 A first apply on a host that had none of this looks like:
 
     Docker: /usr/bin/docker, engine 28.x. Mode: apply.
-    daemon.json: Docker starts with no --log-driver, --log-opt or --config-file flag (read from the running dockerd, pid 812).
-      daemon.json ADDED: log-opts.max-size = 10m
-      daemon.json ADDED: log-opts.max-file = 3
-      daemon.json ADDED: builder.gc = {"enabled":true,"policy":[...]}
-    daemon.json: merged file passes dockerd --validate.
-    daemon.json: written.
     Expected list: created /etc/tc-docker/expected-containers with 3 entries:
       compose:shop/web
       compose:shop/db
       name:gitlab-runner
     Prune timer: installed tc-docker-prune.timer (...)
     Prune timer: next run ...
-    RESTART PENDING: daemon.json changed. ...
     Docker host maintenance: done.
 
-A second run says `KEPT` for each key, `no change`,
-`Expected list: ... exists ... not changed`, and
+A second run says `Expected list: ... exists ... not changed` and
 `already installed with these settings`.
-
-A run with Docker stopped exits `3`. Its `daemon.json` lines look like:
-
-    daemon.json: could not tell which flags Docker starts with: Docker is not running, so its start flags cannot be read.
-      daemon.json SKIPPED: log rotation: Docker's start flags could not be determined, so it cannot be known whether Docker would accept log-opts in daemon.json; run this component again while Docker is running
-      daemon.json ADDED: builder.gc = {"enabled":true,"policy":[...]}
-    daemon.json: merged file passes dockerd --validate.
-    daemon.json: written.
 
 A prune with Docker stopped (by hand; the timer does not start it then):
 
-    tc-docker-prune version 14
+    tc-docker-prune version 15
     Docker is not running (docker.service is inactive): nothing was pruned, and Docker was left stopped.
 
 A prune after review reports what it recorded, what is waiting, what it
 removed and what it kept:
 
-    tc-docker-prune version 14
+    tc-docker-prune version 15
     Pruning unused items older than 168h. Volumes are never removed.
     Disk before: 30G free, 29% used
     Stopped containers recorded for removal this run (removed 144h from now if still stopped and not protected):
@@ -950,8 +874,7 @@ Never a customer first.
 3. On that host, run Update Expected Containers with Show, correct the list,
    then run Confirm reviewed. Check the next prune's journal.
 4. One site, one device in it, with the job scoped to that device. Run Report,
-   then Apply, then review the list. Restart Docker in that site's maintenance
-   window.
+   then Apply, then review the list.
 5. Wider, only after the first four.
 
 ## Known limits
@@ -1019,56 +942,14 @@ Never a customer first.
   nothing and exits 1. Checked against a Docker 1.10 engine.
 - **systemd only** for the timer. On a host without systemd, the timer part
   exits `3`, and the other parts still run.
-- **The write keeps the mode, owner, group and SELinux label of
-  `daemon.json`, and nothing else about it.** A POSIX ACL or other extended
-  attribute on the file is not copied to the new one. A `daemon.json` with
-  more than one hard link stops being linked to the others (the rename gives
-  the name a new file); a file bind-mounted into the host from somewhere else
-  cannot be renamed over, so that run exits `1` and changes nothing.
-- **The `restorecon` step has not been run on an SELinux host.** It is skipped
-  when the command is missing and its result is ignored, so it can only do
-  good, but treat label handling on SELinux as unverified until it has been
-  run on one.
-- **Backups are counted by name.** Only `daemon.json.tc-bak-<14 digits>` and
-  `-<n>` are pruned. If the host's clock was set back, a newer backup can sort
-  before an older one and be pruned first.
-- **A crashed run's leftover file is removed only by the next `Apply`.** It is
-  `0600` and can hold what `daemon.json` holds until then. Two runs of this
-  component at once on one host are not supported: the second would remove
-  the first's new file, and the first would exit `1` with nothing changed.
-- **Needs `python3`** to merge JSON safely. Without it, the `daemon.json` part
-  exits `3` rather than risk rewriting the file badly.
-- **A running daemon is judged by its running flags.** If someone has changed
-  the unit or a drop-in since Docker last started, the flags Docker will use
-  at its next start can differ from the ones checked. Restart Docker after
-  changing its unit, then run this.
-- **A stopped Docker gets no log rotation, and the run exits `3`.** Its start
-  flags are read only from a running `dockerd`. A fleet job that reaches a
-  host while its Docker is stopped shows exit `3` for that host every time,
-  until a run finds Docker up. Build-cache limits, the prune and the timer
-  are still put in place.
-- **With Docker stopped, a `--config-file` elsewhere is not seen.**
-  `builder.gc` is then added to `/etc/docker/daemon.json`, which that daemon
-  does not read. The next run with Docker running reports the other file and
-  changes nothing more.
 - **The settings file is not shell.** Only `NAME=value` lines for the three
   settings are read. A misspelled name, or `export NAME=value`, is ignored
   without a message, and that setting keeps its default; a value in quotes or
   with a comment after it is refused, and the prune exits 1 until it is
   fixed. Re-run this component to rewrite the file rather than editing it.
-- **A host version 4 already broke is reported, not repaired.** Fixing it
-  needs a person: restore the named backup or remove the conflicting key,
-  then restart Docker in a maintenance window.
-- **Only the logging flags are checked.** Other settings set both as a flag
-  and in `daemon.json` (`data-root`, say) also stop Docker starting; this
-  component never adds those keys, so it does not look for them.
-- **Snap-packaged Docker is refused.** Its config lives under `/var/snap` and
-  snap manages it.
+- **Snap-packaged Docker is refused** (exit `3`). Snap manages its daemon,
+  under a service name of its own.
 - **Rootless Docker** (a per-user daemon) and **Podman** are not handled.
-- **The Docker 28 cutoff for `reservedSpace`/`maxUsedSpace`** comes from
-  Docker's changelog, not from testing on a 27.x host.
-- **It never tightens an existing setting.** A host that already has
-  `max-size: 500m` keeps it.
 - **A prune skipped because Docker was stopped is not made up.** The timer
   fired, so `Persistent` has nothing to catch up; the next prune is at the
   next scheduled time. The journal shows the skipped start
@@ -1100,4 +981,4 @@ Never a customer first.
 ## Open questions
 
 - **Level** is not standardised. `component.json` carries 5, because this
-  component writes daemon configuration as root.
+  component installs a script that removes containers and images as root.

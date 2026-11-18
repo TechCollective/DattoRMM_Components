@@ -2,10 +2,10 @@
   "general": {
     "name": "Docker - Configure Host Maintenance [Lin]",
     "category": "scripts",
-    "description": "Sets Docker log and build-cache limits, seeds the expected-containers list, and a weekly prune that deletes nothing until the list is reviewed, then waits before removing a stopped container. https://github.com/TechCollective/DattoRMM_Components",
+    "description": "Seeds the expected-containers list and installs a weekly prune that deletes nothing until the list is reviewed, then waits before removing a stopped container. https://github.com/TechCollective/DattoRMM_Components",
     "uid": "3f5aab29-1ae2-4a8d-9956-7037cb7c1ed8",
     "hash": "",
-    "version": "14",
+    "version": "15",
     "timeout": "900",
     "securityLevel": "5",
     "installType": "unix"
@@ -22,34 +22,6 @@
         { "name": "Apply", "value": "apply" },
         { "name": "Report", "value": "report" }
       ]
-    },
-    {
-      "name": "usrLogMaxSize",
-      "type": "string",
-      "direction": "false",
-      "description": "Per-container log file size before rotation, e.g. 10m (k, m or g). Blank leaves log settings alone.",
-      "defaultVal": "10m"
-    },
-    {
-      "name": "usrLogMaxFile",
-      "type": "string",
-      "direction": "false",
-      "description": "1-20. Rotated log files kept per container.",
-      "defaultVal": "3"
-    },
-    {
-      "name": "usrBuildCacheMax",
-      "type": "string",
-      "direction": "false",
-      "description": "Build cache is trimmed back below this, e.g. 100GB. Blank leaves build-cache settings alone.",
-      "defaultVal": "100GB"
-    },
-    {
-      "name": "usrBuildCacheReserved",
-      "type": "string",
-      "direction": "false",
-      "description": "Build cache is never trimmed below this, e.g. 20GB. Docker 28+ only; ignored on older engines.",
-      "defaultVal": "20GB"
     },
     {
       "name": "usrPruneSchedule",

@@ -1,0 +1,55 @@
+{
+  "general": {
+    "name": "Docker - Configure Daemon Limits [Lin]",
+    "category": "scripts",
+    "description": "Adds missing log-rotation and build-cache limits to Docker's daemon.json; changes no existing value and never restarts Docker. https://github.com/TechCollective/DattoRMM_Components",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "120",
+    "securityLevel": "5",
+    "installType": "unix"
+  },
+  "body": "docker-configure-daemon-limits-lin.sh",
+  "variables": [
+    {
+      "name": "usrMode",
+      "type": "map",
+      "direction": "false",
+      "description": "Apply makes the changes. Report says what it would change and changes nothing.",
+      "defaultVal": "Apply",
+      "options": [
+        { "name": "Apply", "value": "apply" },
+        { "name": "Report", "value": "report" }
+      ]
+    },
+    {
+      "name": "usrLogMaxSize",
+      "type": "string",
+      "direction": "false",
+      "description": "Per-container log file size before rotation, e.g. 10m (k, m or g). Blank, with usrLogMaxFile blank too, leaves log settings alone.",
+      "defaultVal": "10m"
+    },
+    {
+      "name": "usrLogMaxFile",
+      "type": "string",
+      "direction": "false",
+      "description": "1-20. Rotated log files kept per container.",
+      "defaultVal": "3"
+    },
+    {
+      "name": "usrBuildCacheMax",
+      "type": "string",
+      "direction": "false",
+      "description": "Build cache is trimmed back below this, e.g. 100GB. Blank leaves build-cache settings alone.",
+      "defaultVal": "100GB"
+    },
+    {
+      "name": "usrBuildCacheReserved",
+      "type": "string",
+      "direction": "false",
+      "description": "Build cache is never trimmed below this, e.g. 20GB. Docker 28+ only; ignored on older engines.",
+      "defaultVal": "20GB"
+    }
+  ]
+}

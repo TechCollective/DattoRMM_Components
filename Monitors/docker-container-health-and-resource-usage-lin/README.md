@@ -162,8 +162,10 @@ anything left in it; nothing else is signalled. The diagnostic names the command
 that did not finish. The same mechanism and the same shared "is Docker running"
 block as `Docker - Containers Differ From Expected [Lin]`: the time limit is
 the block marked `tc-docker bounded` (three copies, one in each Docker
-monitor) and the check is the block marked `tc-docker running` (six copies,
-one in every Docker component and in the prune). From version 3 the result
+monitor) and the check is the block marked `tc-docker running` (seven copies,
+one in every Docker component and in the prune; the seventh came with
+[`Docker - Configure Daemon Limits [Lin]`](../../Scripts/docker-configure-daemon-limits-lin/),
+which took over `daemon.json` from Host Maintenance version 15). From version 3 the result
 code is the block `tc-docker result` (the three monitors), the state file is
 written by `tc-docker state` (the three monitors and the prune) and read by
 `tc-docker monitor state` (this monitor and the Images monitor).

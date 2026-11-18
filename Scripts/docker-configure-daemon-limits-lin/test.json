@@ -1,0 +1,878 @@
+{
+  "platforms": [
+    "linux"
+  ],
+  "description": "On a runner with Docker and systemd: report mode changes nothing; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, and makes nothing that belongs to Docker - Configure Host Maintenance [Lin] (no list, prune, timer or state directory); a second run changes nothing; with all the limits blank the file is not touched; bad input is refused with exit 2 before anything is written. Docker stopped (docker.service stopped, docker.socket still listening): Report and Apply do not read Docker's start flags (exit 3) and leave docker.service inactive. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are not worked out from docker.service: log rotation is skipped with exit 3, build-cache limits are still added, Docker starts with the file, and the next run with Docker running finishes the job (it skips log rotation for a journald daemon, and adds it for a daemon with no logging flag); a daemon started with --config-file pointing at another file gets nothing written to either file, exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Writing daemon.json: the new file is made in the directory of the real target and renamed into place, so it keeps the mode, owner and group of the file it replaces (a 0600 file holding a fake proxy credential stays 0600 with its non-root group; a new file is 0644 root:root) and a symlinked daemon.json stays a symlink while its target changes and Docker restarts with it; a dangling symlink, or a link to a directory, is refused with exit 3 and nothing is created; after a successful Apply, a failed validation and Report mode, no .daemon.json.tc-* file is left in /etc/docker, and one left by a crashed earlier run is removed; Report mode on a host with no /etc/docker does not create it; seven changes in a row leave the newest five backups; and an immutable daemon.json makes the run exit 1 with the file byte-for-byte unchanged, no staging file and no backup. Restarting Docker to load the new settings, and a host without Docker, are Tier 2. The script's opening comment is short and points to the README (a step reads it). These steps were in Docker - Configure Host Maintenance [Lin]'s spec up to its version 14, when this code was part of that component.",
+  "variables": {},
+  "steps": [
+    {
+      "type": "command",
+      "label": "Header: the script's opening comment is short (what it is, what it changes on the host, its exit codes) and points to the README, which holds the rest",
+      "run": "f=Scripts/docker-configure-daemon-limits-lin/docker-configure-daemon-limits-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; n=$(awk 'NR > 1 && /^#/ { n++; next } NR > 1 { exit } END { print n + 0 }' \"$f\"); echo \"header comment: $n lines\"; [ \"$n\" -ge 10 ] && [ \"$n\" -le 35 ] && echo 'header is 35 lines or fewer'; h() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' \"$f\"; }; echo \"says what it changes: $(h | grep -c '^# Changes on the host')\"; echo \"points to its README: $(h | grep -c '^# https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/docker-configure-daemon-limits-lin$')\"; echo \"exit codes: $(h | grep -c '^# Exit codes:$')\"",
+      "outputContains": [
+        "header is 35 lines or fewer",
+        "says what it changes: 1",
+        "points to its README: 1",
+        "exit codes: 1"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Record daemon.json as it was before the component",
+      "run": "mkdir -p /etc/docker; if [ -s /etc/docker/daemon.json ]; then cp /etc/docker/daemon.json /tmp/tc-before.json; else echo '{}' > /tmp/tc-before.json; fi; cat /tmp/tc-before.json"
+    },
+    {
+      "type": "runComponent",
+      "label": "Report mode",
+      "variables": {
+        "usrMode": "report"
+      },
+      "outputContains": [
+        "Mode: report",
+        "ADDED: log-opts.max-size = 10m",
+        "ADDED: builder.gc",
+        "daemon.json: REPORT MODE, would write the change above"
+      ],
+      "outputNotContains": [
+        "daemon.json: written",
+        "RESTART PENDING",
+        "Expected list",
+        "Prune timer"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Report mode changed nothing: daemon.json is as it was, with no backup and no staging file",
+      "run": "{ cmp -s /tmp/tc-before.json /etc/docker/daemon.json || { test ! -s /etc/docker/daemon.json && test \"$(cat /tmp/tc-before.json)\" = '{}'; }; } && echo 'daemon.json as it was'; test -z \"$(ls -A /etc/docker | grep -E '^(daemon\\.json\\.tc-bak-|\\.daemon\\.json\\.tc-)' || true)\" && echo 'no backup or staging file'; ls -A /etc/docker",
+      "outputContains": [
+        "daemon.json as it was",
+        "no backup or staging file"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Apply",
+      "outputContains": [
+        "ADDED: log-opts.max-size = 10m",
+        "ADDED: log-opts.max-file = 3",
+        "ADDED: builder.gc",
+        "daemon.json: written",
+        "RESTART PENDING",
+        "Docker daemon limits: done"
+      ],
+      "outputNotContains": [
+        "Expected list",
+        "Prune timer",
+        "Prune now"
+      ]
+    },
+    {
+      "type": "file",
+      "label": "daemon.json carries the limits",
+      "path": "/etc/docker/daemon.json",
+      "contains": [
+        "\"max-size\": \"10m\"",
+        "\"max-file\": \"3\"",
+        "\"maxUsedSpace\": \"100GB\"",
+        "\"reservedSpace\": \"20GB\""
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Every key that was already there is unchanged",
+      "run": "python3 -c \"import json,sys; a=json.load(open('/tmp/tc-before.json')); b=json.load(open('/etc/docker/daemon.json')); bad=[k for k in a if b.get(k)!=a[k] and k not in ('log-opts','builder')]; print('changed:', bad); sys.exit(1 if bad else 0)\""
+    },
+    {
+      "type": "command",
+      "label": "dockerd accepts the new file",
+      "run": "dockerd --validate --config-file /etc/docker/daemon.json",
+      "outputContains": [
+        "configuration OK"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "It made nothing that belongs to Docker - Configure Host Maintenance [Lin]: no expected-containers list, no prune script or settings, no timer or service unit, no state directory",
+      "run": "n=0; for p in /etc/tc-docker /usr/local/sbin/tc-docker-prune /etc/default/tc-docker-prune /etc/systemd/system/tc-docker-prune.service /etc/systemd/system/tc-docker-prune.timer /var/lib/tc-docker; do if [ -e \"$p\" ] || [ -L \"$p\" ]; then echo \"there is a $p\"; n=$((n + 1)); fi; done; echo \"Host Maintenance paths on this host: $n of 6\"",
+      "outputContains": [
+        "Host Maintenance paths on this host: 0 of 6"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Second run changes nothing",
+      "outputContains": [
+        "KEPT: log-opts.max-size = 10m",
+        "KEPT: log-opts.max-file = 3",
+        "KEPT: builder.gc already configured",
+        "daemon.json: already has everything this component sets; no change.",
+        "Docker daemon limits: done"
+      ],
+      "outputNotContains": [
+        "daemon.json: written",
+        "RESTART PENDING",
+        "ADDED:"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Refusals and blank inputs: daemon.json and what is beside it recorded",
+      "run": "sha256sum /etc/docker/daemon.json > /tmp/tc-refuse.sha && ls -A /etc/docker > /tmp/tc-refuse.ls && cat /tmp/tc-refuse.sha",
+      "outputContains": [
+        "/etc/docker/daemon.json"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Log rotation and build-cache limits all left blank: daemon.json is not touched, exit 0",
+      "variables": {
+        "usrLogMaxSize": "",
+        "usrLogMaxFile": "",
+        "usrBuildCacheMax": ""
+      },
+      "outputContains": [
+        "daemon.json: log rotation and build-cache limits both left blank; not touched.",
+        "Docker daemon limits: done"
+      ],
+      "outputNotContains": [
+        "daemon.json: written",
+        "Docker starts with"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a bad log size",
+      "variables": {
+        "usrLogMaxSize": "10x"
+      },
+      "expectExitCode": 2
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a number of log files outside 1-20",
+      "variables": {
+        "usrLogMaxFile": "0"
+      },
+      "expectExitCode": 2,
+      "outputContains": [
+        "usrLogMaxFile must be 1-20 (got '0')"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a build-cache size with no unit",
+      "variables": {
+        "usrBuildCacheMax": "100"
+      },
+      "expectExitCode": 2,
+      "outputContains": [
+        "usrBuildCacheMax must look like 100GB (MB, GB or TB), or be blank (got '100')"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Refuses a mode that is not Apply or Report",
+      "variables": {
+        "usrMode": "change"
+      },
+      "expectExitCode": 2,
+      "outputContains": [
+        "usrMode must be apply or report (got 'change')"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The refused runs and the blank run changed nothing: daemon.json is byte-for-byte the same and nothing was added to /etc/docker",
+      "run": "sha256sum -c /tmp/tc-refuse.sha; ls -A /etc/docker | cmp -s - /tmp/tc-refuse.ls && echo 'nothing was added to /etc/docker' || { echo '/etc/docker CHANGED:'; ls -A /etc/docker; }; rm -f /tmp/tc-refuse.sha /tmp/tc-refuse.ls",
+      "outputContains": [
+        "/etc/docker/daemon.json: OK",
+        "nothing was added to /etc/docker"
+      ],
+      "outputNotContains": [
+        "FAILED",
+        "CHANGED"
+      ]
+    },
+    {
+      "type": "command",
+      "timeoutSeconds": 240,
+      "label": "A test image holding /bin/sleep and /bin/true, for the steps that start a container to read its logging settings",
+      "run": "set -e; d=$(mktemp -d); mkdir -p $d/bin; cp /bin/sleep /bin/true $d/bin/; for l in $(ldd /bin/sleep | grep -oE '/[^ ]+'); do mkdir -p $d$(dirname $l); cp $l $d$l; done; tar -C $d -c . | docker import --change 'LABEL tc.test=sleep' - tc-test-sleep:1 >/dev/null; rm -rf $d; docker image inspect -f 'test image made: {{.Id}}' tc-test-sleep:1",
+      "outputContains": [
+        "test image made: sha256:"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: docker.service stopped while docker.socket stays listening, as a package install leaves it (any docker command would start Docker again)",
+      "run": "set -e\nprintf '%s\\n' '#!/bin/bash' '# tc-test-dstate LABEL: docker.service and docker.socket as systemctl is-active reports them' 'echo \"$1: docker.service=$(systemctl is-active docker.service) docker.socket=$(systemctl is-active docker.socket)\"' > /usr/local/sbin/tc-test-dstate\nchmod 755 /usr/local/sbin/tc-test-dstate\ntc-test-dstate before\nsystemctl stop docker.service 2>/dev/null\nsystemctl start docker.socket\ntc-test-dstate stopped",
+      "outputContains": [
+        "before: docker.service=active",
+        "stopped: docker.service=inactive docker.socket=active"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Stopped Docker: Report mode - Docker's start flags are not read from docker.service, so the run is exit 3",
+      "variables": {
+        "usrMode": "report"
+      },
+      "outputContains": [
+        "could not tell which flags Docker starts with: Docker is not running, so its start flags cannot be read",
+        "SKIPPED: log rotation: Docker's start flags could not be determined",
+        "Mode: report"
+      ],
+      "expectExitCode": 3,
+      "outputNotContains": [
+        "read from docker.service"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: still stopped after Report mode",
+      "run": "tc-test-dstate 'after Report'",
+      "outputContains": [
+        "after Report: docker.service=inactive docker.socket=active"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Stopped Docker: Apply - exit 3 (flags not read; nothing to add here, as build-cache limits are already in the file), and nothing is written",
+      "outputContains": [
+        "could not tell which flags Docker starts with: Docker is not running, so its start flags cannot be read",
+        "run this component again while Docker is running",
+        "KEPT: builder.gc already configured"
+      ],
+      "expectExitCode": 3,
+      "outputNotContains": [
+        "read from docker.service",
+        "ADDED: log-opts",
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: still stopped after Apply",
+      "run": "tc-test-dstate 'after Apply'",
+      "outputContains": [
+        "after Apply: docker.service=inactive docker.socket=active"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped Docker: Docker started again; the helper removed",
+      "run": "systemctl start docker.service; for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; tc-test-dstate started; rm -f /usr/local/sbin/tc-test-dstate; docker info --format 'docker up, LoggingDriver={{.LoggingDriver}}'",
+      "outputContains": [
+        "started: docker.service=active docker.socket=active",
+        "docker up, LoggingDriver="
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: set up a helper that restarts Docker with extra dockerd flags through a docker.service drop-in",
+      "run": "set -e; systemctl show docker.service -p ExecStart --value | sed -n 's/.*argv\\[\\]=\\([^;]*\\) ;.*/\\1/p' | head -n 1 > /tmp/tc-execstart; test -s /tmp/tc-execstart; printf '%s\\n' '#!/bin/bash' '# tc-test-docker-flags FLAG...: restart docker.service with these extra dockerd flags (a drop-in).' 'd=/etc/systemd/system/docker.service.d' 'mkdir -p \"$d\"' '{ echo \"[Service]\"; echo \"ExecStart=\"; echo \"ExecStart=$(cat /tmp/tc-execstart) $*\"; } > \"$d/tc-test.conf\"' 'systemctl daemon-reload' 'systemctl reset-failed docker.service docker.socket 2>/dev/null' 'if systemctl restart docker.service; then' '  for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done' '  echo \"docker came up with [$*]: LoggingDriver=$(docker info --format \"{{.LoggingDriver}}\")\"' 'else' '  echo \"docker DID NOT START with [$*]\"' '  journalctl -u docker.service -n 50 --no-pager | grep -E \"failed to start|unable to configure|unknown log opt|specified both\" | tail -n 3' '  exit 1' 'fi' > /usr/local/sbin/tc-test-docker-flags; chmod 755 /usr/local/sbin/tc-test-docker-flags; echo \"docker.service starts: $(cat /tmp/tc-execstart)\"",
+      "outputContains": [
+        "docker.service starts:",
+        "dockerd"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker running with --log-driver=journald",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && tc-test-docker-flags --log-driver=journald",
+      "outputContains": [
+        "docker came up",
+        "LoggingDriver=journald"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: a --log-driver=journald daemon gets no log rotation",
+      "outputContains": [
+        "Docker starts with --log-driver=journald (read from the running dockerd",
+        "SKIPPED: log rotation: log-driver is journald (from the --log-driver flag)",
+        "ADDED: builder.gc",
+        "passes dockerd --validate with the daemon's logging flags",
+        "done"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: journald - daemon.json has no log-opts, and Docker restarts, comes up and runs a container",
+      "run": "python3 -c \"import json,sys; d=json.load(open('/etc/docker/daemon.json')); print('daemon.json has log-opts' if 'log-opts' in d else 'daemon.json has no log-opts'); sys.exit(1 if 'log-opts' in d else 0)\" && tc-test-docker-flags --log-driver=journald && docker run -d --name tc-logtest-journald tc-test-sleep:1 /bin/sleep 5 >/dev/null && docker inspect -f \"tc-logtest-journald LogConfig {{json .HostConfig.LogConfig}}\" tc-logtest-journald; docker rm -f tc-logtest-journald >/dev/null",
+      "outputContains": [
+        "daemon.json has no log-opts",
+        "docker came up",
+        "LoggingDriver=journald",
+        "tc-logtest-journald LogConfig {\"Type\":\"journald\""
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker running with --log-opt max-size=50m",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && tc-test-docker-flags --log-opt max-size=50m",
+      "outputContains": [
+        "docker came up",
+        "LoggingDriver=json-file"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: a daemon with --log-opt gets no log rotation",
+      "outputContains": [
+        "Docker starts with --log-opt max-size (read from the running dockerd",
+        "SKIPPED: log rotation: dockerd is started with --log-opt (max-size)",
+        "ADDED: builder.gc",
+        "done"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: --log-opt - daemon.json has no log-opts, and Docker restarts and keeps the flag's max-size",
+      "run": "python3 -c \"import json,sys; d=json.load(open('/etc/docker/daemon.json')); print('daemon.json has log-opts' if 'log-opts' in d else 'daemon.json has no log-opts'); sys.exit(1 if 'log-opts' in d else 0)\" && tc-test-docker-flags --log-opt max-size=50m && docker run -d --name tc-logtest-50m tc-test-sleep:1 /bin/sleep 5 >/dev/null && docker inspect -f \"tc-logtest-50m LogConfig {{json .HostConfig.LogConfig}}\" tc-logtest-50m; docker rm -f tc-logtest-50m >/dev/null",
+      "outputContains": [
+        "daemon.json has no log-opts",
+        "docker came up",
+        "tc-logtest-50m LogConfig {\"Type\":\"json-file\",\"Config\":{\"max-size\":\"50m\"}}"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker running with --log-driver=json-file and no --log-opt",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && tc-test-docker-flags --log-driver=json-file",
+      "outputContains": [
+        "docker came up",
+        "LoggingDriver=json-file"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: --log-driver=json-file still gets log rotation",
+      "outputContains": [
+        "Docker starts with --log-driver=json-file (read from the running dockerd",
+        "ADDED: log-opts.max-size = 10m",
+        "ADDED: log-opts.max-file = 3",
+        "passes dockerd --validate with the daemon's logging flags",
+        "daemon.json: written",
+        "RESTART PENDING"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: json-file - log-opts added, and after a real restart Docker is up and new containers rotate at 10m",
+      "run": "python3 -c \"import json,sys; o=json.load(open('/etc/docker/daemon.json')).get('log-opts', {}); print('daemon.json log-opts:', json.dumps(o)); sys.exit(0 if o.get('max-size') == '10m' else 1)\" && tc-test-docker-flags --log-driver=json-file && docker run -d --name tc-logtest-10m tc-test-sleep:1 /bin/sleep 5 >/dev/null && docker inspect -f \"tc-logtest-10m LogConfig {{json .HostConfig.LogConfig}}\" tc-logtest-10m; docker rm -f tc-logtest-10m >/dev/null",
+      "outputContains": [
+        "\"max-size\": \"10m\"",
+        "docker came up",
+        "LoggingDriver=json-file",
+        "tc-logtest-10m LogConfig {\"Type\":\"json-file\",\"Config\":{\"max-file\":\"3\",\"max-size\":\"10m\"}}"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker stopped, after running with --log-driver=journald from a docker.service drop-in",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && tc-test-docker-flags --log-driver=journald && systemctl stop docker.socket docker.service; systemctl is-active docker.service || true",
+      "outputContains": [
+        "docker came up with [--log-driver=journald]: LoggingDriver=journald",
+        "inactive"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: stopped Docker - its flags are not worked out from docker.service: log rotation is skipped, build-cache limits are still added, exit 3",
+      "expectExitCode": 3,
+      "outputContains": [
+        "could not tell which flags Docker starts with: Docker is not running, so its start flags cannot be read",
+        "SKIPPED: log rotation: Docker's start flags could not be determined",
+        "run this component again while Docker is running",
+        "ADDED: builder.gc",
+        "daemon.json: written",
+        "daemon.json changed; Docker is not running, so it applies at next start"
+      ],
+      "outputNotContains": [
+        "read from docker.service",
+        "ADDED: log-opts",
+        "RESTART PENDING",
+        "Docker daemon limits: done"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: stopped Docker - daemon.json has builder.gc and no log-opts, and Docker starts with it",
+      "run": "python3 -c \"import json,sys; d=json.load(open('/etc/docker/daemon.json')); print('daemon.json has log-opts' if 'log-opts' in d else 'daemon.json has no log-opts'); print('daemon.json has builder.gc' if 'gc' in d.get('builder', {}) else 'daemon.json has no builder.gc'); sys.exit(1 if 'log-opts' in d else 0)\" && tc-test-docker-flags --log-driver=journald",
+      "outputContains": [
+        "daemon.json has no log-opts",
+        "daemon.json has builder.gc",
+        "docker came up",
+        "LoggingDriver=journald"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: Docker running again - the next run reads the journald flag from the running dockerd and finishes: log rotation is skipped for that driver, exit 0",
+      "outputContains": [
+        "Docker starts with --log-driver=journald (read from the running dockerd",
+        "SKIPPED: log rotation: log-driver is journald (from the --log-driver flag)",
+        "KEPT: builder.gc already configured",
+        "no change",
+        "Docker daemon limits: done"
+      ],
+      "outputNotContains": [
+        "could not tell which flags",
+        "ADDED: log-opts"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker stopped, with no logging flag in docker.service",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && tc-test-docker-flags && systemctl stop docker.socket docker.service; systemctl is-active docker.service || true",
+      "outputContains": [
+        "docker came up with []: LoggingDriver=json-file",
+        "inactive"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: stopped Docker with no flag at all - still exit 3, log rotation not added by guesswork",
+      "expectExitCode": 3,
+      "outputContains": [
+        "could not tell which flags Docker starts with: Docker is not running, so its start flags cannot be read",
+        "SKIPPED: log rotation: Docker's start flags could not be determined",
+        "ADDED: builder.gc",
+        "daemon.json: written"
+      ],
+      "outputNotContains": [
+        "read from docker.service",
+        "ADDED: log-opts",
+        "Docker daemon limits: done"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: that daemon.json has no log-opts, and Docker starts",
+      "run": "python3 -c \"import json,sys; d=json.load(open('/etc/docker/daemon.json')); print('daemon.json has log-opts' if 'log-opts' in d else 'daemon.json has no log-opts'); print('daemon.json has builder.gc' if 'gc' in d.get('builder', {}) else 'daemon.json has no builder.gc'); sys.exit(1 if 'log-opts' in d else 0)\" && tc-test-docker-flags",
+      "outputContains": [
+        "daemon.json has no log-opts",
+        "daemon.json has builder.gc",
+        "docker came up with []: LoggingDriver=json-file"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: Docker running again - the next run adds the log rotation the stopped run skipped, exit 0",
+      "outputContains": [
+        "Docker starts with no --log-driver, --log-opt or --config-file flag (read from the running dockerd",
+        "ADDED: log-opts.max-size = 10m",
+        "ADDED: log-opts.max-file = 3",
+        "KEPT: builder.gc already configured",
+        "daemon.json: written",
+        "RESTART PENDING",
+        "Docker daemon limits: done"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: Docker running with --config-file pointing at another file",
+      "run": "cp /tmp/tc-before.json /etc/docker/daemon.json && cp /tmp/tc-before.json /etc/docker/tc-test-other.json && tc-test-docker-flags --config-file=/etc/docker/tc-test-other.json && sha256sum /etc/docker/daemon.json /etc/docker/tc-test-other.json > /tmp/tc-cfg.sha && cat /tmp/tc-cfg.sha && ls -A /etc/docker > /tmp/tc-cfg.ls",
+      "outputContains": [
+        "docker came up with [--config-file=/etc/docker/tc-test-other.json]",
+        "/etc/docker/tc-test-other.json"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: a daemon that reads another --config-file - nothing is written to either file, exit 3",
+      "expectExitCode": 3,
+      "outputContains": [
+        "Docker starts with --config-file=/etc/docker/tc-test-other.json (read from the running dockerd",
+        "daemon.json: NOT CHANGED. Docker reads its configuration from /etc/docker/tc-test-other.json, not /etc/docker/daemon.json"
+      ],
+      "outputNotContains": [
+        "ADDED:",
+        "daemon.json: written",
+        "RESTART PENDING"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: --config-file elsewhere - both files are byte-for-byte unchanged, and nothing was added to /etc/docker (no backup, no staging file)",
+      "run": "sha256sum -c /tmp/tc-cfg.sha; ls -A /etc/docker | cmp -s - /tmp/tc-cfg.ls && echo 'nothing was added to /etc/docker' || { echo '/etc/docker CHANGED:'; ls -A /etc/docker; }; rm -f /etc/docker/tc-test-other.json /tmp/tc-cfg.sha /tmp/tc-cfg.ls",
+      "outputContains": [
+        "/etc/docker/daemon.json: OK",
+        "/etc/docker/tc-test-other.json: OK",
+        "nothing was added to /etc/docker"
+      ],
+      "outputNotContains": [
+        "FAILED",
+        "CHANGED"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: a host version 4 broke - journald daemon running, daemon.json given max-size after it started",
+      "run": "rm -f /etc/docker/daemon.json.tc-bak-* && cp /tmp/tc-before.json /etc/docker/daemon.json && tc-test-docker-flags --log-driver=journald && cp -p /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-$(date +%Y%m%d%H%M%S) && python3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d['log-opts']={'max-size': '10m', 'max-file': '3'}; json.dump(d, open(p, 'w'), indent=2)\" && sha256sum /etc/docker/daemon.json > /tmp/tc-broken.sha && ls -1 /etc/docker/",
+      "outputContains": [
+        "LoggingDriver=journald",
+        "daemon.json.tc-bak-"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Daemon flags: the broken host is reported, exit 3, nothing written",
+      "expectExitCode": 3,
+      "outputContains": [
+        "DAEMON WILL NOT START: daemon.json has log-opts max-size and max-file, but the log driver is journald (from the --log-driver flag), which does not accept them",
+        "Newest backup: /etc/docker/daemon.json.tc-bak-",
+        "daemon.json: NOT CHANGED"
+      ],
+      "outputNotContains": [
+        "daemon.json: written",
+        "RESTART PENDING"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: the broken host's daemon.json is byte-for-byte unchanged",
+      "run": "sha256sum -c /tmp/tc-broken.sha",
+      "outputContains": [
+        "daemon.json: OK"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: and the report was right - Docker really does not start with that file",
+      "run": "tc-test-docker-flags --log-driver=journald",
+      "expectExitCode": 1,
+      "outputContains": [
+        "docker DID NOT START",
+        "unknown log opt 'max-",
+        "for journald log driver"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Daemon flags: clean up - original daemon.json, no drop-in, Docker running",
+      "run": "rm -f /etc/systemd/system/docker.service.d/tc-test.conf && cp /tmp/tc-before.json /etc/docker/daemon.json && systemctl daemon-reload && systemctl reset-failed docker.service docker.socket; systemctl restart docker.service && docker info --format \"docker up, LoggingDriver={{.LoggingDriver}}\"",
+      "outputContains": [
+        "docker up, LoggingDriver=json-file"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: install a helper that runs the component several times inside one step",
+      "run": "cat > /usr/local/sbin/tc-test-run-component <<EOF\n#!/bin/bash\n# tc-test-run-component [VAR=value ...]: run the component body the way the harness does (root, clean environment, the script's own defaults), for a step that needs several runs.\nexec env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \"\\$@\" /bin/bash \"$(pwd)/Scripts/docker-configure-daemon-limits-lin/docker-configure-daemon-limits-lin.sh\"\nEOF\nchmod 755 /usr/local/sbin/tc-test-run-component; echo \"helper runs: $(grep -c exec /usr/local/sbin/tc-test-run-component) exec line\"",
+      "outputContains": [
+        "helper runs: 1 exec line"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: an existing daemon.json, 0600 with a non-root owner and group, holding a fake proxy credential",
+      "run": "getent group tc-test-grp >/dev/null || groupadd tc-test-grp; rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; printf '%s\\n' '{\"proxies\": {\"http-proxy\": \"http://tc-test-user:tc-test-not-a-password@proxy.invalid:3128\"}}' > /etc/docker/daemon.json; chown nobody:tc-test-grp /etc/docker/daemon.json; chmod 600 /etc/docker/daemon.json; echo \"before: $(stat -c '%a %U %G' /etc/docker/daemon.json)\"",
+      "outputContains": [
+        "before: 600 nobody tc-test-grp"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Apply on that file",
+      "outputContains": [
+        "daemon.json: previous file saved as /etc/docker/daemon.json.tc-bak-",
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: same mode, owner and group; new keys added; the proxy kept; the backup has the same mode and group; no staging file",
+      "run": "echo \"after: $(stat -c '%a %U %G' /etc/docker/daemon.json)\"; b=$(LC_ALL=C ls /etc/docker/daemon.json.tc-bak-* | tail -n 1); echo \"backup: $(stat -c '%a %U %G' $b)\"; python3 -c \"import json; d=json.load(open('/etc/docker/daemon.json')); ok = d['log-opts']['max-size'] == '10m' and 'gc' in d['builder'] and d['proxies']['http-proxy'].startswith('http://tc-test-user:'); print('keys: ' + ('new keys added, proxy kept' if ok else 'WRONG'))\"; echo \"staging files left in /etc/docker: $(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; ls -la /etc/docker",
+      "outputContains": [
+        "after: 600 nobody tc-test-grp",
+        "backup: 600 nobody tc-test-grp",
+        "keys: new keys added, proxy kept",
+        "staging files left in /etc/docker: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: no daemon.json at all",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; ls -A /etc/docker | wc -l; test ! -e /etc/docker/daemon.json && echo 'no daemon.json before'",
+      "outputContains": [
+        "no daemon.json before"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Apply creates it",
+      "outputContains": [
+        "daemon.json: written"
+      ],
+      "outputNotContains": [
+        "previous file saved"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: a new daemon.json is 0644 root:root, with the limits, and nothing else is left in /etc/docker",
+      "run": "echo \"after: $(stat -c '%a %U %G' /etc/docker/daemon.json)\"; grep -c '\"max-size\": \"10m\"' /etc/docker/daemon.json; echo \"staging files left in /etc/docker: $(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; ls -la /etc/docker",
+      "outputContains": [
+        "after: 644 root root",
+        "staging files left in /etc/docker: 0"
+      ],
+      "outputNotContains": [
+        "tc-bak"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: daemon.json is a symlink to a 0640 file elsewhere",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; mkdir -p /opt/tc-test-managed; printf '{\"debug\": false}\\n' > /opt/tc-test-managed/daemon.json; chgrp tc-test-grp /opt/tc-test-managed/daemon.json; chmod 640 /opt/tc-test-managed/daemon.json; ln -s /opt/tc-test-managed/daemon.json /etc/docker/daemon.json; ls -l /etc/docker/daemon.json /opt/tc-test-managed/daemon.json",
+      "outputContains": [
+        "/etc/docker/daemon.json -> /opt/tc-test-managed/daemon.json"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Apply through the symlink",
+      "outputContains": [
+        "is a symbolic link to /opt/tc-test-managed/daemon.json; changes go to that file and the link stays",
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: still a symlink; the target has the new keys, its old key and its mode and group; the backup is a regular file; no staging file in either directory",
+      "run": "test -L /etc/docker/daemon.json && echo \"still a symlink: $(readlink /etc/docker/daemon.json)\"; echo \"target: $(stat -c '%a %U %G' /opt/tc-test-managed/daemon.json)\"; python3 -c \"import json; d=json.load(open('/opt/tc-test-managed/daemon.json')); print('target keys: ' + ('new keys added, debug kept' if d['log-opts']['max-size'] == '10m' and d['debug'] is False else 'WRONG'))\"; b=$(LC_ALL=C ls /etc/docker/daemon.json.tc-bak-* | tail -n 1); if [ -f \"$b\" ] && [ ! -L \"$b\" ]; then echo 'backup is a regular file'; fi; echo \"staging files left: $(ls -A /etc/docker /opt/tc-test-managed | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; ls -l /etc/docker /opt/tc-test-managed",
+      "outputContains": [
+        "still a symlink: /opt/tc-test-managed/daemon.json",
+        "target: 640 root tc-test-grp",
+        "target keys: new keys added, debug kept",
+        "backup is a regular file",
+        "staging files left: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: Docker restarts cleanly with the symlinked file, and a new container rotates its log at 10m",
+      "run": "dockerd --validate --config-file /etc/docker/daemon.json; systemctl reset-failed docker.service docker.socket 2>/dev/null; systemctl restart docker.service && for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; docker info --format 'docker up through the link, LoggingDriver={{.LoggingDriver}}' && docker run -d --name tc-logtest-link tc-test-sleep:1 /bin/sleep 5 >/dev/null && docker inspect -f 'tc-logtest-link LogConfig {{json .HostConfig.LogConfig}}' tc-logtest-link; docker rm -f tc-logtest-link >/dev/null",
+      "outputContains": [
+        "configuration OK",
+        "docker up through the link, LoggingDriver=json-file",
+        "\"max-size\":\"10m\""
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: daemon.json is a dangling symlink",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; mkdir -p /opt/tc-test-managed; ln -s /opt/tc-test-managed/missing.json /etc/docker/daemon.json; ls -l /etc/docker/daemon.json",
+      "outputContains": [
+        "/etc/docker/daemon.json -> /opt/tc-test-managed/missing.json"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: a dangling symlink is refused with exit 3",
+      "expectExitCode": 3,
+      "outputContains": [
+        "is a symbolic link to /opt/tc-test-managed/missing.json, which does not exist; not touched"
+      ],
+      "outputNotContains": [
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: the dangling link is still there, its target was not created, and nothing else was made",
+      "run": "test -L /etc/docker/daemon.json && echo \"link kept: $(readlink /etc/docker/daemon.json)\"; test ! -e /opt/tc-test-managed/missing.json && echo 'target not created'; echo \"left in /etc/docker: $(ls -A /etc/docker | tr '\\n' ' ')\"; echo \"left in /opt/tc-test-managed: $(ls -A /opt/tc-test-managed | wc -l) files\"",
+      "outputContains": [
+        "link kept: /opt/tc-test-managed/missing.json",
+        "target not created",
+        "left in /etc/docker: daemon.json ",
+        "left in /opt/tc-test-managed: 0 files"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: daemon.json is a symlink to a directory",
+      "run": "rm -f /etc/docker/daemon.json; ln -s /opt/tc-test-managed /etc/docker/daemon.json; ls -l /etc/docker/daemon.json",
+      "outputContains": [
+        "/etc/docker/daemon.json -> /opt/tc-test-managed"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: a symlink to a directory is refused with exit 3",
+      "expectExitCode": 3,
+      "outputContains": [
+        "which is not a regular file; not touched"
+      ],
+      "outputNotContains": [
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: a 0600 daemon.json that already has a setting dockerd --validate rejects (mtu -5)",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; printf '{\"mtu\": -5}\\n' > /etc/docker/daemon.json; chmod 600 /etc/docker/daemon.json; sha256sum /etc/docker/daemon.json | tee /tmp/tc-badval.sha",
+      "outputContains": [
+        "daemon.json"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: a failed validation writes nothing and exits 3",
+      "expectExitCode": 3,
+      "outputContains": [
+        "the merged file failed dockerd --validate; not written"
+      ],
+      "outputNotContains": [
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: after the failed validation: the file is unchanged and nothing is left in /etc/docker",
+      "run": "sha256sum -c /tmp/tc-badval.sha; echo \"staging files left in /etc/docker: $(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; echo \"backups: $(ls /etc/docker/daemon.json.tc-bak-* 2>/dev/null | wc -l)\"; ls -la /etc/docker",
+      "outputContains": [
+        "daemon.json: OK",
+        "staging files left in /etc/docker: 0",
+        "backups: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: a valid daemon.json to run Report mode against",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; printf '{\"debug\": false}\\n' > /etc/docker/daemon.json; sha256sum /etc/docker/daemon.json | tee /tmp/tc-report.sha",
+      "outputContains": [
+        "daemon.json"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Report mode",
+      "variables": {
+        "usrMode": "report"
+      },
+      "outputContains": [
+        "daemon.json: REPORT MODE, would write the change above"
+      ],
+      "outputNotContains": [
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: after Report mode: file unchanged, no staging file, no backup",
+      "run": "sha256sum -c /tmp/tc-report.sha; echo \"staging files left in /etc/docker: $(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; echo \"backups: $(ls /etc/docker/daemon.json.tc-bak-* 2>/dev/null | wc -l)\"; ls -la /etc/docker",
+      "outputContains": [
+        "daemon.json: OK",
+        "staging files left in /etc/docker: 0",
+        "backups: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: move /etc/docker away, so the host has no such directory",
+      "run": "rm -rf /etc/docker.tc-away; mv /etc/docker /etc/docker.tc-away && test ! -e /etc/docker && echo 'no /etc/docker'",
+      "outputContains": [
+        "no /etc/docker"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Report mode on a host with no /etc/docker",
+      "variables": {
+        "usrMode": "report"
+      },
+      "outputContains": [
+        "daemon.json: REPORT MODE, would write the change above"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: the directory still does not exist; put /etc/docker back",
+      "run": "if [ -e /etc/docker ]; then echo 'WRONG: /etc/docker was created'; ls -la /etc/docker; exit 1; fi; echo '/etc/docker still does not exist'; mv /etc/docker.tc-away /etc/docker && echo '/etc/docker restored'",
+      "outputContains": [
+        "/etc/docker still does not exist",
+        "/etc/docker restored"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: a staging file left by an earlier run that crashed, beside a daemon.json with a change pending",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker; printf '{\"debug\": false}\\n' > /etc/docker/daemon.json; printf 'half a file' > /etc/docker/.daemon.json.tc-OLD123; chmod 600 /etc/docker/.daemon.json.tc-OLD123; ls -A /etc/docker",
+      "outputContains": [
+        ".daemon.json.tc-OLD123"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "daemon.json write: Apply removes the earlier run's staging file",
+      "outputContains": [
+        "daemon.json: removed /etc/docker/.daemon.json.tc-OLD123, left by an earlier run that did not finish",
+        "daemon.json: written"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: no staging file is left after a successful Apply",
+      "run": "echo \"staging files left in /etc/docker: $(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true)\"; ls -la /etc/docker",
+      "outputContains": [
+        "staging files left in /etc/docker: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: seven changes in a row, each made by a run of the component",
+      "run": "set -u\nrm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker\nprintf '{\"debug\": false}\\n' > /etc/docker/daemon.json\n: > /tmp/tc-bak-names\nfor i in 1 2 3 4 5 6 7; do\n  python3 -c \"import json; p='/etc/docker/daemon.json'; d=json.load(open(p)); d.pop('log-opts', None); d.pop('builder', None); json.dump(d, open(p, 'w'))\"\n  tc-test-run-component > /tmp/tc-run.out 2>&1 || { echo \"change $i failed\"; cat /tmp/tc-run.out; exit 1; }\n  grep -q 'daemon.json: written' /tmp/tc-run.out || { echo \"change $i wrote nothing\"; cat /tmp/tc-run.out; exit 1; }\n  LC_ALL=C ls /etc/docker/daemon.json.tc-bak-* | tail -n 1 >> /tmp/tc-bak-names\ndone\necho \"newest backup after each change:\"; sed 's|^/etc/docker/||' /tmp/tc-bak-names\necho \"backups after seven changes: $(ls /etc/docker/daemon.json.tc-bak-* | wc -l)\"\necho \"distinct backup names made: $(sort -u /tmp/tc-bak-names | wc -l)\"\ndiff <(LC_ALL=C ls /etc/docker/daemon.json.tc-bak-*) <(LC_ALL=C sort /tmp/tc-bak-names | tail -n 5) && echo \"the five left are the newest five\"\nls -la /etc/docker",
+      "timeoutSeconds": 300,
+      "outputContains": [
+        "backups after seven changes: 5",
+        "distinct backup names made: 7",
+        "the five left are the newest five"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: an immutable daemon.json (chattr +i; skipped where the filesystem cannot): exit 1, file unchanged, no staging file, no backup",
+      "run": "rm -rf /opt/tc-test-managed; rm -f /etc/docker/daemon.json /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-*; mkdir -p /etc/docker\np=/etc/docker/.tc-immutable-probe; : > $p\nif ! chattr +i $p 2>/dev/null || ! lsattr $p 2>/dev/null | awk '{print $1}' | grep -q i; then\n  chattr -i $p 2>/dev/null; rm -f $p\n  echo \"SKIPPED: this filesystem does not support chattr +i, so the immutable-file check did not run\"; exit 0\nfi\nchattr -i $p; rm -f $p\nf=/etc/docker/daemon.json\nprintf '%s\\n' '{\"proxies\": {\"http-proxy\": \"http://tc-test-user:tc-test-not-a-password@proxy.invalid:3128\"}}' > $f; chmod 600 $f; chattr +i $f\nsha256sum $f > /tmp/tc-imm.before\ntc-test-run-component > /tmp/tc-imm.out 2>&1; rc=$?\nchattr -i $f\ncat /tmp/tc-imm.out\necho \"component exit: $rc\"\nok=0\n[ \"$rc\" = 1 ] || { echo \"WRONG: expected exit 1\"; ok=1; }\ngrep -q \"could not replace $f\" /tmp/tc-imm.out || { echo \"WRONG: the output does not say what failed\"; ok=1; }\nsha256sum -c /tmp/tc-imm.before || { echo \"WRONG: daemon.json changed\"; ok=1; }\nn=$(ls -A /etc/docker | grep -c '^\\.daemon\\.json\\.tc-' || true); echo \"staging files left in /etc/docker: $n\"; [ \"$n\" = 0 ] || ok=1\nb=$(ls /etc/docker/daemon.json.tc-bak-* 2>/dev/null | wc -l); echo \"backups left by the failed run: $b\"; [ \"$b\" = 0 ] || ok=1\nls -la /etc/docker\nexit $ok",
+      "timeoutSeconds": 300,
+      "outputNotContains": [
+        "WRONG"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "daemon.json write: clean up: original daemon.json, no test files, Docker restarted",
+      "run": "chattr -i /etc/docker/daemon.json 2>/dev/null; rm -rf /opt/tc-test-managed /usr/local/sbin/tc-test-run-component /etc/docker/daemon.json.tc-bak-* /etc/docker/.daemon.json.tc-* /tmp/tc-bak-names /tmp/tc-run.out /tmp/tc-imm.* /tmp/tc-badval.sha /tmp/tc-report.sha; cp /tmp/tc-before.json /etc/docker/daemon.json && systemctl reset-failed docker.service docker.socket 2>/dev/null; systemctl restart docker.service && docker info --format 'docker up, LoggingDriver={{.LoggingDriver}}'",
+      "outputContains": [
+        "docker up, LoggingDriver=json-file"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Clean up: the test image and the helpers gone",
+      "run": "docker image rm tc-test-sleep:1 >/dev/null && echo 'test image removed'; rm -f /usr/local/sbin/tc-test-docker-flags /tmp/tc-execstart /tmp/tc-before.json; ls /usr/local/sbin | grep -c '^tc-test-' || echo 'no test helpers left'",
+      "outputContains": [
+        "test image removed",
+        "no test helpers left"
+      ]
+    },
+    {
+      "type": "command",
+      "tier": 2,
+      "label": "After a Docker restart, a new container gets max-size 10m",
+      "run": "systemctl restart docker && docker run --rm -d --name tc-logtest alpine sleep 30 && docker inspect tc-logtest --format '{{json .HostConfig.LogConfig}}'",
+      "outputContains": [
+        "\"max-size\":\"10m\""
+      ]
+    },
+    {
+      "type": "runComponent",
+      "tier": 2,
+      "label": "Host without Docker says so and exits 0",
+      "outputContains": [
+        "Docker is not installed"
+      ]
+    }
+  ]
+}
