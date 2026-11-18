@@ -50,6 +50,17 @@ sections, and the component READMEs under `Monitors/` for worked examples —
 `disk-space-free-space-below-threshold-lin` and
 `docker-container-health-and-resource-usage-lin` are the fullest.
 
+## Guides
+
+When several components work together, a guide in [`docs/`](docs/) explains
+how they fit, the order to set them up in and what to expect once they run.
+A guide links to the component READMEs for details rather than restating
+them; where the two differ, the README wins.
+
+| Guide | Covers |
+|---|---|
+| [`docs/docker.md`](docs/docker.md) | The six Docker components for Linux hosts: the expected-containers list, the weekly prune, `daemon.json` limits, and the three monitors |
+
 ## This is a partial mirror
 
 Components land here from the day the rule took effect, going forward. There is
