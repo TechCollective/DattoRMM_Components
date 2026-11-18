@@ -2,7 +2,7 @@
  "platforms": [
   "linux"
  ],
- "description": "On a runner with Docker and systemd, against a test registry (the one from Host Maintenance's test, over HTTPS with a test CA) on ports 5055 and 4290. Two containers, one from each, are current; the second run is served from the cache, a root-only directory and file in the version 2 format. The state directory: a pre-made symlink is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the cache file is not read and is replaced, its target untouched. usrExcludePattern starting with - is a pattern. Rate limits: an error that only contains 4290 (the registry on that port stopped) is an unreadable image, not a rate limit, and the other image is still queried; a real 429 Too Many Requests trips the breaker. Staleness: a ref with no registry answer for 8 days alerts, naming it, the error kind (rate limited; refused) and since when; 2 days does not; usrStaleAfterDays 0 never does; a success clears it. Version 1 cache lines are read; malformed ones dropped. Every invalid input is refused, naming the variable. The input variables are read by their usr names; a variable set only under its old name (before version 3) is read from that, and when both are set the usr name wins. The container list is three docker commands (counted with a recording shim), retried when a container goes between docker ps and docker inspect, an error after three failed tries; a name holding a newline and tabs adds no row. A container run by image id is checked under its image's tag; one from an untagged image is skipped. A docker shim that never answers gives 'Docker did not answer within 40 seconds', exit 1, inside 90 seconds, nothing left running; TERM mid-run prints the fallback result block. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found. GNU bash 4.2 runs the main paths. The first step reads the script itself: its time-limit functions sit in one block marked tc-docker bounded (a block CI compares with the other Docker monitors' copies), and its tc-docker running block says it is identical in every tc-docker component. Version 5: the result code is one block marked tc-docker result, shared with the other two Docker monitors (a step reads the script for it). A status of over 400 characters is printed whole (the limit is 900; it was 400). The directory an inherited TMP names is left alone on an early exit (the EXIT trap used to remove it), and the monitor's own scratch directory is gone after a full run and after TERM. The cache file is in /var/lib/tc-docker, written with tc_state_write, in the block marked tc-docker state, the same in the prune and the three Docker monitors (a step reads the script for it): a symlinked directory is not followed, a directory not owned by root is not used, and a symlink at the cache file is not read, written through or replaced (the check still runs and says the state was not saved, and why). A cache an earlier version left in /var/lib/tc-docker-monitor is read once, when root's, and that directory is never changed or made again. The script's opening comment is short and points to the README (a step reads it). A run with one unreadable image exits 0 and prints no diagnostic block.",
+ "description": "On a runner with Docker and systemd, against a test registry (the one from Host Maintenance's test, over HTTPS with a test CA) on ports 5055 and 4290. Two containers, one from each, are current; the second run is served from the cache, a root-only directory and file in the version 2 format. The state directory: a pre-made symlink is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the cache file is not read and is replaced, its target untouched. usrExcludePattern starting with - is a pattern. Rate limits: an error that only contains 4290 (the registry on that port stopped) is an unreadable image, not a rate limit, and the other image is still queried; a real 429 Too Many Requests trips the breaker. Staleness: a ref with no registry answer for 8 days alerts, naming it, the error kind (rate limited; refused) and since when; 2 days does not; usrStaleAfterDays 0 never does; a success clears it. Version 1 cache lines (three or four fields) are dropped like malformed ones (from version 6), so both refs are queried and the cache rewritten in six fields. Every invalid input is refused, naming the variable. The input variables are read by their usr names; a variable set only under its old name (before version 3) is read from that, and when both are set the usr name wins. The container list is three docker commands (counted with a recording shim), retried when a container goes between docker ps and docker inspect, an error after three failed tries; a name holding a newline and tabs adds no row. A container run by image id is checked under its image's tag; one from an untagged image is skipped. A docker shim that never answers gives 'Docker did not answer within 40 seconds', exit 1, inside 90 seconds, nothing left running; TERM mid-run prints the fallback result block. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found. GNU bash 4.2 runs the main paths. The first step reads the script itself: its time-limit functions sit in one block marked tc-docker bounded (a block CI compares with the other Docker monitors' copies), and its tc-docker running block says it is identical in every tc-docker component. Version 5: the result code is one block marked tc-docker result, shared with the other two Docker monitors (a step reads the script for it). A status of over 400 characters is printed whole (the limit is 900; it was 400). The directory an inherited TMP names is left alone on an early exit (the EXIT trap used to remove it), and the monitor's own scratch directory is gone after a full run and after TERM. The cache file is in /var/lib/tc-docker, written with tc_state_write, in the block marked tc-docker state, the same in the prune and the three Docker monitors (a step reads the script for it): a symlinked directory is not followed, a directory not owned by root is not used, and a symlink at the cache file is not read, written through or replaced (the check still runs and says the state was not saved, and why). A cache an earlier version left in /var/lib/tc-docker-monitor is read once, when root's, and that directory is never changed or made again. The script's opening comment is short and points to the README (a step reads it). A run with one unreadable image exits 0 and prints no diagnostic block.",
  "steps": [
   {
    "type": "command",
@@ -557,32 +557,38 @@
   },
   {
    "type": "command",
-   "label": "Version 1 cache lines (ref, digest, created, checked) are read as successes; a malformed line is dropped",
-   "run": "set -e; f=/var/lib/tc-docker/image-digests.tsv; now=$(date +%s); d=$(awk -F'\\t' '$1 ~ /5055/ {print $2}' $f); printf 'tc-registry.test:5055/tc-test-cur:1\\t%s\\t\\t%s\\nnot a line\\n' \"$d\" \"$now\" > $f; tc-test-state",
+   "label": "Version 1 cache lines are no longer read (from version 6): the cache holds only a version 1 line for each image, one with four fields (ref, digest, created, checked) and one with three (no created date), both checked just now, and a line that is not a line",
+   "run": "set -e; f=/var/lib/tc-docker/image-digests.tsv; now=$(date +%s); d1=$(awk -F'\\t' '$1 ~ /5055/ {print $2}' $f); d2=$(awk -F'\\t' '$1 ~ /4290/ {print $2}' $f); case \"$d1$d2\" in *sha256:*sha256:*) ;; *) echo 'no digests in the cache'; exit 1 ;; esac; printf 'tc-registry.test:5055/tc-test-cur:1\\t%s\\t2026-11-01T00:00:00Z\\t%s\\ntc-registry.test:4290/tc-test-other:1\\t%s\\t%s\\nnot a line\\n' \"$d1\" \"$now\" \"$d2\" \"$now\" > $f; tc-test-state; echo \"fields per line: $(awk -F'\\t' '{printf \"%s \", NF}' $f)\"",
    "outputContains": [
-    "not a line"
+    "not a line",
+    "fields per line: 4 3 1 "
    ]
   },
   {
    "type": "runComponent",
-   "label": "Version 1 line used from the cache; the 4290 ref (no entry) queried",
+   "label": "Version 1 lines dropped like any malformed line, without error: both refs queried, as on a first run (version 5 served both from the cache)",
    "outputContains": [
-    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [1 cached, 1 queried]"
+    "STATUS=2 checked: 0 behind, 2 current, 0 pinned [0 cached, 2 queried]"
    ],
    "outputNotContains": [
     "stopped unexpectedly",
-    "unbound variable"
+    "unbound variable",
+    "state not saved",
+    "Diagnostic"
    ]
   },
   {
    "type": "command",
-   "label": "The cache rewritten in the version 2 format, the malformed line gone",
-   "run": "tc-test-state; grep -c 'not a line' /var/lib/tc-docker/image-digests.tsv || true",
+   "label": "The cache rewritten from the answers just fetched: one six-field line per ref, last ok this run; the version 1 lines and the malformed line gone",
+   "run": "tc-test-state; f=/var/lib/tc-docker/image-digests.tsv; echo \"fields per line: $(awk -F'\\t' '{printf \"%s \", NF}' $f)\"; grep -c 'not a line' $f || true; grep -c '2026-11-01T00:00:00Z' $f || true",
    "outputContains": [
-    "tc-registry.test:5055/tc-test-cur:1\tsha256:"
+    "tc-registry.test:5055/tc-test-cur:1\tsha256:",
+    "tc-registry.test:4290/tc-test-other:1\tsha256:",
+    "fields per line: 6 6 "
    ],
    "outputNotContains": [
-    "not a line"
+    "not a line",
+    "2026-11-01T00:00:00Z"
    ]
   },
   {

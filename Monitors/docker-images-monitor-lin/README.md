@@ -70,6 +70,28 @@ registry, and when an image's registry has not answered for days.
 > test registry: every step that passed for version 4 passes, except the ones
 > rewritten for the new directory, which pass as rewritten; the bash 4.2
 > steps were **not** run and run in CI. Not yet run through a Datto agent.
+>
+> **Version 6** (2026-11-18) stops reading **version 1 cache lines**, and
+> changes nothing else. Version 1 wrote three or four fields per line (ref,
+> digest, created, checked); versions 2 to 5 read such a line as a success at
+> "checked" and rewrote it in six fields. Version 6 drops it like any other
+> line that is not well formed. So **a host whose cache is still version 1's
+> takes a fresh baseline once**: its first run of version 6 finds nothing
+> cached, looks every image up again as on a first run (as many as the run's
+> limits allow; the rest are deferred, as usual, and not alerted), and writes
+> the cache in six fields. Nothing alerts because of it, and no error is
+> shown. What those lines held is lost: that run makes more registry calls
+> than a cached run would, a rate-limited reference has no older digest to
+> fall back on, and a reference whose registry does not answer counts as
+> stale from that run (`failing since ..., never answered`), not from the
+> old "checked" time. A cache any later version wrote is read as before. The
+> fallback to the old input names and to the old state directory
+> (`/var/lib/tc-docker-monitor`) are separate, and stay.
+> Through its Tier 1 `test.json` in a sandbox with systemd's answers
+> simulated, a local test registry and no bash 4.2, every other step gave the
+> result it gave for version 5 (the 9 bash 4.2 steps fail there for both
+> versions and run in CI), and the three rewritten steps pass; against the
+> version 5 script two of them fail. Not yet run through a Datto agent.
 
 ## What it does
 
@@ -285,8 +307,10 @@ One line of each kind (tabs shown as spaces):
 
 The first was answered on its last lookup; the second was last answered a week
 earlier and has been rate limited since; the third has never been answered.
-Version 1 lines (ref, digest, created, checked) are read as a success at
-"checked" and rewritten in this format. An entry for an image no running
+Any other line is dropped, and so is a version 1 line (ref, digest, created,
+checked, or the same without created): up to version 5 such a line was read as
+a success at "checked"; from version 6 it is not read, and the image is looked
+up again as on a first run. An entry for an image no running
 container uses is dropped 90 days after anything was last recorded for it.
 
 ## Installing it in Datto

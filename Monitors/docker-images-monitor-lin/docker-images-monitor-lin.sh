@@ -474,13 +474,8 @@ while IFS=$'\t' read -r -a f; do
     r="${f[0]:-}"
     [[ "$r" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]] || continue
     [ -z "${S_OK[$r]+x}" ] || continue                       # first line per ref wins
-    if [ "$n" -eq 4 ]; then                                  # version 1: ref digest created checked
-        f=("$r" "${f[1]}" "${f[2]:--}" "${f[3]}" none 0)
-    elif [ "$n" -eq 3 ]; then                                # version 1 with no created date
-        f=("$r" "${f[1]}" - "${f[2]}" none 0)
-    elif [ "$n" -ne 6 ]; then
-        continue
-    fi
+    # Six fields, or the line is dropped: a version 1 line (3 or 4 fields) too.
+    [ "$n" -eq 6 ] || continue
     [[ "${f[1]}" =~ ^(sha256:[0-9a-f]{64}|-)$ ]] || continue
     [[ "${f[2]}" =~ ^(-|[0-9][0-9TZ:.+-]{0,39})$ ]] || continue
     [[ "${f[3]}" =~ ^[0-9]{1,12}$ ]] && [[ "${f[5]}" =~ ^[0-9]{1,12}$ ]] || continue
