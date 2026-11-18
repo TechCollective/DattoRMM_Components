@@ -1,35 +1,25 @@
 #!/bin/bash
 # Docker - Container Health and Resource Usage [Lin]
-# TechCollective custom monitor for Datto RMM.
 #
-# Read-only. Runs docker info / version / ps / stats / inspect, and docker logs
-# only when usrIncludeLogs is yes. Makes no change to any container, image or
-# daemon. No network access. No code is downloaded at run time. Writes one state
-# file so restart counts and resource breaches can be compared against the
-# previous run (see the shared state block below).
+# Datto RMM custom monitor. Runs as root. Watches the running containers of a
+# Docker host for CPU or memory over a threshold, failed healthchecks, restart
+# loops, out-of-memory kills and non-zero exits.
 #
-# Before any docker command, and in this order:
-#   - no docker command (PATH plus the usual system directories)
-#       but /var/run/docker.sock is a socket or docker.service is loaded -> alert
-#       otherwise: Docker is not installed                              -> healthy
-#   - systemd says docker.service is not active: no docker command is run (any
-#     would start Docker again through docker.socket)                    -> healthy
-#   - docker info fails with no docker.service and no socket (a client only) -> healthy
-#   - docker info fails otherwise                                        -> alert
-# Every docker command is stopped if Docker has not answered DOCKER_TIMEOUT
-# seconds after the monitor started, and the check says Docker did not answer.
+# Changes on the host: one file, its own state,
+# /var/lib/tc-docker/monitor-state.tsv (the directory is created root-only
+# when missing). It changes no container, image or daemon setting, makes no
+# network call, and never starts a stopped Docker.
 #
-# Input variables (Datto String/Selection types; all arrive as strings):
-#   usrCpuThreshold     90      percent of the container's OWN available CPU
-#   usrMemThreshold     90      percent of the container's memory limit
-#   usrConsecutive      2       runs a container must breach before alerting
-#   usrCheckHealth      alert   alert | warn | ignore
-#   usrRestartThreshold 3       restarts since the previous run
-#   usrExitedWindowMin  60      minutes; 0 disables the exited-container check
-#   usrExclude          (empty) ERE matched against container names
-#   usrIncludeLogs      no      yes | no - tail container logs into diagnostic
-#   usrStoppedExitAction warn   warn | alert - a container that exited 143 or 137
-#                               without being OOM-killed (usually docker stop)
+# Result: exit 0 healthy, exit 1 alert; one result block on every way out.
+#   1  a container over a threshold for usrConsecutive runs, unhealthy,
+#      restart-looping, OOM-killed or exited non-zero; Docker installed but
+#      unreachable, or not answering within DOCKER_TIMEOUT seconds; an invalid
+#      input variable or a missing tool; the script stopped unexpectedly
+#   0  everything else (Docker not installed or stopped, no containers, all
+#      within thresholds), with what was found named in the status
+#
+# Every condition, input variable and exit, and the state file:
+# https://github.com/TechCollective/DattoRMM_Components/tree/main/Monitors/docker-container-health-and-resource-usage-lin
 
 set -u
 

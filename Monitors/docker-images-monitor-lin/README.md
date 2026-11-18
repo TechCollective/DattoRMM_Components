@@ -61,7 +61,15 @@ registry, and when an image's registry has not answered for days.
 > in the cache file's place is refused**, not replaced (the run then caches
 > nothing and says so), and the status says `state not saved (<why>)` where
 > version 4 said `no saved state (<why>)` or `saved state could not be
-> written to ...`. See [State file](#state-file).
+> written to ...`. See [State file](#state-file). **The script's header
+> comment is short** (what it is, what it changes, the result states) and
+> points here; the details it carried that this README did not (the token
+> handshake, the cost of a build-date lookup, what the cache saves) are now
+> under *What it does* and *Registry load*. Through its Tier 1 `test.json` in
+> a sandbox with no bash 4.2, with systemd's answers simulated and a local
+> test registry: every step that passed for version 4 passes, except the ones
+> rewritten for the new directory, which pass as rewritten; the bash 4.2
+> steps were **not** run and run in CI. Not yet run through a Datto agent.
 
 ## What it does
 
@@ -76,6 +84,7 @@ has a scratch directory from `mktemp -d` (under `$TMPDIR`, else `/tmp`), one
 small file per registry lookup, removed on every way out. Its network calls are
 registry lookups through `docker buildx imagetools inspect`, which:
 
+- does the registry's bearer-token handshake itself,
 - uses the host's existing `docker login`,
 - honours the daemon's proxy settings,
 - handles no credentials itself.
@@ -160,9 +169,11 @@ The main design constraint is how often it asks the registry. Three things
 keep that low:
 
 1. **Digest lookups are cheap.** Each is one HEAD request. The build date costs
-   a manifest walk and a config blob, so it is fetched only for images that
-   moved.
-2. **Results are cached** for `usrCacheHours`. When `usrCacheHours` is 24 or more,
+   a manifest walk and a config blob per platform, so it is fetched only for
+   images that moved, which is usually none.
+2. **Results are cached** for `usrCacheHours`, so a monitor on a 15-minute
+   schedule does not ask the registry about the same tag 96 times a day. When
+   `usrCacheHours` is 24 or more,
    each host shaves a stable slice of up to 10% off it. That stops many hosts
    behind one NAT address from all refreshing at once.
 3. **The first rate-limit answer stops all further lookups** for that run.

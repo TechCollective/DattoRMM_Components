@@ -42,6 +42,14 @@ and non-zero exits, and reports through Datto's monitor contract.
 > (the run then has no saved state and says so), and the status says `state
 > not saved (<why>)` where version 2 said `no saved state (<why>)` or `saved
 > state could not be written to ...`. See [State file](#state-file).
+> **The script's header comment is short** (what it is, what it changes, the
+> result states) and points here; the one thing it said that this README did
+> not (no code is downloaded at run time) is now under *What it does*.
+> Through its Tier 1 `test.json` in a sandbox with no bash 4.2, with
+> systemd's answers simulated: every step that passed for version 2 passes,
+> except the ones rewritten for the new directory, which pass as rewritten;
+> the bash 4.2 steps were **not** run and run in CI. Not yet run through a
+> Datto agent.
 
 ## What it does
 
@@ -59,7 +67,8 @@ One pass over the local Docker daemon per run. Six conditions:
 **Read-only.** It runs `docker info`, `docker version`, `docker ps`,
 `docker stats --no-stream`, `docker inspect` and, only if you turn it on,
 `docker logs`. It makes no change to any container, image or daemon, and it
-makes no network calls of any kind. The only thing it writes is its own state
+makes no network calls of any kind, so no code is downloaded at run time. The
+only thing it writes is its own state
 file, in `/var/lib/tc-docker` (which it creates, root-only, when it is not
 there).
 

@@ -203,12 +203,25 @@ first records it as waiting, and removes it only on a run at least
 >   written, and removing the containers it named as due. Version 14 leaves
 >   the directory as it is, removes no container, says
 >   `ERROR: could not write /var/lib/tc-docker/pending-removal: /var/lib/tc-docker is not owned by root`
->   and exits 1 until a person has looked at it. Nothing in these components
->   makes that directory anything but root's. The words after
->   `could not write ...:` differ in three other cases (they now end with the
->   failing command's own message in brackets); see *If it cannot be written*
->   below. `TC_PRUNE_VERSION=14`; the monitor's `PRUNE_MIN_VERSION` stays
->   **11**. Nothing else in the component changed.
+>   and exits 1 until a person has put its owner right. Nothing in these
+>   components makes that directory anything but root's. Where a command
+>   failed, the words after `could not write ...:` are different (a short
+>   reason, then the command's own message in brackets); see *If it cannot be
+>   written* below. `TC_PRUNE_VERSION=14`; the monitor's `PRUNE_MIN_VERSION`
+>   stays **11**. The header comments of the component and of the prune it installs
+>   are short (what it is, what it changes, the exit codes) and point here;
+>   everything they said is in this README. Nothing else in the component
+>   changed. The version 13 and version 14 prunes were run side by side, with
+>   a stand-in `docker`, on 51 states of `/var/lib/tc-docker` and the record
+>   in it (33 of them the files of version 13's comparison): output, exit
+>   code, the file written and the docker commands run were identical except
+>   in the cases named above. The Tier 1 test was run against a live Docker
+>   29 daemon in a sandbox **without systemd**, with the timer and unit steps
+>   left out: each step gave the result it gave for version 13 there, and the
+>   new steps pass. The steps that need systemd (the timer, the units, a
+>   stopped `docker.service`) have **not** been run for this version: the
+>   Tier 1 test runs them on the CI runner, so read that result before
+>   merging. It has not yet run through a Datto agent.
 
 ## What it does
 

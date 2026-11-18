@@ -1,77 +1,33 @@
 #!/usr/bin/env bash
 # Docker - Containers Differ From Expected [Lin]
 #
-# Datto RMM custom monitor. Runs as root. It changes one file only: its own
-# record of when each unlisted container was first seen,
-# /var/lib/tc-docker/monitor-first-seen (see "First seen" below). It never runs
-# a command that would start Docker, and every docker command it runs is
-# stopped if Docker has not answered DOCKER_TIMEOUT seconds after the monitor
-# started.
+# Datto RMM custom monitor. Runs as root. Compares the containers on a Docker
+# host with its expected-containers list, /etc/tc-docker/expected-containers
+# (created by "Docker - Configure Host Maintenance [Lin]", changed with
+# "Docker - Update Expected Containers [Lin]"), and reports what the host's
+# weekly prune is about to remove and whether that prune is out of date.
 #
-# Compares the containers on this host with its expected-containers list,
-# /etc/tc-docker/expected-containers (created by "Docker - Configure Host
-# Maintenance [Lin]", changed with "Docker - Update Expected Containers [Lin]"):
+# Changes on the host: one file, /var/lib/tc-docker/monitor-first-seen (when it
+# first saw each running container that is not on the list; the directory is
+# created root-only when missing). It never starts a stopped Docker, and every
+# docker command of a run is stopped DOCKER_TIMEOUT seconds after the start.
 #
-#   - an expected container that is stopped or gone      -> usrMissingAction
-#     (reported, but not alerted on, while the list is unreviewed)
-#   - a running container not on the list, first seen
-#     usrUnlistedAfterHours or more ago, and not ignored   -> usrUnlistedAction
-#     (first seen: see below; a restart or a redeploy does not reset it)
-#   - a list no person has confirmed yet                   -> usrUnreviewedAction
-#     (until it is, the weekly prune removes no containers or images). Under
-#     Warn, a list unreviewed for usrUnreviewedAfterDays or more alerts (0 never
-#     does); its age is the list file's modification time, and an age that
-#     cannot be read does not alert.
+# Result: exit 0 healthy, exit 1 alert; one result block on every way out.
+#   1  with the matching action set to Alert: an expected container stopped
+#      or gone on a reviewed list (usrMissingAction), an unlisted container or
+#      one with unreadable Compose labels (usrUnlistedAction), a stopped
+#      container the prune has recorded for removal (usrPendingRemovalAction),
+#      a stale prune (usrStalePruneAction), an unreviewed list
+#      (usrUnreviewedAction; under Warn once it is usrUnreviewedAfterDays old).
+#      Always: Docker stopped while the list has entries; Docker not answering
+#      or not returning its container list; a docker client missing where
+#      Docker's socket or unit is present; an invalid input variable or a
+#      missing tool; the script stopped unexpectedly.
+#   0  everything else, each finding named in the status.
 #
-#   - a container whose Compose labels are not plain names  -> usrUnlistedAction
-#     (it has no key, so it can never be listed; the label is never printed)
-#
-#   - a stopped container the prune has recorded for removal  -> usrPendingRemovalAction
-#     (/var/lib/tc-docker/pending-removal, written by the prune from version 9;
-#     shown with the date from which the prune removes it. Only while the list
-#     is reviewed, and only containers still stopped and unprotected. One whose
-#     key matches an ignore pattern is counted but never alerts. Lines of the
-#     file that are not well formed are counted, never shown or trusted.)
-#
-#   - a prune installed by an older version of Host Maintenance  -> usrStalePruneAction
-#     (/usr/local/sbin/tc-docker-prune older than PRUNE_MIN_VERSION, with no
-#     version stamp, or the version 1 layout where the systemd service runs
-#     docker directly; until the component is run on the host again the OLD
-#     prune's rules apply). Read from two files only; checked before the
-#     "no list yet" exit, because hosts on versions 1 and 2 have no list.
-#
-# Compose one-offs, --rm containers and anything matching /etc/tc-docker/ignore
-# are never "unlisted". A daemon that cannot be reached, that does not answer
-# within DOCKER_TIMEOUT seconds, or that does not return its container list, is
-# an alert: not knowing is the failure this monitor exists to catch. Before any
-# docker command, and in this order:
-#
-#   - no docker command (PATH plus the usual system directories)
-#       but /var/run/docker.sock is a socket or docker.service is loaded -> alert
-#       otherwise: Docker is not installed                              -> healthy
-#   - the stale-prune check (two files; it needs no daemon)
-#   - systemd says docker.service is not active (no docker command is run, so a
-#     socket-activated Docker stays stopped):
-#       with entries on the expected list                                -> alert
-#       with no list, or an empty one                                    -> healthy
-#   - docker info fails, and there is no docker.service, no socket and no list
-#     (a docker client with no daemon on this host)                      -> healthy
-#   - docker info fails otherwise                                        -> alert
-#   - no list yet                                                        -> healthy
-# A stale prune is reported on each of these, and alerts under Alert.
-#
-# First seen. The age of an unlisted container is counted from the first time
-# this monitor saw its key running, not from the container's own start, so a
-# container restarted or recreated more often than usrUnlistedAfterHours (a
-# nightly redeploy, a crash loop) is still reported once the hours have passed.
-# /var/lib/tc-docker/monitor-first-seen holds key, first seen and last seen
-# (seconds since 1970) for each running, unlisted, not-ignored key. A key with
-# no entry starts at its container's start time. An entry is dropped once its
-# key is on the list or has not been seen running for FIRST_SEEN_KEEP_DAYS. The
-# file is root-only, replaced by renaming a new file into place, never followed
-# through a symlink, and only its well-formed lines are read. If it cannot be
-# written, ages count from each container's start (as before version 7) and the
-# status says so; the check itself still runs.
+# Every condition, input variable and exit, the order of the checks and the
+# first-seen file:
+# https://github.com/TechCollective/DattoRMM_Components/tree/main/Monitors/docker-containers-differ-from-expected-lin
 
 set -u
 

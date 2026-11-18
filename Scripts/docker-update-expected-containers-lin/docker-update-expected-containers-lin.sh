@@ -1,49 +1,30 @@
 #!/usr/bin/env bash
 # Docker - Update Expected Containers [Lin]
 #
-# Datto RMM Scripts component. Runs as root.
+# Datto RMM Scripts component. Runs as root. Shows, or changes, a Docker
+# host's expected-containers list, its ignore patterns and its review state.
+# usrAction: show (the default), accept-current, confirm-reviewed, add,
+# remove, add-ignore, remove-ignore. usrItems: the entries, the patterns or a
+# review note.
 #
-# The only component that changes a host's expected-containers list,
-# /etc/tc-docker/expected-containers, and its ignore list, /etc/tc-docker/ignore.
-# "Docker - Configure Host Maintenance [Lin]" creates the list once; the
-# weekly prune keeps stopped containers that are on it; the monitor
-# "Docker - Containers Differ From Expected [Lin]" compares it with what runs.
-#
-# usrAction:
-#   show            print both lists, the review state, and how they compare with
-#                   the containers on this host (default). A stopped container
-#                   the prune would remove is shown as waiting (recorded in
-#                   /var/lib/tc-docker/pending-removal, with the time from which
-#                   the prune can remove it) or not yet recorded
-#   accept-current  replace the expected list with every container present now,
-#                   running or stopped (not ignored, not one-offs or --rm)
-#   confirm-reviewed  record that a person has checked the list. Until this has
-#                   run once, the weekly prune removes no containers and no images.
-#                   usrItems may carry a short note, e.g. who reviewed it.
-#   add / remove    add or remove the entries in usrItems
-#   add-ignore / remove-ignore   the same for ignore patterns
-#
-# The previous version of a changed file is kept as <file>.prev.
-#
-# It never starts a stopped Docker. Where systemd says docker.service is not
-# active, it runs no docker command at all (on most installs docker.socket
-# keeps listening while the service is stopped, and any docker command would
-# start Docker again): show prints the lists and the review state with no
-# comparison; accept-current, and add with a bare name, change nothing (exit 3);
-# add with a key, remove, the ignore actions and confirm-reviewed need no daemon
-# and work as usual. A bare name given to remove is then taken as name:<name>.
-# The same holds when Docker does not answer docker info.
+# Changes on the host: /etc/tc-docker/expected-containers, /etc/tc-docker/ignore
+# and /etc/tc-docker/reviewed, and only what the action asks for; the previous
+# version of a changed list is kept as <file>.prev. It changes no container,
+# and never starts a stopped Docker: where systemd says docker.service is not
+# active it runs no docker command at all.
 #
 # Exit codes:
-#   0  done
+#   0  done (also: Docker is not installed)
 #   1  unexpected failure
 #   2  an input variable is invalid; nothing was changed
-#   3  nothing was changed because: accept-current or add (a bare name) needs
-#      Docker's container list and Docker is stopped, did not answer, or did
-#      not return it; accept-current found no containers and the list is not
-#      empty (use remove for that); add was given a bare name whose container
-#      has unreadable Compose labels; or confirm-reviewed was run on a host
-#      that has no list yet
+#   3  nothing was changed: accept-current or add (a bare name) needs Docker's
+#      container list and Docker is stopped, did not answer or did not return
+#      it; accept-current would replace a list that has entries with an empty
+#      one; add was given a bare name whose container has unreadable Compose
+#      labels; or confirm-reviewed was run on a host with no list yet
+#
+# Every action, what each does while Docker is not running, and the output:
+# https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/docker-update-expected-containers-lin
 
 set -u
 umask 022

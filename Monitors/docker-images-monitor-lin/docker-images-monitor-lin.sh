@@ -1,73 +1,33 @@
 #!/bin/bash
 # Docker Images monitor [Lin]
 # (the name in component.json and in Datto; see "Known issues" in the README)
+#
 # Datto RMM custom monitor. Runs as root. Safe to assign to every Linux device.
+# For every running container it compares the image digest the container runs
+# with the digest its tag now points to in the registry. It alerts on the ones
+# that have fallen behind, and on an image reference whose registry has not
+# answered for usrStaleAfterDays. It never pulls.
 #
-# Walks every running container, compares its local image digest against the
-# digest its tag currently points to in the registry, and alerts on the ones
-# that have fallen behind. Never pulls, so it cannot repoint a local tag or
-# stage an unplanned upgrade.
+# Changes on the host: one file, its cache of registry answers,
+# /var/lib/tc-docker/image-digests.tsv (the directory is created root-only
+# when missing), and a scratch directory from mktemp -d, removed on every way
+# out. It changes no container or image and never starts a stopped Docker. Its
+# only network calls are registry lookups (docker buildx imagetools inspect,
+# with the host's own docker login), cached for usrCacheHours and stopped at
+# the first rate-limit answer.
 #
-# Containers on pinned version tags are reported in the status line but never
-# alerted. Classification is by outcome, not by guesswork -- every image is
-# checked, and a "pinned-looking" tag whose digest HAS moved (alpine3.19,
-# php8.3-fpm and friends) is correctly treated as behind.
+# Result: exit 0 healthy, exit 1 alert; one result block on every way out.
+#   1  a container behind its registry tag by usrMinAgeDays or more; a
+#      reference with no registry answer for usrStaleAfterDays; every lookup
+#      failed; Docker unreachable, not answering within DOCKER_TIMEOUT seconds
+#      or not returning its container list; docker buildx missing; an invalid
+#      input variable or a missing tool; the script stopped unexpectedly
+#   0  everything else (Docker not installed or stopped, nothing behind,
+#      pinned tags, lookups rate limited or deferred), named in the status
 #
-# Before any docker command, and in this order:
-#   - no docker command (PATH plus the usual system directories)
-#       but /var/run/docker.sock is a socket or docker.service is loaded -> alert
-#       otherwise: Docker is not installed                              -> healthy
-#   - systemd says docker.service is not active: no docker command is run (any
-#     would start Docker again through docker.socket)                    -> healthy
-#   - docker info fails with no docker.service and no socket (a client only) -> healthy
-#   - docker info fails otherwise                                        -> alert
-# Every command that talks to the daemon is stopped if Docker has not answered
-# DOCKER_TIMEOUT seconds after the monitor started, and the check says Docker
-# did not answer. The container list takes three docker commands whatever the
-# number of containers (docker ps, docker inspect, docker image inspect).
-# Registry lookups have their own per-lookup time limit (usrInspectTimeout),
-# and none runs past RUN_LIMIT seconds after the start; what was not looked up
-# by then falls back to the cache and is asked next run.
-#
-# REGISTRY LOAD is the main design constraint. Three things keep it low:
-#   1. A digest-only lookup is one cheap HEAD. The image build date, which
-#      costs a manifest walk plus a config blob per platform, is fetched ONLY
-#      for images that actually moved -- usually none.
-#   2. Results are cached on disk for usrCacheHours, so a monitor on a 15-minute
-#      schedule does not re-ask the registry 96 times a day for the same tags.
-#   3. The first rate-limit answer (429 Too Many Requests, toomanyrequests)
-#      trips a circuit breaker: no further lookups are made this run, and
-#      everything unresolved falls back to cache.
-#
-# Being rate limited once is reported, not alerted. An image reference that has
-# had no successful registry answer for usrStaleAfterDays days alerts, naming the
-# last error (rate limited, refused, not found, timeout, other) and since when:
-# that is how a broken registry login or permanent rate limiting surfaces.
-#
-# Registry access goes through `docker buildx imagetools inspect`, which does
-# the bearer-token handshake, reuses the host's existing docker login and
-# honours the daemon's proxy settings. This script handles no credentials.
-#
-# State: /var/lib/tc-docker-monitor/image-digests.tsv (see the shared block
-# below). Tab separated, one line per image reference:
-#   ref  digest  created  last-ok  error-kind  error-since
-# digest and created are "-" when unknown; last-ok is when the registry last
-# answered for this ref (0: never); error-kind is none, ratelimited, refused,
-# notfound, timeout or other; error-since is when the current run of errors
-# began (0 when error-kind is none). Lines written by version 1 (ref, digest,
-# created, checked) are read as a success at "checked". Any other line is
-# ignored and dropped.
-#
-# Input variables (all arrive as strings; an invalid value is refused):
-#   usrMinAgeDays      default 7   0-365  ignore an update until the new image is this many days old
-#   usrExcludePattern  default ""         ERE matched against container names; matches are skipped
-#   usrInspectTimeout  default 20  10-60  seconds allowed per registry lookup
-#   usrMaxParallel     default 3   1-8    concurrent registry lookups
-#   usrCacheHours      default 12  0-720  reuse a previous lookup for this long
-#   usrStaleAfterDays  default 7   0-365  alert on a ref with no registry answer this long; 0 off
-# Before version 3 they had no usr prefix (minAgeDays, excludePattern, ...).
-# Monitor policies saved before then still send those names, so each value is
-# read from its usr name and, when that is not set, from its old name.
+# Every outcome, the input variables (and the names they had before version
+# 3), the cache file's format and how registry load is kept low:
+# https://github.com/TechCollective/DattoRMM_Components/tree/main/Monitors/docker-images-monitor-lin
 
 set -u
 

@@ -47,6 +47,11 @@ state**. It is the one supported way to change any of them.
 >   29 daemon in a sandbox, with systemd's answers simulated for the
 >   stopped-Docker steps, as for version 5; those steps have not run on a
 >   real systemd host, and nothing has run through a Datto agent.
+> - **Version 7** (2026-11-17) changes comments only. The script's header
+>   comment is short (what it is, what it changes, the exit codes) and points
+>   to this README; everything it said is here. Every line of code is the
+>   same as version 6's. The Tier 1 test passed in the same sandbox, with
+>   systemd's answers simulated; nothing has run through a Datto agent.
 
 ## What it does
 

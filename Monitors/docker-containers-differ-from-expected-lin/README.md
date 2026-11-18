@@ -123,7 +123,17 @@ again.
 > first-seen file in it, counts ages from each container's start and says
 > `first-seen times not saved (/var/lib/tc-docker is not owned by root)`.
 > Nothing in these components makes that directory anything but root's.
-> `PRUNE_MIN_VERSION` stays **11**.
+> `PRUNE_MIN_VERSION` stays **11**. **The script's header comment is short**
+> (what it is, what it changes, the result states) and points here; what it
+> said about the order of the checks is now under
+> [Exit behaviour](#exit-behaviour). Through its Tier 1 `test.json` in a
+> sandbox with no bash 4.2, with systemd's answers simulated: every step that
+> passed for version 9 passes, unedited, and the new steps pass; the bash 4.2
+> steps were **not** run and run in CI. Versions 9 and 10 were also run side
+> by side, with a stand-in `docker`, on 51 states of `/var/lib/tc-docker` and
+> its two files: the result block, the diagnostic, the exit code and the
+> files left behind were the same every time, except where the directory was
+> not root's. Not yet through a Datto agent.
 
 ## What it does
 
@@ -441,6 +451,15 @@ No customer-specific value is hardcoded. An invalid value makes it report
 
 Exactly one result block, with `STATUS=` and no space after the equals, on
 every path.
+
+**The order of the checks.** Before any docker command: is there a `docker`
+command; then the prune check (two files, no daemon needed); then whether
+Docker is running, asked of systemd first. A stale prune is therefore named on
+every result after the first two rows of the table, and alerts under Alert.
+Only then is the list looked for ("no list yet"), and only then the
+containers. A daemon that cannot be reached, does not answer in time or does
+not return its container list is always an alert: not knowing is the failure
+this monitor exists to catch.
 
 ### One result block
 
