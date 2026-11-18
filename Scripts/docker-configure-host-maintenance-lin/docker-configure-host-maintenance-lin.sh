@@ -1,78 +1,37 @@
 #!/usr/bin/env bash
 # Docker - Configure Host Maintenance [Lin]
 #
-# Datto RMM Scripts component. Runs as root.
+# Datto RMM Scripts component. Runs as root. Keeps a Docker host's disk from
+# filling up: log and build-cache limits, an expected-containers list, and a
+# weekly prune that removes nothing of a host's until a person has reviewed
+# that list, and no stopped container without recording it first.
 #
-# 1. Adds log rotation and build-cache limits to /etc/docker/daemon.json.
-#    Only keys that are MISSING are added. An existing value is never changed,
-#    so a host someone already tuned keeps its tuning. First it reads how the
-#    daemon is really started, from the running dockerd's command line. Log
-#    rotation is skipped when the daemon uses a driver that does not rotate,
-#    is started with --log-opt, or its flags cannot be read. They cannot be
-#    read while Docker is not running: build-cache limits are still added
-#    then, and the next run with Docker running adds log rotation (exit 3
-#    until it has). Nothing is written when the daemon reads a
-#    --config-file other than /etc/docker/daemon.json, or when the file already
-#    holds log-opts that will stop Docker starting ("DAEMON WILL NOT START").
-#    The write is a same-directory rename, so Docker never reads a half-written
-#    file; the file keeps its mode, owner and group (a new one is 0644
-#    root:root); a symlinked daemon.json stays a symlink and its target is what
-#    changes; and only the newest 5 daemon.json.tc-bak-* backups are kept.
-# 2. Creates the host's expected-containers list, /etc/tc-docker/expected-containers,
-#    from every container present now, running or stopped -- only if the list
-#    does not exist yet. After that it never changes the list; "Docker -
-#    Update Expected Containers [Lin]" does. A new list is NOT REVIEWED.
-# 3. Installs a systemd timer that runs /usr/local/sbin/tc-docker-prune.
-#    Until a person confirms the list (Update Expected Containers, Confirm
-#    reviewed), the prune touches only unused networks and build cache:
-#    no container and no image is removed. After review:
-#    - a stopped container on the list, with an always/unless-stopped restart
-#      policy, labelled tc.keep, or whose Compose labels are not plain names is
-#      kept, with its image. Any other that has been stopped for
-#      usrPruneOlderThanHours is first recorded in
-#      /var/lib/tc-docker/pending-removal, and removed by a later run once it has
-#      waited usrPruneGraceHours and is still stopped and unprotected. The
-#      monitor reports what is waiting. If that file cannot be written, no
-#      container is removed;
-#    - images, by usrPruneImages: Dangling (the default) removes untagged images
-#      only and makes no network call; All also removes a tagged image no
-#      container uses, but only when its registry confirms, at that moment,
-#      that it still has the image (a lookup with Docker's own client and
-#      root's docker login, at most 100 lookups and 300 seconds a run). Never
-#      forced; each tagged image removed is printed with the repo@sha256 its
-#      registry confirmed.
-#    If Docker does not return its container list, nothing at all is removed.
-#    Never volumes.
-#    The prune reads its three settings (OLDER_THAN_HOURS, GRACE_HOURS,
-#    PRUNE_IMAGES) from /etc/default/tc-docker-prune as text. Nothing in that
-#    file is run, and the prune checks each value again: with an
-#    OLDER_THAN_HOURS that is not 24-8760 it removes nothing at all.
-#    The installed prune carries its version (TC_PRUNE_VERSION=<the component's
-#    version>) and prints it first, so a host's prune can be told apart from an
-#    older one; the monitor "Docker - Containers Differ From Expected [Lin]"
-#    flags a host whose prune is older than its PRUNE_MIN_VERSION.
-# 4. Optionally runs that prune once, now.
-#
-# It never starts or restarts Docker. Before any docker command it asks whether
-# Docker is running without waking it (systemd, where it manages
-# docker.service), and a stopped Docker stays stopped: the prune's service has
-# Requisite=docker.service, not Requires=. daemon.json changes take effect at
-# the next Docker restart or reboot; the output says "RESTART PENDING" when that
-# applies. The timer is restarted only when the timer unit itself changed.
+# Changes on the host (usrMode Report changes nothing):
+#   /etc/docker/daemon.json             log-rotation and build-cache keys that
+#                                       are missing are added; no value that is
+#                                       there is changed; the old file is kept
+#                                       as daemon.json.tc-bak-<time>
+#   /etc/tc-docker/expected-containers  created once, from every container
+#   /etc/tc-docker/ignore               present, and never changed after that
+#   /usr/local/sbin/tc-docker-prune     the prune (the text in PRUNE_SCRIPT
+#                                       below), /etc/default/tc-docker-prune
+#                                       (its settings) and the systemd units
+#                                       tc-docker-prune.service and .timer
+#   and, with usrPruneNow, whatever that prune removes. The prune keeps its
+#   own record, /var/lib/tc-docker/pending-removal.
+# It never starts or restarts Docker: a daemon.json change waits for the next
+# restart, and the output then says RESTART PENDING.
 #
 # Exit codes:
-#   0  done, or nothing to do (including: Docker is not installed)
-#   1  unexpected failure (including daemon.json could not be replaced, for
-#      example because it is immutable; the old file is then unchanged)
+#   0  done, or nothing to do (also: Docker is not installed)
+#   1  unexpected failure (a write, a systemctl call or the prune failed)
 #   2  an input variable is invalid; nothing was changed
-#   3  could not apply safely (no JSON tool, config failed validation,
-#      Docker's start flags unknown, which includes Docker not running,
-#      a --config-file elsewhere, daemon.json
-#      already stops Docker starting, daemon.json is a symlink that does not
-#      end at a regular file, no systemd, snap-packaged Docker, Docker
-#      stopped or the daemon unreachable for the list or a prune-now, or the
-#      daemon answered but did not return its container list, so the list was
-#      not created); nothing was changed for that part
+#   3  one part could not be applied safely and was left as it was (Docker
+#      stopped or not answering, its start flags unknown, no systemd, and
+#      more); the output names the part, and the other parts may have run
+#
+# What each part does, every input variable and every cause of exit 3:
+# https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/docker-configure-host-maintenance-lin
 
 set -u
 umask 022
@@ -825,51 +784,28 @@ read -r -d '' PRUNE_SCRIPT <<'EOS'
 # tc-docker-prune -- installed by the Datto RMM component
 # "Docker - Configure Host Maintenance [Lin]". Do not edit here; re-run the
 # component. Settings: /etc/default/tc-docker-prune, read as text and never run.
-TC_PRUNE_VERSION=13
+TC_PRUNE_VERSION=14
 # The line above is the version of the component that installed this script,
 # and the first thing a run prints is that version, so the journal shows which
 # prune ran. "Docker - Containers Differ From Expected [Lin]" reads it to flag
 # a host whose prune is older than the monitor's PRUNE_MIN_VERSION. Keep it the
 # only line starting TC_PRUNE_VERSION=, equal to "version" in component.json.
 #
-# Always removes, when older than OLDER_THAN_HOURS: unused networks and build
-# cache. Before /etc/tc-docker/reviewed exists (a person confirmed the list) it
-# removes no container and no image. After review:
-#   - A stopped container is protected, and kept with its image, when it is on
-#     /etc/tc-docker/expected-containers, has restart policy always or
-#     unless-stopped, is labelled tc.keep, or its Compose labels are not plain
-#     names. Any other stopped container that has been stopped for
-#     OLDER_THAN_HOURS (State.FinishedAt; Created if it never ran) is first
-#     RECORDED in /var/lib/tc-docker/pending-removal and left alone. A later run
-#     removes it once it has been recorded for GRACE_HOURS and is still stopped,
-#     unprotected and old enough; an entry for anything else is dropped. If the
-#     file cannot be written, no container is removed and the exit is 1.
-#   - Images, by PRUNE_IMAGES: "dangling" (the default) removes untagged images
-#     only, and makes no network call; "all" also removes a tagged image, but
-#     only when its registry confirms, now, that it still has one of the
-#     image's repo@sha256 references. The lookup is made last, after every
-#     local check has passed, with Docker's own client (docker buildx
-#     imagetools inspect, else docker manifest inspect), so it uses root's
-#     docker login; this script handles no credentials. Anything but a
-#     confirmed yes keeps the image, with the reason: the registry does not
-#     have it or refuses access, no answer in LOOKUP_TIMEOUT seconds, a network
-#     error, a rate limit (which also ends all lookups for the run), or no
-#     lookup tool. At most LOOKUP_MAX lookups and LOOKUP_SECONDS of lookups a
-#     run; images not reached are kept as "not checked this run". None of
-#     these makes the exit non-zero.
-#     Never an image a container uses, one labelled tc.keep, or one younger than
-#     OLDER_THAN_HOURS. Removed by reference, never forced, so Docker's own
-#     in-use check is a second guard. Each tagged image removed is printed with
-#     the repo@sha256 its registry confirmed, so it can be pulled again.
-# If Docker does not return its container list, nothing at all is removed and
-# the exit is 1. If the image list or the second container list cannot be read,
-# no image is removed and the exit is 1. Never volumes. Exit: 0 done, 1 error.
-# The three settings are checked here too: with an OLDER_THAN_HOURS that is not
-# a whole number 24-8760 nothing at all is recorded or removed; with such a
-# GRACE_HOURS no container is; with a PRUNE_IMAGES that is not dangling or all
-# no image is. Each is an ERROR line and exit 1.
-# With Docker stopped (systemd says docker.service is not active) it runs no
-# docker command, says so in one line, removes nothing and exits 0.
+# Removes what is unused and older than OLDER_THAN_HOURS: networks and build
+# cache always; and, once /etc/tc-docker/reviewed exists (a person confirmed
+# the host's expected-containers list):
+#   - stopped containers, unless protected (on the list, restart policy always
+#     or unless-stopped, labelled tc.keep, or Compose labels that are not plain
+#     names), and only GRACE_HOURS after first recording them in
+#     /var/lib/tc-docker/pending-removal; if that record cannot be written, no
+#     container is removed;
+#   - images no container uses: untagged ones, and with PRUNE_IMAGES=all also
+#     tagged ones whose registry confirms, at that moment, that it has them.
+# Never volumes. Nothing at all when Docker does not return its container
+# list. With Docker stopped it runs no docker command and leaves it stopped.
+# Exit: 0 done (also: Docker stopped, nothing pruned); 1 an error, each one
+# named in an ERROR line. Every rule, setting and message:
+# https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/docker-configure-host-maintenance-lin
 set -u
 echo "tc-docker-prune version $TC_PRUNE_VERSION"
 # Tests may LOWER the lookup limits through the environment: a value here is
@@ -894,8 +830,6 @@ setting() {  # name, default
 OLDER_THAN_HOURS="$(setting OLDER_THAN_HOURS 168)"
 GRACE_HOURS="$(setting GRACE_HOURS 144)"
 PRUNE_IMAGES="$(setting PRUNE_IMAGES dangling)"
-PENDING_DIR=/var/lib/tc-docker
-PENDING_FILE="$PENDING_DIR/pending-removal"
 
 DOCKER="$(command -v docker)" || { echo "ERROR: docker not found"; exit 1; }
 
@@ -1035,6 +969,63 @@ tc_pending_lines() {
 }
 # <<< tc-docker shared
 
+# >>> tc-docker state: identical in the prune and in the Containers, Health and Images monitors; change them together.
+# The one directory the tc-docker components keep state in, and the one way a
+# file in it is written. tc_state_write NAME CONTENT replaces
+# $TC_STATE_DIR/NAME with CONTENT, exactly as given. The new file is made in
+# the same directory (mode 0600), read back and compared (a full disk can
+# leave a short file), then renamed over the old one, so a reader sees the old
+# file or the new one and never part of one. The directory is created when it
+# is missing, and made root:root 0700 when it is root's but is not that.
+# Nothing is written, and it returns 1 with the reason in TC_STATE_WHY (and
+# the failing command's own words, when it had any, in TC_STATE_ERR), when:
+#   - the directory is a symlink, or is there and is not a directory;
+#   - NAME is there as a symlink, or as anything but a regular file (a symlink
+#     is never followed, written through or replaced);
+#   - the directory cannot be created, is not owned by root, or cannot be made
+#     root:root 0700;
+#   - no file can be created in it, what was written does not read back the
+#     same, or the rename fails.
+# What a failure means is the caller's to say: the prune removes no container
+# it could not record first. Needs GNU stat (-c), mktemp and mv (-T).
+TC_STATE_DIR=/var/lib/tc-docker
+TC_STATE_WHY=""
+TC_STATE_ERR=""
+# shellcheck disable=SC2034  # only the prune prints TC_STATE_ERR
+tc_state_write() {  # name, content
+    local d="$TC_STATE_DIR" f="$TC_STATE_DIR/$1" tmp="" err=""
+    TC_STATE_WHY=""; TC_STATE_ERR=""
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+        TC_STATE_WHY="$d is not a directory"
+    elif [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+        TC_STATE_WHY="$f is not a regular file"
+    elif ! err="$(mkdir -p -- "$d" 2>&1)"; then
+        TC_STATE_WHY="$d cannot be created"
+    elif [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then
+        TC_STATE_WHY="$d is not owned by root"
+    elif [ "$(stat -c '%u:%g:%a' -- "$d" 2>/dev/null)" != "0:0:700" ] \
+         && ! err="$( { chown 0:0 -- "$d" && chmod 700 -- "$d"; } 2>&1)"; then
+        TC_STATE_WHY="$d cannot be made root-only"
+    elif ! tmp="$(mktemp -- "$d/.$1.XXXXXX" 2>&1)"; then
+        err="$tmp"; tmp=""
+        TC_STATE_WHY="no file can be created in $d"
+    elif ! err="$( { printf '%s' "$2" >"$tmp"; } 2>&1)" || [ "$(cat -- "$tmp" 2>/dev/null; echo x)" != "${2}x" ] \
+         || ! err="$(chmod 600 -- "$tmp" 2>&1)"; then
+        TC_STATE_WHY="writing it failed"
+    elif ! err="$(mv -fT -- "$tmp" "$f" 2>&1)"; then
+        TC_STATE_WHY="the new file could not be renamed into place"
+    else
+        return 0
+    fi
+    [ -z "$tmp" ] || rm -f -- "$tmp"
+    TC_STATE_ERR="$(printf '%s' "$err" | tr -cd '[:print:]' | cut -c1-200)"
+    return 1
+}
+# <<< tc-docker state
+# The record of the stopped containers this prune will remove: see "stopped
+# containers" below. Written with tc_state_write, read with tc_pending_lines.
+PENDING_FILE="$TC_STATE_DIR/pending-removal"
+
 root="$("$DOCKER" info --format '{{.DockerRootDir}}' 2>/dev/null)"; root="${root:-/}"
 free() { df -h --output=avail,pcent "$root" 2>/dev/null | tail -n1 | awk '{print $1" free, "$2" used"}'; }
 NOW="$(date +%s)"
@@ -1125,44 +1116,18 @@ fi
 
 # ---- stopped containers: recorded first, removed GRACE_HOURS later
 
-# Replaces the pending file with a header and $1 (lines ending in newlines):
-# a new file in the same root-only directory, checked, then renamed over the
-# old one. Returns 1, with PENDING_WHY set, when it cannot.
-PENDING_WHY=""
+# Replaces the pending file with a header and $1 (lines ending in newlines),
+# through tc_state_write (the tc-docker state block above): a new root-only
+# file in the same root-only directory, read back, then renamed over the old
+# one. Returns 1 when it cannot, with the reason in TC_STATE_WHY (and
+# TC_STATE_ERR); the caller then removes no container.
 pending_write() {
-    local tmp body
-    body="# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.
+    tc_state_write pending-removal "# Stopped containers that tc-docker-prune will remove. Written by the prune; do not edit.
 # id<TAB>key<TAB>name<TAB>first recorded (seconds since 1970). The prune removes a
 # container GRACE_HOURS after it first recorded it, if it is still stopped and
 # unprotected then; otherwise the line is dropped. To keep one, add it to the
 # expected list with Docker - Update Expected Containers [Lin] (Add).
 $1"
-    if [ -L "$PENDING_DIR" ] || { [ -e "$PENDING_DIR" ] && [ ! -d "$PENDING_DIR" ]; }; then
-        PENDING_WHY="$PENDING_DIR is not a directory"; return 1
-    fi
-    if [ -L "$PENDING_FILE" ] || { [ -e "$PENDING_FILE" ] && [ ! -f "$PENDING_FILE" ]; }; then
-        PENDING_WHY="$PENDING_FILE is not a regular file"; return 1
-    fi
-    local err
-    if ! err="$(mkdir -p -- "$PENDING_DIR" 2>&1)"; then
-        PENDING_WHY="${err:-mkdir failed}"; return 1
-    fi
-    if ! err="$( { chown 0:0 -- "$PENDING_DIR" && chmod 700 -- "$PENDING_DIR"; } 2>&1)"; then
-        PENDING_WHY="$PENDING_DIR cannot be made root-only (0700): ${err:-failed}"; return 1
-    fi
-    if ! err="$(mktemp "$PENDING_DIR/.pending-removal.XXXXXX" 2>&1)"; then
-        PENDING_WHY="${err:-no file can be created in $PENDING_DIR}"; return 1
-    fi
-    tmp="$err"
-    # Compared after writing: a full disk can leave a short file.
-    if ! printf '%s' "$body" >"$tmp" 2>/dev/null || [ "$(cat -- "$tmp")" != "$(printf '%s' "$body")" ] \
-       || ! chmod 600 -- "$tmp" 2>/dev/null; then
-        rm -f -- "$tmp"; PENDING_WHY="writing it failed (is the disk full?)"; return 1
-    fi
-    if ! mv -fT -- "$tmp" "$PENDING_FILE" 2>/dev/null; then
-        rm -f -- "$tmp"; PENDING_WHY="the new file could not be renamed into place"; return 1
-    fi
-    return 0
 }
 
 kept=(); recorded=(); waiting=(); due=(); removed=(); removed_ids=()
@@ -1223,7 +1188,7 @@ if [ "$CONTAINERS" -eq 1 ]; then
     # The record comes first. Without it nothing is removed: a removal nobody
     # could see coming is what the wait exists to prevent.
     if ! pending_write "$new_pending"; then
-        echo "ERROR: could not write $PENDING_FILE: $PENDING_WHY. No container was removed this run."
+        echo "ERROR: could not write $PENDING_FILE: $TC_STATE_WHY${TC_STATE_ERR:+ ($TC_STATE_ERR)}. No container was removed this run."
         errors=$((errors + 1))
         [ "${#recorded[@]}" -eq 0 ] || echo "Not recorded, so not waiting yet: ${#recorded[@]} stopped container(s)."
         recorded=(); waiting=(); due=()
@@ -1239,7 +1204,7 @@ if [ "$CONTAINERS" -eq 1 ]; then
     if [ "${#removed_ids[@]}" -gt 0 ]; then
         rest="$(printf '%s' "$new_pending" | grep -vF -f <(printf '%s\n' "${removed_ids[@]}"))"
         if ! pending_write "${rest:+$rest$NL}"; then
-            echo "ERROR: could not update $PENDING_FILE after removing containers: $PENDING_WHY. The next run drops the lines of containers that are gone."
+            echo "ERROR: could not update $PENDING_FILE after removing containers: $TC_STATE_WHY${TC_STATE_ERR:+ ($TC_STATE_ERR)}. The next run drops the lines of containers that are gone."
             errors=$((errors + 1))
         fi
     fi

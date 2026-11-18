@@ -2,7 +2,7 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 11, the first prune that never starts a stopped Docker: a prune stamped 10 is stale, and ones stamped 11 and 12 are not. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. An unreviewed list is named with its age (the list file's modification time): one day old, it stays exit 0 under Warn; made 15 days old, it alerts under Warn with the default usrUnreviewedAfterDays of 14, and the diagnostic says why and names the review steps; usrUnreviewedAfterDays 0 never escalates; Ignore does not mention it; Alert alerts as before; before review a missing container is still named, not alerted on; a reviewed list 15 days old is healthy; and a usrUnreviewedAfterDays above 365 or not a number is refused. Version 7: a running unlisted container's age counts from when the monitor first saw it, kept in /var/lib/tc-docker/monitor-first-seen (root-only), so recreating or restarting it does not reset the clock; the first run without the file gives the version 6 result; time is made to pass by editing the file; a key put on the list, or not seen for 7 days, is dropped (6 days is kept); malformed lines are ignored and dropped, the first good line per key is used; an unwritable directory (chattr +i) or a symlink in the file's place falls back to the container's start time and says so, and the symlink's target is untouched. A docker shim that never answers (also one that ignores TERM, and one that hangs only the listing) gives 'Docker did not answer within 40 seconds', exit 1, inside 60 seconds, with no shim process left and a sibling in the caller's process group untouched. With docker.service stopped and docker.socket listening, no docker command is run (a recording shim proves it) and Docker stays stopped: an expected list alerts, no list or an empty list is healthy, and a stale prune is still reported first. A client with no unit, no socket and no list is healthy; with a list it cannot talk to the daemon. No docker command: healthy when nothing of Docker is there, exit 1 when its socket is. A client only in /snap/bin is found through the appended PATH. GNU bash 4.2 is built from source and the monitor's main paths, starting with an empty list and nothing else, run under it without an unbound-variable crash. Version 9: the first step reads the script itself (its time-limit functions sit in one block marked tc-docker bounded, its tc-docker running block says it is identical in every tc-docker component, and the pending-removal file is read with the shared tc_pending_lines). Pending-removal files with blank lines, a second line for the same container and CRLF line endings, and a symlink in the file's place, give the results the monitor's own parser gave in version 8: blank lines are not counted, the first line for a container is used, a CRLF line is counted with its line number and its container is not shown, and a symlink is not followed.",
+  "description": "On a runner with Docker: a host whose containers match its reviewed list is healthy; a running container whose Compose project label carries a forged row is counted in the status, named by container name and short id in the diagnostic, alerts only when usrUnlistedAction is Alert, and the label never reaches the output; when docker ps fails but docker info answers (a shim on PATH) the check says it could not run and alerts. A prune installed by an older Host Maintenance is stale and named in the status, before the no-list exit and with or without a list: a script with no version line, a version below the minimum (leading zeros read as decimal), a stamp that is not a whole number, and the version 1 service that runs docker directly alert by default, name what was found, say which component to run, and respect Warn and Ignore; a current prune changes nothing. The minimum is 11, the first prune that never starts a stopped Docker: a prune stamped 10 is stale, and ones stamped 11 and 12 are not. Pending removals (a pending-removal file written by the test): no file is nothing pending; two stopped containers recorded by the prune are in the status with the date from which the prune removes them, and alert under Alert (the diagnostic says to Add one to keep it), stay in the status under Warn and leave it under Ignore; an entry for a running container is not shown; one that matches an ignore pattern is counted and never alerts; lines that are not well formed are counted, alert, and are never shown; a list that is not reviewed shows nothing pending. An unreviewed list is named with its age (the list file's modification time): one day old, it stays exit 0 under Warn; made 15 days old, it alerts under Warn with the default usrUnreviewedAfterDays of 14, and the diagnostic says why and names the review steps; usrUnreviewedAfterDays 0 never escalates; Ignore does not mention it; Alert alerts as before; before review a missing container is still named, not alerted on; a reviewed list 15 days old is healthy; and a usrUnreviewedAfterDays above 365 or not a number is refused. Version 7: a running unlisted container's age counts from when the monitor first saw it, kept in /var/lib/tc-docker/monitor-first-seen (root-only), so recreating or restarting it does not reset the clock; the first run without the file gives the version 6 result; time is made to pass by editing the file; a key put on the list, or not seen for 7 days, is dropped (6 days is kept); malformed lines are ignored and dropped, the first good line per key is used; an unwritable directory (chattr +i) or a symlink in the file's place falls back to the container's start time and says so, and the symlink's target is untouched. A docker shim that never answers (also one that ignores TERM, and one that hangs only the listing) gives 'Docker did not answer within 40 seconds', exit 1, inside 60 seconds, with no shim process left and a sibling in the caller's process group untouched. With docker.service stopped and docker.socket listening, no docker command is run (a recording shim proves it) and Docker stays stopped: an expected list alerts, no list or an empty list is healthy, and a stale prune is still reported first. A client with no unit, no socket and no list is healthy; with a list it cannot talk to the daemon. No docker command: healthy when nothing of Docker is there, exit 1 when its socket is. A client only in /snap/bin is found through the appended PATH. GNU bash 4.2 is built from source and the monitor's main paths, starting with an empty list and nothing else, run under it without an unbound-variable crash. Version 9: the first step reads the script itself (its time-limit functions sit in one block marked tc-docker bounded, its tc-docker running block says it is identical in every tc-docker component, and the pending-removal file is read with the shared tc_pending_lines). Pending-removal files with blank lines, a second line for the same container and CRLF line endings, and a symlink in the file's place, give the results the monitor's own parser gave in version 8: blank lines are not counted, the first line for a container is used, a CRLF line is counted with its line number and its container is not shown, and a symlink is not followed. Version 10: the result code is one block marked tc-docker result, shared with the other two Docker monitors (a step reads the script for it). A status of over 400 characters is printed whole and one of over 900 is cut at exactly 900 (it was 400); a tab or carriage return in an input value becomes a space; TERM mid-run gives one fallback result block. The first-seen file is written with tc_state_write, in the block marked tc-docker state, the same in the prune and the three Docker monitors (a step reads the script for it). A /var/lib/tc-docker that is not owned by root is not used and not taken over: what a first-seen file there says is not believed, and the status says why. The script's opening comment is short and points to the README (a step reads it).",
   "variables": {},
   "steps": [
     {
@@ -15,6 +15,40 @@
         "the same functions in the whole script: 3",
         "running block first line: 1",
         "tc_pending_lines: 1 defined, 1 called"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Result block: emit, diag and on_exit are defined once each, inside one block marked tc-docker result (a block CI compares with the other Docker monitors' copies); one length limit for the status, 900 characters; nothing outside the block prints a result or diagnostic marker",
+      "run": "f=Monitors/docker-containers-differ-from-expected-lin/docker-containers-differ-from-expected-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; b() { sed -n '/^# >>> tc-docker result: /,/^# <<< tc-docker result$/p' \"$f\"; }; echo \"result block: $(grep -c '^# >>> tc-docker result: ' $f) start, $(grep -c '^# <<< tc-docker result$' $f) end\"; echo \"functions inside it: $(b | grep -cE '^(emit|diag|on_exit)\\(\\) \\{')\"; echo \"result functions in the whole script: $(grep -cE '^(emit|emit_result|diag|on_exit)\\(\\) \\{' $f)\"; echo \"one limit: $(b | grep -c '^STATUS_MAX=900$') in the block, $(grep -cE '^[^#]*msg:0:[0-9]' $f) fixed cut(s) anywhere\"; echo \"markers printed outside the block: $(sed '/^# >>> tc-docker result: /,/^# <<< tc-docker result$/d' \"$f\" | grep -v '^[[:space:]]*#' | grep -cE '(Start|End) (Result|Diagnostic)')\"",
+      "outputContains": [
+        "result block: 1 start, 1 end",
+        "functions inside it: 3",
+        "result functions in the whole script: 3",
+        "one limit: 1 in the block, 0 fixed cut(s) anywhere",
+        "markers printed outside the block: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "State: one directory, /var/lib/tc-docker, and one way to write a file there: tc_state_write, in the block marked tc-docker state (the same in the prune and the three Docker monitors); no rename code outside that block",
+      "run": "f=Monitors/docker-containers-differ-from-expected-lin/docker-containers-differ-from-expected-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; echo \"state block: $(grep -c '^# >>> tc-docker state: ' $f) start, $(grep -c '^# <<< tc-docker state$' $f) end\"; echo \"state directory: $(grep -c '^TC_STATE_DIR=/var/lib/tc-docker$' $f)\"; echo \"tc_state_write: $(grep -c '^tc_state_write() {' $f) defined, $(grep -cF 'tc_state_write monitor-first-seen \"${body%x}\"' $f) used\"; echo \"renames and temporary files outside the block: $(sed '/^# >>> tc-docker state: /,/^# <<< tc-docker state$/d' \"$f\" | grep -v '^[[:space:]]*#' | grep -cE 'mv -fT|mktemp --')\"",
+      "outputContains": [
+        "state block: 1 start, 1 end",
+        "state directory: 1",
+        "tc_state_write: 1 defined, 1 used",
+        "renames and temporary files outside the block: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Header: the script's opening comment is short (what it is, what it changes on the host, its result states) and points to the README, which holds the rest",
+      "run": "f=Monitors/docker-containers-differ-from-expected-lin/docker-containers-differ-from-expected-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; n=$(awk 'NR > 1 && /^#/ { n++; next } NR > 1 { exit } END { print n + 0 }' \"$f\"); echo \"header comment: $n lines\"; [ \"$n\" -ge 10 ] && [ \"$n\" -le 35 ] && echo 'header is 35 lines or fewer'; h() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' \"$f\"; }; echo \"says what it changes: $(h | grep -c '^# Changes on the host')\"; echo \"points to its README: $(h | grep -c '^# https://github.com/TechCollective/DattoRMM_Components/tree/main/Monitors/docker-containers-differ-from-expected-lin$')\"; echo \"result states: $(h | grep -c '^# Result: exit 0 healthy, exit 1 alert')\"",
+      "outputContains": [
+        "header is 35 lines or fewer",
+        "says what it changes: 1",
+        "points to its README: 1",
+        "result states: 1"
       ]
     },
     {
@@ -54,6 +88,48 @@
       "label": "Empty list, /bin/bash: the same result",
       "outputContains": [
         "STATUS=0 expected: 0 running"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Status length: a reviewed list of 12 entries for containers that do not exist gives a status of over 400 characters; it is printed whole (before version 10 this monitor cut it at 400)",
+      "run": "for i in $(seq -w 1 12); do echo \"name:tc-not-here-with-a-long-container-name-$i\"; done > /etc/tc-docker/expected-containers; echo 'tc-test review' > /etc/tc-docker/reviewed; out=$(tc-test-run); printf '%s\\n' \"$out\"; s=$(printf '%s\\n' \"$out\" | sed -n 's/^STATUS=//p'); echo \"result blocks: $(printf '%s\\n' \"$out\" | grep -c '^<-Start Result->$'), STATUS lines: $(printf '%s\\n' \"$out\" | grep -c '^STATUS=')\"; echo \"status length ${#s}\"; [ \"${#s}\" -gt 400 ] && [ \"${#s}\" -le 900 ] && echo 'over 400 and not over 900'; case \"$s\" in *'name:tc-not-here-with-a-long-container-name-12)') echo 'the last entry ends the status' ;; esac; case \"$s\" in *...) echo 'STATUS WAS CUT' ;; esac; true",
+      "outputContains": [
+        "result blocks: 1, STATUS lines: 1",
+        "over 400 and not over 900",
+        "the last entry ends the status",
+        "exit 1 after"
+      ],
+      "outputNotContains": [
+        "STATUS WAS CUT",
+        "stopped unexpectedly",
+        "unbound variable"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Status length: 30 such entries give a status of over 900 characters; it is cut at exactly 900, ending in three dots; still one result block, and one diagnostic block that names every entry",
+      "run": "for i in $(seq -w 1 30); do echo \"name:tc-not-here-with-a-long-container-name-$i\"; done > /etc/tc-docker/expected-containers; echo 'tc-test review' > /etc/tc-docker/reviewed; out=$(tc-test-run); printf '%s\\n' \"$out\" | cut -c1-1000; s=$(printf '%s\\n' \"$out\" | sed -n 's/^STATUS=//p'); echo \"result blocks: $(printf '%s\\n' \"$out\" | grep -c '^<-Start Result->$'), STATUS lines: $(printf '%s\\n' \"$out\" | grep -c '^STATUS=')\"; echo \"status length ${#s}, ends '${s: -3}'\"; echo \"diagnostic blocks: $(printf '%s\\n' \"$out\" | grep -c '^<-Start Diagnostic->$') start, $(printf '%s\\n' \"$out\" | grep -c '^<-End Diagnostic->$') end\"; echo \"MISSING lines in the diagnostic: $(printf '%s\\n' \"$out\" | grep -c '^MISSING   name:tc-not-here-with-a-long-container-name-')\"",
+      "outputContains": [
+        "result blocks: 1, STATUS lines: 1",
+        "status length 900, ends '...'",
+        "diagnostic blocks: 1 start, 1 end",
+        "MISSING lines in the diagnostic: 30",
+        "exit 1 after"
+      ],
+      "outputNotContains": [
+        "stopped unexpectedly",
+        "unbound variable"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Status text: a tab and a carriage return in an input variable's value become spaces, so the result is one STATUS line (before version 10 this monitor printed them as they came); then the empty list put back",
+      "run": "out=$(tc-test-run \"usrUnlistedAfterHours=$(printf '1\\t\\t2\\r3')\"); printf '%s\\n' \"$out\" | cat -A; echo \"result blocks: $(printf '%s\\n' \"$out\" | grep -c '^<-Start Result->$'), STATUS lines: $(printf '%s\\n' \"$out\" | grep -c '^STATUS=')\"; printf '%s\\n' \"$out\" | grep -q \"^STATUS=Check could not run: usrUnlistedAfterHours must be 0-8760 (got '1 2 3')\\$\" && echo 'the tabs and the CR became single spaces'; : > /etc/tc-docker/expected-containers",
+      "outputContains": [
+        "result blocks: 1, STATUS lines: 1",
+        "the tabs and the CR became single spaces",
+        "exit 1 after"
       ]
     },
     {
@@ -1166,6 +1242,48 @@
     },
     {
       "type": "command",
+      "label": "First seen, a directory that is not root's: tc-unl2 running and not on the list; /var/lib/tc-docker owned by another user, mode 755, holding a first-seen file (also that user's) that says tc-unl2 was first seen two hours ago",
+      "run": "set -e; docker run -d --name tc-unl2 tc-test-sleep:1 /bin/sleep 3600 >/dev/null; mkdir -p /var/lib/tc-docker; now=$(date +%s); printf 'name:tc-unl2\\t%s\\t%s\\n' $(( now - 7200 )) $(( now - 60 )) > /var/lib/tc-docker/monitor-first-seen; cp -p /var/lib/tc-docker/monitor-first-seen /root/tc-fs.copy; chown -R 65534:65534 /var/lib/tc-docker; chmod 755 /var/lib/tc-docker; ls -la /var/lib/tc-docker; docker ps --format '{{.Names}}' | sort | paste -sd' '",
+      "outputContains": [
+        "monitor-first-seen",
+        "tc-unl2"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A state directory that is not root's is not used and not taken over (before version 10 the monitor made it root's and went on): what the file says is not believed, ages count from container start, and the status says why",
+      "variables": {
+        "usrUnlistedAfterHours": "1"
+      },
+      "outputContains": [
+        "1 new, under 1h",
+        "first-seen times not saved (/var/lib/tc-docker is not owned by root), so unlisted ages count from each container's start"
+      ],
+      "outputNotContains": [
+        "1 unlisted",
+        "stopped unexpectedly",
+        "unbound variable"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Not root's: the directory's owner and mode and the file in it are as they were; then clean up, and a run makes the directory again, root-only",
+      "run": "stat -c 'owner %u mode %a' /var/lib/tc-docker; cmp /var/lib/tc-docker/monitor-first-seen /root/tc-fs.copy && echo 'file unchanged'; echo \"files in it: $(ls -A /var/lib/tc-docker | wc -l)\"; rm -rf /var/lib/tc-docker /root/tc-fs.copy; tc-test-run usrUnlistedAfterHours=1 | grep '^STATUS='; stat -c 'made again: %a %U:%G' /var/lib/tc-docker; tc-test-fs; docker rm -f tc-unl2 >/dev/null; rm -f /var/lib/tc-docker/monitor-first-seen; echo cleaned",
+      "outputContains": [
+        "owner 65534 mode 755",
+        "file unchanged",
+        "files in it: 1",
+        "1 new, under 1h",
+        "made again: 700 root:root",
+        "name:tc-unl2\t",
+        "cleaned"
+      ],
+      "outputNotContains": [
+        "first-seen times not saved"
+      ]
+    },
+    {
+      "type": "command",
       "label": "Hung daemon: a docker shim first on PATH that takes every command and never answers",
       "run": "set -e; real=$(command -v docker); test \"$real\" != /usr/local/sbin/docker; echo \"$real\" > /var/tmp/tc-docker-real; printf '%s\\n' '#!/bin/sh' '# tc-test-shim: takes the command and never answers' 'sleep 600' > /usr/local/sbin/docker; chmod 755 /usr/local/sbin/docker; hash -r; echo 'hang shim installed'",
       "outputContains": [
@@ -1202,6 +1320,20 @@
       "outputContains": [
         "no docker client or shim process left"
       ]
+    },
+    {
+      "type": "command",
+      "label": "Unexpected exit: the monitor sent TERM 3 seconds into a run (the hang shim still in place): one fallback result block, and nothing left running once the docker command's own time limit has passed",
+      "run": "( sleep 3; pkill -TERM -f '[d]ocker-containers-differ-from-expected-lin.sh' ) & out=$(tc-test-run); wait; printf '%s\\n' \"$out\"; echo \"result blocks: $(printf '%s\\n' \"$out\" | grep -c '^<-Start Result->$'), STATUS lines: $(printf '%s\\n' \"$out\" | grep -c '^STATUS=')\"; for i in $(seq 60); do pgrep -f '[s]leep 600' >/dev/null || break; sleep 1; done; tc-test-left",
+      "outputContains": [
+        "STATUS=Check could not run: the monitor stopped unexpectedly (exit ",
+        "result blocks: 1, STATUS lines: 1",
+        "no docker client or shim process left"
+      ],
+      "outputNotContains": [
+        "Diagnostic"
+      ],
+      "timeoutSeconds": 180
     },
     {
       "type": "command",

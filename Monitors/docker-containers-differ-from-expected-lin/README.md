@@ -104,6 +104,36 @@ again.
 > need bash 4.2, which were **not** run for this version. CI builds bash 4.2
 > and has a real systemd, so read its result before merging. Not yet through
 > a Datto agent.
+>
+> **Version 10** (2026-11-17): the result and diagnostic code is now the block
+> marked `tc-docker result`, shared with the Health and Images monitors: one
+> `emit`, one `diag`, one `EXIT` trap, one status limit. See
+> [One result block](#one-result-block). Two things can read differently from
+> version 9. **The status is cut at 900 characters, not 400**, so a long status
+> (many stopped, missing or unlisted containers) now shows more of itself. And
+> a tab or carriage return in the status becomes a space and a run of spaces
+> becomes one, which only an invalid input value echoed back can show.
+> **The first-seen file is written with `tc_state_write`**, one function in a
+> block (`tc-docker state`) the prune and the three Docker monitors now share,
+> in the directory they all use, `/var/lib/tc-docker`. The file it writes is
+> the same, and so is every refusal this monitor already had (see
+> [First seen](#first-seen)). **One refusal is new:** a `/var/lib/tc-docker`
+> that is **not owned by root** is not used. Version 9 made such a directory
+> root's and wrote there; version 10 leaves it as it is, does not believe a
+> first-seen file in it, counts ages from each container's start and says
+> `first-seen times not saved (/var/lib/tc-docker is not owned by root)`.
+> Nothing in these components makes that directory anything but root's.
+> `PRUNE_MIN_VERSION` stays **11**. **The script's header comment is short**
+> (what it is, what it changes, the result states) and points here; what it
+> said about the order of the checks is now under
+> [Exit behaviour](#exit-behaviour). Through its Tier 1 `test.json` in a
+> sandbox with no bash 4.2, with systemd's answers simulated: every step that
+> passed for version 9 passes, unedited, and the new steps pass; the bash 4.2
+> steps were **not** run and run in CI. Versions 9 and 10 were also run side
+> by side, with a stand-in `docker`, on 51 states of `/var/lib/tc-docker` and
+> its two files: the result block, the diagnostic, the exit code and the
+> files left behind were the same every time, except where the directory was
+> not root's. Not yet through a Datto agent.
 
 ## What it does
 
@@ -183,11 +213,27 @@ about the container is stored. Only this monitor writes it.
 4. The file is written only when this changes it, and not at all while it
    does not exist and there is nothing to put in it.
 
-**How it is written.** The same way the prune writes its pending-removal file
-in the same directory: the directory is made root-only (0700) if it is not;
-a new file (0600) is created there, written, read back, and renamed over the
-old one, so a reader never sees half a file. A symlink at the file's or the
-directory's path is never followed or written through.
+**How it is written.** The same way the prune writes its pending-removal
+file, and the Health and Images monitors their state, in the same directory
+(from version 10, with the same code):
+
+- **One directory**, `/var/lib/tc-docker`, for everything the Docker components
+  keep on a host: the prune's `pending-removal`, the Containers monitor's
+  `monitor-first-seen`, the Health monitor's `monitor-state.tsv` and the
+  Images monitor's `image-digests.tsv`. There is no fallback directory.
+- **One way to write a file there**, `tc_state_write`, in the block marked
+  `tc-docker state` (four copies: the prune and the three monitors; CI's
+  "Shared blocks match" check compares them). A new file (0600) is made in the
+  directory, written, read back and compared, then renamed over the old one,
+  so a reader sees the old file or the new one and never part of one.
+- **The directory** is created when missing and made `root:root 0700` when it
+  is root's but is not that.
+- **Nothing is written** when the directory is a symlink or is not a
+  directory, **is not owned by root**, or cannot be created or made
+  root-only; when the file's name is there as a symlink or as anything but a
+  regular file (a symlink is never followed, written through or replaced);
+  when no file can be created in the directory; when what was written does
+  not read back the same (a full disk); or when the rename fails.
 
 **What it trusts.** Only well-formed lines: a valid key, two whole numbers of
 at most 10 digits, first seen no later than last seen, last seen no more than
@@ -195,7 +241,8 @@ an hour ahead of the clock, and the first such line for each key. Anything
 else is ignored and dropped at the next write.
 
 **When it cannot be written** (a read-only or immutable directory, a full
-disk, a symlink in the way) the check still runs: every age counts from the
+disk, a symlink in the way, a directory that is not root's) the check still
+runs: every age counts from the
 container's start, as in version 6, and the status says so, e.g.
 `first-seen times not saved (no file can be created in /var/lib/tc-docker),
 so unlisted ages count from each container's start`. That is never an alert
@@ -297,7 +344,8 @@ The status names what was found, for example `prune on this host is version 3,
 older than 11`, `prune on this host has no version (installed before version
 7)`, or `prune service on this host does not run
 /usr/local/sbin/tc-docker-prune (version 1 layout)`. It goes first in the
-status, because the status is cut at 400 characters. On an alert the
+status, because the status is cut at 900 characters (400 before version
+10). On an alert the
 diagnostic says to run Docker - Configure Host Maintenance [Lin] on the host,
 and that until then **the old prune's rules apply**.
 
@@ -309,10 +357,12 @@ prune is reported exactly as before.
 flagged across the fleet: bump the prune's stamp by shipping a new Host
 Maintenance version, raise the constant to that version here, and every host
 still on an older prune alerts on its next run. The constant does not have to
-follow every Host Maintenance version: it is 11 while Host Maintenance is 13,
+follow every Host Maintenance version: it is 11 while Host Maintenance is 14,
 because version 12 changes only how the prune reads its settings file (as
 text, never run, with `OLDER_THAN_HOURS` checked), which matters on a host
-where someone edited that file by hand, and version 13 only moves code.
+where someone edited that file by hand, version 13 only moves code, and
+version 14 only refuses a `/var/lib/tc-docker` that is not owned by root,
+which nothing in these components causes.
 
 A container's labels are untrusted: it inherits them from its image. They are
 read JSON-encoded, so a tab or newline in a label cannot add a field or a
@@ -397,10 +447,37 @@ No customer-specific value is hardcoded. An invalid value makes it report
 | Container with unreadable Compose labels, `usrUnlistedAction` Alert | **Exit 1**, `UNREADABLE  <name> (<short id>)` in the diagnostic |
 | An input variable is invalid | **Exit 1**, `Check could not run: …` |
 | A required tool is missing | **Exit 1**, `Check could not run: …` |
-| The script dies unexpectedly | **Exit 1**, through an `EXIT` trap that emits a result block, so an alert is never empty |
+| The script dies unexpectedly | **Exit 1**, through an `EXIT` trap that prints a result block, `Check could not run: the monitor stopped unexpectedly (exit N)`, so an alert is never empty |
 
 Exactly one result block, with `STATUS=` and no space after the equals, on
 every path.
+
+**The order of the checks.** Before any docker command: is there a `docker`
+command; then the prune check (two files, no daemon needed); then whether
+Docker is running, asked of systemd first. A stale prune is therefore named on
+every result after the first two rows of the table, and alerts under Alert.
+Only then is the list looked for ("no list yet"), and only then the
+containers. A daemon that cannot be reached, does not answer in time or does
+not return its container list is always an alert: not knowing is the failure
+this monitor exists to catch.
+
+### One result block
+
+The result and diagnostic code is the block marked `tc-docker result`, the
+same in the three Docker monitors (CI's "Shared blocks match" check compares
+the copies):
+
+- **One result on every way out**: `<-Start Result->`, one `STATUS=` line,
+  `<-End Result->`. The diagnostic block follows only when the exit code is
+  not 0.
+- **The status is one line.** A carriage return, newline or tab in it becomes
+  a space, and a run of spaces becomes one.
+- **The status is cut at 900 characters** (897 and three dots), so what
+  matters most goes first.
+- **A run that ends any other way** (an unset variable, a signal) goes through
+  an `EXIT` trap that prints `Check could not run: the monitor stopped
+  unexpectedly (exit N)` and makes the exit non-zero. Once a result is being
+  printed, HUP, INT and TERM are ignored, so it is printed once and whole.
 
 ## How to tell it worked
 
@@ -503,7 +580,7 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
   from its id. Fix the labels, or the image they come from.
 - Under `usrUnlistedAction` Ignore, an unreadable container is still counted
   in the status, but never alerts.
-- It shares three blocks of code with the other Docker components. Every
+- It shares five blocks of code with the other Docker components. Every
   copy of a block must stay byte-identical; CI's "Shared blocks match" check
   fails the pull request when they are not.
   - `tc-docker shared`: how a container becomes its key, and (from version 9)
@@ -515,6 +592,10 @@ Every alert has a fix through **Docker - Update Expected Containers [Lin]**:
   - `tc-docker bounded` (marked from version 9): the time limit on every
     docker command. Three copies: this monitor and the Health and Images
     monitors.
+  - `tc-docker result` (from version 10): the result block, the diagnostic
+    and the `EXIT` trap. Three copies: the same three monitors.
+  - `tc-docker state` (from version 10): the state directory and how a file
+    in it is written. Four copies: the three monitors and the prune.
 
 ## Open questions
 

@@ -2,7 +2,7 @@
  "platforms": [
   "linux"
  ],
- "description": "On a runner with Docker and systemd. Exited containers: one OOM-killed (16 MiB limit, a shell that allocates) always alerts, worded as an out-of-memory kill; docker stop giving 143 (sleep behind --init) and 137 (a shell as PID 1 that ignores TERM) is named in the status under usrStoppedExitAction Warn and alerts under Alert; exit code 1 alerts as before; usrIncludeLogs Yes puts the last log lines in the diagnostic and says so in the status. Baseline age: saved state an hour old gives the restart-loop alert; made 7 hours old, the run takes a new baseline, raises no restart alert, resets breach streaks and says so. The state directory /var/lib/tc-docker-monitor: a pre-made symlink there is not followed and one not owned by root is not used (the check runs without saved state and says why); a symlink at the state file is replaced, its target untouched. usrExclude starting with - is a pattern. A docker shim that never answers (also one that ignores TERM, and one that hangs only docker stats) gives 'Docker did not answer within 60 seconds', exit 1, inside 90 seconds, nothing left running and a sibling in the caller's process group untouched. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found through the appended PATH. GNU bash 4.2 runs the main paths without an unbound-variable crash. The first step reads the script itself: its time-limit functions sit in one block marked tc-docker bounded (a block CI compares with the other Docker monitors' copies), and its tc-docker running block says it is identical in every tc-docker component.",
+ "description": "On a runner with Docker and systemd. Exited containers: one OOM-killed (16 MiB limit, a shell that allocates) always alerts, worded as an out-of-memory kill; docker stop giving 143 (sleep behind --init) and 137 (a shell as PID 1 that ignores TERM) is named in the status under usrStoppedExitAction Warn and alerts under Alert; exit code 1 alerts as before; usrIncludeLogs Yes puts the last log lines in the diagnostic and says so in the status. Baseline age: saved state an hour old gives the restart-loop alert; made 7 hours old, the run takes a new baseline, raises no restart alert, resets breach streaks and says so. The state directory /var/lib/tc-docker: a symlink there is not followed and a directory not owned by root is not used (the check still runs and says the state was not saved, and why); a symlink at the state file is not read, written through or replaced. State an earlier version left in /var/lib/tc-docker-monitor is read once, when root's, and that directory is never changed or made again. usrExclude starting with - is a pattern. A docker shim that never answers (also one that ignores TERM, and one that hangs only docker stats) gives 'Docker did not answer within 60 seconds', exit 1, inside 90 seconds, nothing left running and a sibling in the caller's process group untouched. docker.service stopped with docker.socket listening: exit 0, no docker command run, Docker still stopped. No docker command but a socket: exit 1; a client only in /snap/bin is found through the appended PATH. GNU bash 4.2 runs the main paths without an unbound-variable crash. The first step reads the script itself: its time-limit functions sit in one block marked tc-docker bounded (a block CI compares with the other Docker monitors' copies), and its tc-docker running block says it is identical in every tc-docker component. Version 3: the result code is one block marked tc-docker result, shared with the other two Docker monitors (a step reads the script for it), and TERM mid-run gives one fallback result block, 'Check could not run: the monitor stopped unexpectedly'. The state file is written with tc_state_write, in the block marked tc-docker state, the same in the prune and the three Docker monitors (a step reads the script for it). The script's opening comment is short and points to the README (a step reads it).",
  "steps": [
   {
    "type": "command",
@@ -17,8 +17,44 @@
   },
   {
    "type": "command",
+   "label": "Result block: emit, diag and on_exit are defined once each, inside one block marked tc-docker result (a block CI compares with the other Docker monitors' copies); one length limit for the status, 900 characters; nothing outside the block prints a result or diagnostic marker",
+   "run": "f=Monitors/docker-container-health-and-resource-usage-lin/docker-container-health-and-resource-usage-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; b() { sed -n '/^# >>> tc-docker result: /,/^# <<< tc-docker result$/p' \"$f\"; }; echo \"result block: $(grep -c '^# >>> tc-docker result: ' $f) start, $(grep -c '^# <<< tc-docker result$' $f) end\"; echo \"functions inside it: $(b | grep -cE '^(emit|diag|on_exit)\\(\\) \\{')\"; echo \"result functions in the whole script: $(grep -cE '^(emit|emit_result|diag|on_exit)\\(\\) \\{' $f)\"; echo \"one limit: $(b | grep -c '^STATUS_MAX=900$') in the block, $(grep -cE '^[^#]*msg:0:[0-9]' $f) fixed cut(s) anywhere\"; echo \"markers printed outside the block: $(sed '/^# >>> tc-docker result: /,/^# <<< tc-docker result$/d' \"$f\" | grep -v '^[[:space:]]*#' | grep -cE '(Start|End) (Result|Diagnostic)')\"",
+   "outputContains": [
+    "result block: 1 start, 1 end",
+    "functions inside it: 3",
+    "result functions in the whole script: 3",
+    "one limit: 1 in the block, 0 fixed cut(s) anywhere",
+    "markers printed outside the block: 0"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "State: one directory, /var/lib/tc-docker, and one way to write a file there: tc_state_write, in the block marked tc-docker state (the same in the prune and the three Docker monitors); no rename code outside that block; the old directory, /var/lib/tc-docker-monitor, is named only in the block that reads a moved state file",
+   "run": "f=Monitors/docker-container-health-and-resource-usage-lin/docker-container-health-and-resource-usage-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; echo \"state block: $(grep -c '^# >>> tc-docker state: ' $f) start, $(grep -c '^# <<< tc-docker state$' $f) end\"; echo \"state directory: $(grep -c '^TC_STATE_DIR=/var/lib/tc-docker$' $f)\"; echo \"tc_state_write: $(grep -c '^tc_state_write() {' $f) defined, $(grep -cF 'tc_state_write \"$STATE_NAME\" \"$NEW_STATE\"' $f) used\"; echo \"renames and temporary files outside the block: $(sed '/^# >>> tc-docker state: /,/^# <<< tc-docker state$/d' \"$f\" | grep -v '^[[:space:]]*#' | grep -cE 'mv -fT|mktemp --')\"; echo \"old directory outside the monitor state block: $(sed '/^# >>> tc-docker monitor state: /,/^# <<< tc-docker monitor state$/d' \"$f\" | grep -c '/var/lib/tc-docker-monitor')\"; echo \"read function: $(sed -n '/^# >>> tc-docker monitor state: /,/^# <<< tc-docker monitor state$/p' \"$f\" | grep -c '^tc_state_read() {')\"",
+   "outputContains": [
+    "state block: 1 start, 1 end",
+    "state directory: 1",
+    "tc_state_write: 1 defined, 1 used",
+    "renames and temporary files outside the block: 0",
+    "old directory outside the monitor state block: 0",
+    "read function: 1"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Header: the script's opening comment is short (what it is, what it changes on the host, its result states) and points to the README, which holds the rest",
+   "run": "f=Monitors/docker-container-health-and-resource-usage-lin/docker-container-health-and-resource-usage-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; n=$(awk 'NR > 1 && /^#/ { n++; next } NR > 1 { exit } END { print n + 0 }' \"$f\"); echo \"header comment: $n lines\"; [ \"$n\" -ge 10 ] && [ \"$n\" -le 35 ] && echo 'header is 35 lines or fewer'; h() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' \"$f\"; }; echo \"says what it changes: $(h | grep -c '^# Changes on the host')\"; echo \"points to its README: $(h | grep -c '^# https://github.com/TechCollective/DattoRMM_Components/tree/main/Monitors/docker-container-health-and-resource-usage-lin$')\"; echo \"result states: $(h | grep -c '^# Result: exit 0 healthy, exit 1 alert')\"",
+   "outputContains": [
+    "header is 35 lines or fewer",
+    "says what it changes: 1",
+    "points to its README: 1",
+    "result states: 1"
+   ]
+  },
+  {
+   "type": "command",
    "label": "Test helpers: tc-test-run (runs the monitor the way the harness does, timed, under /bin/bash or bash 4.2), tc-test-left, tc-test-dstate, tc-test-state, tc-test-clean; a tiny local image tc-test-base:1; one running container tc-run1",
-   "run": "set -e\nM=\"$PWD/Monitors/docker-container-health-and-resource-usage-lin/docker-container-health-and-resource-usage-lin.sh\"\ntest -f \"$M\"\ncat > /usr/local/bin/tc-test-run <<'EOF'\n#!/bin/bash\n# tc-test-run [--bash42] [VAR=value...]: run the monitor as the harness does (a clean\n# environment and the agent's root PATH); print its output, exit code and seconds taken.\nb=/bin/bash; if [ \"${1:-}\" = --bash42 ]; then b=/opt/tc-bash42/bin/bash; shift; fi\nt0=$(date +%s)\nenv -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \"$@\" \"$b\" \"@MONITOR@\"\nrc=$?\nsecs=$(( $(date +%s) - t0 ))\necho \"exit $rc after $secs seconds, under $(\"$b\" -c 'echo \"bash $BASH_VERSION\"')\"\n[ \"$secs\" -lt 90 ] && echo \"result inside 90 seconds\"\nexit 0\nEOF\nsed -i \"s|@MONITOR@|$M|\" /usr/local/bin/tc-test-run\ncat > /usr/local/bin/tc-test-left <<'EOF'\n#!/bin/bash\n# tc-test-left: any docker shim process still running, from ps.\nsleep 1\necho \"--- ps -eo pid,ppid,pgid,etime,args, docker shims and their children:\"\nps -eo pid,ppid,pgid,etime,args | grep -E '[/]usr/local/sbin/docker|[s]leep 600|[t]c-test-shim' || echo \"no docker client or shim process left\"\nEOF\ncat > /usr/local/bin/tc-test-dstate <<'EOF'\n#!/bin/bash\n# tc-test-dstate LABEL: what systemd says about Docker.\necho \"$1: systemctl is-active docker.service docker.socket -> $(systemctl is-active docker.service docker.socket | paste -sd' ')\"\nEOF\ncat > /usr/local/bin/tc-test-state <<'EOF'\n#!/bin/bash\n# tc-test-state: the state directory and the state file, or that they are not there.\nd=/var/lib/tc-docker-monitor; f=$d/monitor-state.tsv\nls -lad \"$d\" 2>&1\nif [ -f \"$f\" ] && [ ! -L \"$f\" ]; then echo \"--- $f (now $(date +%s)):\"; ls -la \"$f\"; cat \"$f\"; else echo \"(no state file)\"; fi\nEOF\ncat > /usr/local/bin/tc-test-clean <<'EOF'\n#!/bin/bash\n# tc-test-clean: remove every container except tc-run1, and the monitor's state.\nfor c in $(docker ps -aq --no-trunc); do\n    [ \"$(docker inspect -f '{{.Name}}' \"$c\")\" = /tc-run1 ] || docker rm -f \"$c\" >/dev/null\ndone\nrm -rf /var/lib/tc-docker-monitor\ndocker ps -a --format '{{.Names}} {{.Status}}' | sort\nEOF\nchmod 755 /usr/local/bin/tc-test-run /usr/local/bin/tc-test-left /usr/local/bin/tc-test-dstate /usr/local/bin/tc-test-state /usr/local/bin/tc-test-clean\n# A tiny image built here (sh, sleep, true and their libraries), so no registry is needed.\nr=$(mktemp -d); mkdir -p \"$r/bin\"\nfor b in /bin/sh /bin/sleep /bin/true; do\n    cp \"$(readlink -f \"$b\")\" \"$r/bin/$(basename \"$b\")\"\n    for l in $(ldd \"$b\" | grep -oE '/[^ ]+'); do mkdir -p \"$r$(dirname \"$l\")\"; cp -L \"$l\" \"$r$l\" 2>/dev/null || true; done\ndone\ntar -C \"$r\" -c . | docker import - tc-test-base:1 >/dev/null; rm -rf \"$r\"\ndocker run --rm tc-test-base:1 /bin/sh -c 'echo \"tc-test-base:1 runs\"'\nfor c in $(docker ps -aq); do docker rm -f \"$c\" >/dev/null; done\nrm -rf /var/lib/tc-docker-monitor\ndocker run -d --name tc-run1 tc-test-base:1 /bin/sleep 86400 >/dev/null\necho \"helpers installed for $M\"\n",
+   "run": "set -e\nM=\"$PWD/Monitors/docker-container-health-and-resource-usage-lin/docker-container-health-and-resource-usage-lin.sh\"\ntest -f \"$M\"\ncat > /usr/local/bin/tc-test-run <<'EOF'\n#!/bin/bash\n# tc-test-run [--bash42] [VAR=value...]: run the monitor as the harness does (a clean\n# environment and the agent's root PATH); print its output, exit code and seconds taken.\nb=/bin/bash; if [ \"${1:-}\" = --bash42 ]; then b=/opt/tc-bash42/bin/bash; shift; fi\nt0=$(date +%s)\nenv -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \"$@\" \"$b\" \"@MONITOR@\"\nrc=$?\nsecs=$(( $(date +%s) - t0 ))\necho \"exit $rc after $secs seconds, under $(\"$b\" -c 'echo \"bash $BASH_VERSION\"')\"\n[ \"$secs\" -lt 90 ] && echo \"result inside 90 seconds\"\nexit 0\nEOF\nsed -i \"s|@MONITOR@|$M|\" /usr/local/bin/tc-test-run\ncat > /usr/local/bin/tc-test-left <<'EOF'\n#!/bin/bash\n# tc-test-left: any docker shim process still running, from ps.\nsleep 1\necho \"--- ps -eo pid,ppid,pgid,etime,args, docker shims and their children:\"\nps -eo pid,ppid,pgid,etime,args | grep -E '[/]usr/local/sbin/docker|[s]leep 600|[t]c-test-shim' || echo \"no docker client or shim process left\"\nEOF\ncat > /usr/local/bin/tc-test-dstate <<'EOF'\n#!/bin/bash\n# tc-test-dstate LABEL: what systemd says about Docker.\necho \"$1: systemctl is-active docker.service docker.socket -> $(systemctl is-active docker.service docker.socket | paste -sd' ')\"\nEOF\ncat > /usr/local/bin/tc-test-state <<'EOF'\n#!/bin/bash\n# tc-test-state: the state directory and the state file, or that they are not there.\nd=/var/lib/tc-docker; f=$d/monitor-state.tsv\nls -lad \"$d\" 2>&1\nif [ -f \"$f\" ] && [ ! -L \"$f\" ]; then echo \"--- $f (now $(date +%s)):\"; ls -la \"$f\"; cat \"$f\"; else echo \"(no state file)\"; fi\nEOF\ncat > /usr/local/bin/tc-test-clean <<'EOF'\n#!/bin/bash\n# tc-test-clean: remove every container except tc-run1, and the monitor's state.\nfor c in $(docker ps -aq --no-trunc); do\n    [ \"$(docker inspect -f '{{.Name}}' \"$c\")\" = /tc-run1 ] || docker rm -f \"$c\" >/dev/null\ndone\nrm -rf /var/lib/tc-docker /var/lib/tc-docker-monitor\ndocker ps -a --format '{{.Names}} {{.Status}}' | sort\nEOF\nchmod 755 /usr/local/bin/tc-test-run /usr/local/bin/tc-test-left /usr/local/bin/tc-test-dstate /usr/local/bin/tc-test-state /usr/local/bin/tc-test-clean\n# A tiny image built here (sh, sleep, true and their libraries), so no registry is needed.\nr=$(mktemp -d); mkdir -p \"$r/bin\"\nfor b in /bin/sh /bin/sleep /bin/true; do\n    cp \"$(readlink -f \"$b\")\" \"$r/bin/$(basename \"$b\")\"\n    for l in $(ldd \"$b\" | grep -oE '/[^ ]+'); do mkdir -p \"$r$(dirname \"$l\")\"; cp -L \"$l\" \"$r$l\" 2>/dev/null || true; done\ndone\ntar -C \"$r\" -c . | docker import - tc-test-base:1 >/dev/null; rm -rf \"$r\"\ndocker run --rm tc-test-base:1 /bin/sh -c 'echo \"tc-test-base:1 runs\"'\nfor c in $(docker ps -aq); do docker rm -f \"$c\" >/dev/null; done\nrm -rf /var/lib/tc-docker /var/lib/tc-docker-monitor\ndocker run -d --name tc-run1 tc-test-base:1 /bin/sleep 86400 >/dev/null\necho \"helpers installed for $M\"\n",
    "outputContains": [
     "tc-test-base:1 runs",
     "helpers installed for"
@@ -49,7 +85,7 @@
   },
   {
    "type": "command",
-   "label": "State: /var/lib/tc-docker-monitor made root-only, the state file root-only, well-formed lines",
+   "label": "State: /var/lib/tc-docker made root-only, the state file root-only, well-formed lines",
    "run": "tc-test-state",
    "outputContains": [
     "drwx------ 2 root root",
@@ -288,7 +324,7 @@
   {
    "type": "command",
    "label": "Baseline age: the saved state, an hour old, has tc-loop at 0 restarts (control: a baseline young enough is used)",
-   "run": "set -e; f=/var/lib/tc-docker-monitor/monitor-state.tsv; mkdir -p -m 700 /var/lib/tc-docker-monitor; t=$(( $(date +%s) - 3600 )); printf 'tc-loop\\t0\\t0\\t%s\\ntc-run1\\t0\\t1\\t%s\\n' \"$t\" \"$t\" > $f; touch -d @$t $f; tc-test-state",
+   "run": "set -e; f=/var/lib/tc-docker/monitor-state.tsv; mkdir -p -m 700 /var/lib/tc-docker; t=$(( $(date +%s) - 3600 )); printf 'tc-loop\\t0\\t0\\t%s\\ntc-run1\\t0\\t1\\t%s\\n' \"$t\" \"$t\" > $f; touch -d @$t $f; tc-test-state",
    "outputContains": [
     "tc-loop\t0\t0\t"
    ]
@@ -314,7 +350,7 @@
   {
    "type": "command",
    "label": "Baseline age: the saved state made 7 hours old (its times and the file's), tc-loop at 0 restarts and tc-run1 with a breach streak of 1",
-   "run": "set -e; f=/var/lib/tc-docker-monitor/monitor-state.tsv; t=$(( $(date +%s) - 25200 )); printf 'tc-loop\\t0\\t0\\t%s\\ntc-run1\\t0\\t1\\t%s\\n' \"$t\" \"$t\" > $f; touch -d @$t $f; tc-test-state",
+   "run": "set -e; f=/var/lib/tc-docker/monitor-state.tsv; t=$(( $(date +%s) - 25200 )); printf 'tc-loop\\t0\\t0\\t%s\\ntc-run1\\t0\\t1\\t%s\\n' \"$t\" \"$t\" > $f; touch -d @$t $f; tc-test-state",
    "outputContains": [
     "tc-run1\t0\t1\t"
    ]
@@ -353,18 +389,18 @@
   },
   {
    "type": "command",
-   "label": "State directory a symlink: /var/lib/tc-docker-monitor points at /tmp/tc-elsewhere (another user could have made it)",
-   "run": "set -e; rm -rf /var/lib/tc-docker-monitor /tmp/tc-elsewhere; mkdir /tmp/tc-elsewhere; chmod 755 /tmp/tc-elsewhere; ln -s /tmp/tc-elsewhere /var/lib/tc-docker-monitor; ls -la /var/lib/tc-docker-monitor /tmp/tc-elsewhere",
+   "label": "State directory a symlink: /var/lib/tc-docker points at /tmp/tc-elsewhere",
+   "run": "set -e; rm -rf /var/lib/tc-docker /tmp/tc-elsewhere; mkdir /tmp/tc-elsewhere; chmod 755 /tmp/tc-elsewhere; ln -s /tmp/tc-elsewhere /var/lib/tc-docker; ls -la /var/lib/tc-docker /tmp/tc-elsewhere",
    "outputContains": [
-    "/var/lib/tc-docker-monitor -> /tmp/tc-elsewhere"
+    "/var/lib/tc-docker -> /tmp/tc-elsewhere"
    ]
   },
   {
    "type": "runComponent",
-   "label": "Symlink: not followed, the check still runs, the status says no saved state",
+   "label": "Symlink: not followed, the check still runs, the status says the state was not saved and why",
    "outputContains": [
     "STATUS=All 1 running container(s) within thresholds",
-    "no saved state (/var/lib/tc-docker-monitor is a symlink)"
+    "state not saved (/var/lib/tc-docker is not a directory), so restart and breach counts start again every run"
    ],
    "outputNotContains": [
     "stopped unexpectedly",
@@ -375,7 +411,7 @@
   {
    "type": "command",
    "label": "Symlink: nothing written through it, its target still 0755 and empty",
-   "run": "ls -la /var/lib/tc-docker-monitor /tmp/tc-elsewhere; [ -z \"$(ls -A /tmp/tc-elsewhere)\" ] && echo 'target empty'; stat -c 'target mode %a' /tmp/tc-elsewhere",
+   "run": "ls -la /var/lib/tc-docker /tmp/tc-elsewhere; [ -z \"$(ls -A /tmp/tc-elsewhere)\" ] && echo 'target empty'; stat -c 'target mode %a' /tmp/tc-elsewhere",
    "outputContains": [
     "target empty",
     "target mode 755"
@@ -384,9 +420,9 @@
   {
    "type": "command",
    "label": "State directory not owned by root: a real directory owned by nobody",
-   "run": "set -e; rm -f /var/lib/tc-docker-monitor; mkdir -m 755 /var/lib/tc-docker-monitor; chown 65534:65534 /var/lib/tc-docker-monitor; ls -lad /var/lib/tc-docker-monitor",
+   "run": "set -e; rm -f /var/lib/tc-docker; mkdir -m 755 /var/lib/tc-docker; chown 65534:65534 /var/lib/tc-docker; ls -lad /var/lib/tc-docker",
    "outputContains": [
-    "/var/lib/tc-docker-monitor"
+    "/var/lib/tc-docker"
    ]
   },
   {
@@ -394,7 +430,7 @@
    "label": "Wrong owner: not used, the check still runs, the status says why",
    "outputContains": [
     "STATUS=All 1 running container(s) within thresholds",
-    "no saved state (/var/lib/tc-docker-monitor is not owned by root)"
+    "state not saved (/var/lib/tc-docker is not owned by root)"
    ],
    "outputNotContains": [
     "stopped unexpectedly",
@@ -405,7 +441,7 @@
   {
    "type": "command",
    "label": "Wrong owner: nothing written in it, owner and mode unchanged",
-   "run": "ls -la /var/lib/tc-docker-monitor; [ -z \"$(ls -A /var/lib/tc-docker-monitor)\" ] && echo 'directory empty'; stat -c 'owner %u mode %a' /var/lib/tc-docker-monitor",
+   "run": "ls -la /var/lib/tc-docker; [ -z \"$(ls -A /var/lib/tc-docker)\" ] && echo 'directory empty'; stat -c 'owner %u mode %a' /var/lib/tc-docker",
    "outputContains": [
     "directory empty",
     "owner 65534 mode 755"
@@ -414,33 +450,110 @@
   {
    "type": "command",
    "label": "State: back to a root-owned directory, with a symlink where the state file goes",
-   "run": "set -e; rm -rf /var/lib/tc-docker-monitor; mkdir -m 755 /var/lib/tc-docker-monitor; echo sentinel > /tmp/tc-target; ln -s /tmp/tc-target /var/lib/tc-docker-monitor/monitor-state.tsv; ls -la /var/lib/tc-docker-monitor",
+   "run": "set -e; rm -rf /var/lib/tc-docker; mkdir -m 755 /var/lib/tc-docker; echo sentinel > /tmp/tc-target; ln -s /tmp/tc-target /var/lib/tc-docker/monitor-state.tsv; ls -la /var/lib/tc-docker",
    "outputContains": [
     "monitor-state.tsv -> /tmp/tc-target"
    ]
   },
   {
    "type": "runComponent",
-   "label": "A symlink at the state file: not read; replaced by a real file",
+   "label": "A symlink at the state file: not read, not written through and not replaced; the check still runs and the status says why",
    "outputContains": [
-    "STATUS=All 1 running container(s) within thresholds"
+    "STATUS=All 1 running container(s) within thresholds",
+    "state not saved (/var/lib/tc-docker/monitor-state.tsv is not a regular file)"
    ],
    "outputNotContains": [
     "stopped unexpectedly",
     "failed before it could measure",
-    "unbound variable",
-    "no saved state"
+    "unbound variable"
    ]
   },
   {
    "type": "command",
-   "label": "The symlink's target is untouched; the state file is now a root-only regular file; the directory made 0700",
-   "run": "cat /tmp/tc-target; tc-test-state",
+   "label": "The symlink and its target are as they were; with the symlink removed, the next run writes a root-only state file and makes the directory 0700",
+   "run": "cat /tmp/tc-target; [ -L /var/lib/tc-docker/monitor-state.tsv ] && echo 'still a symlink'; rm -f /var/lib/tc-docker/monitor-state.tsv; tc-test-run | grep '^STATUS='; tc-test-state",
    "outputContains": [
     "sentinel",
+    "still a symlink",
+    "STATUS=All 1 running container(s) within thresholds",
     "drwx------ 2 root root",
     "-rw------- 1 root root",
     "tc-run1\t0\t0\t"
+   ],
+   "outputNotContains": [
+    "state not saved"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Moved state: no /var/lib/tc-docker; the old directory, /var/lib/tc-docker-monitor (0700 root), holds the state file an earlier version wrote 10 minutes ago; tc-moved exits 1, so the next run alerts and its diagnostic shows the age of the previous run",
+   "run": "set -e; rm -rf /var/lib/tc-docker /var/lib/tc-docker-monitor; mkdir -m 700 /var/lib/tc-docker-monitor; t=$(( $(date +%s) - 600 )); printf 'tc-run1\\t0\\t0\\t%s\\n' \"$t\" > /var/lib/tc-docker-monitor/monitor-state.tsv; chmod 600 /var/lib/tc-docker-monitor/monitor-state.tsv; cp -p /var/lib/tc-docker-monitor/monitor-state.tsv /root/tc-old-state.copy; docker run --name tc-moved tc-test-base:1 /bin/sh -c 'exit 1' || true; docker inspect -f 'tc-moved: exit {{.State.ExitCode}}' tc-moved; ls -la /var/lib/tc-docker-monitor",
+   "outputContains": [
+    "tc-moved: exit 1",
+    "monitor-state.tsv"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Moved state: the old file is read while the new one does not exist (previous run: 10 min)",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Docker: tc-moved: exited with code 1",
+    "previous run: 10 min"
+   ],
+   "outputNotContains": [
+    "state not saved",
+    "stopped unexpectedly",
+    "unbound variable"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Moved state: that run wrote the new file in /var/lib/tc-docker (0700 root, the file 0600 root); the old directory and its file are exactly as they were",
+   "run": "tc-test-state; cmp /var/lib/tc-docker-monitor/monitor-state.tsv /root/tc-old-state.copy && echo 'old file unchanged'; stat -c 'old directory: %a %U:%G' /var/lib/tc-docker-monitor; echo \"files in the old directory: $(ls -A /var/lib/tc-docker-monitor | wc -l)\"",
+   "outputContains": [
+    "drwx------ 2 root root",
+    "-rw------- 1 root root",
+    "tc-run1\t0\t0\t",
+    "old file unchanged",
+    "old directory: 700 root:root",
+    "files in the old directory: 1"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Moved state: the old file is read once: with its time moved back to 20 minutes ago, the next run still measures from the new file",
+   "run": "t=$(( $(date +%s) - 1200 )); printf 'tc-run1\\t0\\t0\\t%s\\n' \"$t\" > /var/lib/tc-docker-monitor/monitor-state.tsv; out=$(tc-test-run); printf '%s\\n' \"$out\" | grep -E '^STATUS=|previous run:|^exit '; m=$(printf '%s\\n' \"$out\" | sed -n 's/.*previous run: \\([0-9]*\\) min.*/\\1/p'); [ -n \"$m\" ] && [ \"$m\" -lt 10 ] && echo 'measured from the new file, not the old one'",
+   "outputContains": [
+    "measured from the new file, not the old one",
+    "exit 1 after"
+   ],
+   "outputNotContains": [
+    "previous run: 20 min",
+    "previous run: no previous run"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Moved state: an old file that is not root's is not read: with no new file and the old one owned by another user, the run has no previous run, and the old file is left as it is",
+   "run": "rm -rf /var/lib/tc-docker; chown 65534 /var/lib/tc-docker-monitor/monitor-state.tsv; tc-test-run | grep -E '^STATUS=|previous run:|^exit '; stat -c 'old file owner still %u' /var/lib/tc-docker-monitor/monitor-state.tsv",
+   "outputContains": [
+    "previous run: no previous run recorded",
+    "exit 1 after",
+    "old file owner still 65534"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Moved state: clean up; with no old directory, a run does not make one",
+   "run": "docker rm -f tc-moved >/dev/null; rm -rf /var/lib/tc-docker-monitor /root/tc-old-state.copy; tc-test-run | grep '^STATUS='; tc-test-state | head -n 1; test -e /var/lib/tc-docker-monitor || echo 'the old directory is not made again'",
+   "outputContains": [
+    "STATUS=All 1 running container(s) within thresholds",
+    "drwx------ 2 root root",
+    "the old directory is not made again"
+   ],
+   "outputNotContains": [
+    "state not saved"
    ]
   },
   {
@@ -497,6 +610,21 @@
    "outputContains": [
     "no docker client or shim process left"
    ]
+  },
+  {
+   "type": "command",
+   "label": "Unexpected exit: the monitor sent TERM 3 seconds into a run (the hang shim still in place): one fallback result block, worded as the other Docker monitors word it, and nothing left running once the docker command's own time limit has passed",
+   "run": "( sleep 3; pkill -TERM -f '[d]ocker-container-health-and-resource-usage-lin.sh' ) & out=$(tc-test-run); wait; printf '%s\\n' \"$out\"; echo \"result blocks: $(printf '%s\\n' \"$out\" | grep -c '^<-Start Result->$'), STATUS lines: $(printf '%s\\n' \"$out\" | grep -c '^STATUS=')\"; for i in $(seq 80); do pgrep -f '[s]leep 600' >/dev/null || break; sleep 1; done; tc-test-left",
+   "outputContains": [
+    "STATUS=Check could not run: the monitor stopped unexpectedly (exit ",
+    "result blocks: 1, STATUS lines: 1",
+    "no docker client or shim process left"
+   ],
+   "outputNotContains": [
+    "Diagnostic",
+    "failed before it could measure"
+   ],
+   "timeoutSeconds": 180
   },
   {
    "type": "command",

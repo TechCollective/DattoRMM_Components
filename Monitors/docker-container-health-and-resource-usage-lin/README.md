@@ -22,6 +22,34 @@ and non-zero exits, and reports through Datto's monitor contract.
 > 1 `test.json` in a sandbox with no systemd and no bash 4.2, every step gave
 > the result it gave for version 1 there; the bash 4.2 and stopped-Docker
 > steps run in CI. Not yet run through a Datto agent.
+>
+> **Version 3** (2026-11-17): the result and diagnostic code is now the block
+> marked `tc-docker result`, shared with the other two Docker monitors: one
+> `emit`, one `diag`, one `EXIT` trap, one status limit (900 characters, which
+> this monitor already had). See [One result block](#one-result-block). Every
+> status and every diagnostic reads as in version 2, with one exception: a run
+> that dies unexpectedly now says `Check could not run: the monitor stopped
+> unexpectedly (exit N)`, as the other two monitors do, where version 2 said
+> `Check failed before it could measure anything (exit N)`.
+> **The state file moves** from `/var/lib/tc-docker-monitor` to
+> `/var/lib/tc-docker`, the directory the prune and the Containers monitor
+> already use, and is written with the function they use (`tc_state_write`,
+> in the shared block `tc-docker state`). The first run of version 3 reads
+> the old file once, so no restart count or breach streak is lost; the old
+> directory is never changed or removed, and can be deleted by hand once
+> every monitor on the host is on its new version. Two things differ from
+> version 2: **a symlink in the state file's place is refused**, not replaced
+> (the run then has no saved state and says so), and the status says `state
+> not saved (<why>)` where version 2 said `no saved state (<why>)` or `saved
+> state could not be written to ...`. See [State file](#state-file).
+> **The script's header comment is short** (what it is, what it changes, the
+> result states) and points here; the one thing it said that this README did
+> not (no code is downloaded at run time) is now under *What it does*.
+> Through its Tier 1 `test.json` in a sandbox with no bash 4.2, with
+> systemd's answers simulated: every step that passed for version 2 passes,
+> except the ones rewritten for the new directory, which pass as rewritten;
+> the bash 4.2 steps were **not** run and run in CI. Not yet run through a
+> Datto agent.
 
 ## What it does
 
@@ -39,8 +67,10 @@ One pass over the local Docker daemon per run. Six conditions:
 **Read-only.** It runs `docker info`, `docker version`, `docker ps`,
 `docker stats --no-stream`, `docker inspect` and, only if you turn it on,
 `docker logs`. It makes no change to any container, image or daemon, and it
-makes no network calls of any kind. The only thing it writes is its own state
-file.
+makes no network calls of any kind, so no code is downloaded at run time. The
+only thing it writes is its own state
+file, in `/var/lib/tc-docker` (which it creates, root-only, when it is not
+there).
 
 ### Why it replaces `Docker Monitor [LIN]`
 
@@ -133,28 +163,57 @@ that did not finish. The same mechanism and the same shared "is Docker running"
 block as `Docker - Containers Differ From Expected [Lin]`: the time limit is
 the block marked `tc-docker bounded` (three copies, one in each Docker
 monitor) and the check is the block marked `tc-docker running` (six copies,
-one in every Docker component and in the prune). `tools/check-shared-blocks.py`
-keeps the copies identical.
+one in every Docker component and in the prune). From version 3 the result
+code is the block `tc-docker result` (the three monitors), the state file is
+written by `tc-docker state` (the three monitors and the prune) and read by
+`tc-docker monitor state` (this monitor and the Images monitor).
+`tools/check-shared-blocks.py` keeps the copies identical.
 
 ### State file
 
-`/var/lib/tc-docker-monitor/monitor-state.tsv`, in the directory the
-container-image monitor also uses. The directory is used only when it is a real
-directory, not a symlink, **owned by root**; it is created 0700 when missing and
-made 0700 when it is not. The file is written by renaming a new root-only file
-into place, so a symlink at the file is replaced, never followed, and only
-well-formed lines are read.
+`/var/lib/tc-docker/monitor-state.tsv`. Four tab-separated columns: container
+name, restart count, breach streak, and the run's time (seconds since 1970).
 
-**There is no fallback directory.** Earlier copies fell back to
-`/var/tmp/tc-docker-monitor`, where any local user could have made the path
-first and so chosen where a root process writes and `chmod`s. If
-`/var/lib/tc-docker-monitor` cannot be used, the check runs without saved state
-(no restart delta, no damping) and the status says so, for example
-`; no saved state (/var/lib/tc-docker-monitor is a symlink), so restart and
-breach counts start again every run`. It never fails the check for this.
+How it is written, and when it is not (the same rules, and from version 3 the
+same code, for every file the Docker components keep in that directory):
 
-Four tab-separated columns: container name, restart count, breach streak, and
-the run's time (seconds since 1970).
+- **One directory**, `/var/lib/tc-docker`, for everything the Docker components
+  keep on a host: the prune's `pending-removal`, the Containers monitor's
+  `monitor-first-seen`, the Health monitor's `monitor-state.tsv` and the
+  Images monitor's `image-digests.tsv`. There is no fallback directory.
+- **One way to write a file there**, `tc_state_write`, in the block marked
+  `tc-docker state` (four copies: the prune and the three monitors; CI's
+  "Shared blocks match" check compares them). A new file (0600) is made in the
+  directory, written, read back and compared, then renamed over the old one,
+  so a reader sees the old file or the new one and never part of one.
+- **The directory** is created when missing and made `root:root 0700` when it
+  is root's but is not that.
+- **Nothing is written** when the directory is a symlink or is not a
+  directory, **is not owned by root**, or cannot be created or made
+  root-only; when the file's name is there as a symlink or as anything but a
+  regular file (a symlink is never followed, written through or replaced);
+  when no file can be created in the directory; when what was written does
+  not read back the same (a full disk); or when the rename fails.
+
+**How it is read.** Only when `/var/lib/tc-docker` is a real directory (not a
+symlink) owned by root and the file is a regular file (not a symlink) owned by
+root, and then only its well-formed lines.
+
+**It never fails the check.** A run that cannot save its state still checks
+everything it can without one, and the status says why, for example
+`; state not saved (/var/lib/tc-docker is not owned by root), so restart and
+breach counts start again every run`. The next run then has no previous run to
+compare with (or an older one, when an earlier file is still readable): no
+restart delta, no damping.
+
+**Moved in version 3.** Versions 1 and 2 kept this file in
+`/var/lib/tc-docker-monitor`. While `/var/lib/tc-docker/monitor-state.tsv`
+does not exist, the file of that name in the old directory is read instead,
+under the same rule (a real directory and a regular file, both root's). That
+run writes the new file, so the old one is read once. **The old directory is
+never changed or removed**; delete it by hand once the Health and Images
+monitors on the host are both on their new versions. This fallback is
+temporary: the block marked `tc-docker monitor state` says what to remove.
 
 ## Installing it in Datto
 
@@ -230,16 +289,34 @@ alert. There is no warning tier; "Warn" here means named in the status, exit 0.
 | `healthcheck: starting` | Named in the status, never alerts |
 | A container OOM-killed in the window | **Exit 1** |
 | A container stopped (143/137) in the window | **Exit 0** named (`Warn`) or **Exit 1** (`Alert`) |
-| State directory unusable | Runs without saved state; the status says why. Never fails |
+| The state file cannot be saved | The check still runs; the status says `state not saved (<why>)`. Never fails |
 | Saved state older than 6 hours | New baseline; the status says so |
 | A required tool (`awk`, `grep`, `sed`, `date`, `timeout` with `-k`, `stat`, `mktemp`) missing | **Exit 1** with `STATUS=Check could not run: ...` |
 | An input variable is invalid | **Exit 1**, refuses loudly |
-| The script dies unexpectedly | **Exit 1** via an `EXIT` trap |
+| The script dies unexpectedly | **Exit 1** via an `EXIT` trap: `Check could not run: the monitor stopped unexpectedly (exit N)` |
 
 The `EXIT` trap matters more than it looks. An unhandled error that exits
 non-zero with nothing on stdout is what Datto renders as an alert with no text,
-the exact failure the old component shipped with. The trap emits a fallback
-result block and upgrades a would-be exit 0 to exit 1.
+the exact failure the old component shipped with. The trap prints a fallback
+result block and exits 1.
+
+### One result block
+
+The result and diagnostic code is the block marked `tc-docker result`, the
+same in the three Docker monitors (CI's "Shared blocks match" check compares
+the copies):
+
+- **One result on every way out**: `<-Start Result->`, one `STATUS=` line,
+  `<-End Result->`. The diagnostic block follows only when the exit code is
+  not 0.
+- **The status is one line.** A carriage return, newline or tab in it becomes
+  a space, and a run of spaces becomes one.
+- **The status is cut at 900 characters** (897 and three dots), so what
+  matters most goes first.
+- **A run that ends any other way** (an unset variable, a signal) goes through
+  an `EXIT` trap that prints `Check could not run: the monitor stopped
+  unexpectedly (exit N)` and makes the exit non-zero. Once a result is being
+  printed, HUP, INT and TERM are ignored, so it is printed once and whole.
 
 ## How to tell it worked
 
@@ -247,7 +324,7 @@ result block and upgrades a would-be exit 0 to exit 1.
 - Exit 0 on the healthy path, with a status naming the highest-CPU and highest-memory containers and their percentages.
 - Exit 1 on the alert path, plus a diagnostic listing the thresholds in force, every condition met, and a per-container table of health, restart count, normalised CPU, memory percentage, memory limit and breach streak.
 - No diagnostic block at all on a healthy run.
-- The **second** run showing a real age on the `previous run:` line of a diagnostic. If the status says `no saved state`, it also says why.
+- The **second** run showing a real age on the `previous run:` line of a diagnostic. If the status says `state not saved`, it also says why.
 
 ### Troubleshooting
 

@@ -1,107 +1,88 @@
 #!/bin/bash
 # Docker Images monitor [Lin]
 # (the name in component.json and in Datto; see "Known issues" in the README)
+#
 # Datto RMM custom monitor. Runs as root. Safe to assign to every Linux device.
+# For every running container it compares the image digest the container runs
+# with the digest its tag now points to in the registry. It alerts on the ones
+# that have fallen behind, and on an image reference whose registry has not
+# answered for usrStaleAfterDays. It never pulls.
 #
-# Walks every running container, compares its local image digest against the
-# digest its tag currently points to in the registry, and alerts on the ones
-# that have fallen behind. Never pulls, so it cannot repoint a local tag or
-# stage an unplanned upgrade.
+# Changes on the host: one file, its cache of registry answers,
+# /var/lib/tc-docker/image-digests.tsv (the directory is created root-only
+# when missing), and a scratch directory from mktemp -d, removed on every way
+# out. It changes no container or image and never starts a stopped Docker. Its
+# only network calls are registry lookups (docker buildx imagetools inspect,
+# with the host's own docker login), cached for usrCacheHours and stopped at
+# the first rate-limit answer.
 #
-# Containers on pinned version tags are reported in the status line but never
-# alerted. Classification is by outcome, not by guesswork -- every image is
-# checked, and a "pinned-looking" tag whose digest HAS moved (alpine3.19,
-# php8.3-fpm and friends) is correctly treated as behind.
+# Result: exit 0 healthy, exit 1 alert; one result block on every way out.
+#   1  a container behind its registry tag by usrMinAgeDays or more; a
+#      reference with no registry answer for usrStaleAfterDays; every lookup
+#      failed; Docker unreachable, not answering within DOCKER_TIMEOUT seconds
+#      or not returning its container list; docker buildx missing; an invalid
+#      input variable or a missing tool; the script stopped unexpectedly
+#   0  everything else (Docker not installed or stopped, nothing behind,
+#      pinned tags, lookups rate limited or deferred), named in the status
 #
-# Before any docker command, and in this order:
-#   - no docker command (PATH plus the usual system directories)
-#       but /var/run/docker.sock is a socket or docker.service is loaded -> alert
-#       otherwise: Docker is not installed                              -> healthy
-#   - systemd says docker.service is not active: no docker command is run (any
-#     would start Docker again through docker.socket)                    -> healthy
-#   - docker info fails with no docker.service and no socket (a client only) -> healthy
-#   - docker info fails otherwise                                        -> alert
-# Every command that talks to the daemon is stopped if Docker has not answered
-# DOCKER_TIMEOUT seconds after the monitor started, and the check says Docker
-# did not answer. The container list takes three docker commands whatever the
-# number of containers (docker ps, docker inspect, docker image inspect).
-# Registry lookups have their own per-lookup time limit (usrInspectTimeout),
-# and none runs past RUN_LIMIT seconds after the start; what was not looked up
-# by then falls back to the cache and is asked next run.
-#
-# REGISTRY LOAD is the main design constraint. Three things keep it low:
-#   1. A digest-only lookup is one cheap HEAD. The image build date, which
-#      costs a manifest walk plus a config blob per platform, is fetched ONLY
-#      for images that actually moved -- usually none.
-#   2. Results are cached on disk for usrCacheHours, so a monitor on a 15-minute
-#      schedule does not re-ask the registry 96 times a day for the same tags.
-#   3. The first rate-limit answer (429 Too Many Requests, toomanyrequests)
-#      trips a circuit breaker: no further lookups are made this run, and
-#      everything unresolved falls back to cache.
-#
-# Being rate limited once is reported, not alerted. An image reference that has
-# had no successful registry answer for usrStaleAfterDays days alerts, naming the
-# last error (rate limited, refused, not found, timeout, other) and since when:
-# that is how a broken registry login or permanent rate limiting surfaces.
-#
-# Registry access goes through `docker buildx imagetools inspect`, which does
-# the bearer-token handshake, reuses the host's existing docker login and
-# honours the daemon's proxy settings. This script handles no credentials.
-#
-# State: /var/lib/tc-docker-monitor/image-digests.tsv (see the shared block
-# below). Tab separated, one line per image reference:
-#   ref  digest  created  last-ok  error-kind  error-since
-# digest and created are "-" when unknown; last-ok is when the registry last
-# answered for this ref (0: never); error-kind is none, ratelimited, refused,
-# notfound, timeout or other; error-since is when the current run of errors
-# began (0 when error-kind is none). Lines written by version 1 (ref, digest,
-# created, checked) are read as a success at "checked". Any other line is
-# ignored and dropped.
-#
-# Input variables (all arrive as strings; an invalid value is refused):
-#   usrMinAgeDays      default 7   0-365  ignore an update until the new image is this many days old
-#   usrExcludePattern  default ""         ERE matched against container names; matches are skipped
-#   usrInspectTimeout  default 20  10-60  seconds allowed per registry lookup
-#   usrMaxParallel     default 3   1-8    concurrent registry lookups
-#   usrCacheHours      default 12  0-720  reuse a previous lookup for this long
-#   usrStaleAfterDays  default 7   0-365  alert on a ref with no registry answer this long; 0 off
-# Before version 3 they had no usr prefix (minAgeDays, excludePattern, ...).
-# Monitor policies saved before then still send those names, so each value is
-# read from its usr name and, when that is not set, from its old name.
+# Every outcome, the input variables (and the names they had before version
+# 3), the cache file's format and how registry load is kept low:
+# https://github.com/TechCollective/DattoRMM_Components/tree/main/Monitors/docker-images-monitor-lin
 
 set -u
 
+# >>> tc-docker result: identical in the Containers, Health and Images monitors; change them together.
+# The one result a run prints, as Datto reads it: <-Start Result->, one STATUS=
+# line, <-End Result->, on every way out. With an exit code that is not 0, and
+# only then, the lines diag collected follow as the diagnostic block.
+#   diag LINE         adds a line to the diagnostic
+#   emit CODE STATUS  prints the result (and the diagnostic), then exits CODE
+# The status is made one line (a CR, newline or tab becomes a space, a run of
+# spaces one space) and is cut at STATUS_MAX characters, so what matters most
+# goes first. A run that ends any other way (an unset variable under set -u, a
+# signal) leaves through the EXIT trap, which prints the result itself and
+# makes the exit non-zero: a monitor that exits non-zero with nothing printed
+# is an alert with no text. Before it does, it calls tc_cleanup when the
+# monitor has defined one (something to remove on every way out). Once the
+# result is being printed, HUP, INT and TERM are ignored, so it is printed
+# once and whole.
+STATUS_MAX=900
 EMITTED=0
 DIAG=""
 diag() { DIAG="${DIAG}${1}"$'\n'; }
-
-emit() {  # exit code, status line
+emit() {  # exit code, status
     local msg="$2"
+    trap '' HUP INT TERM
     msg="${msg//$'\r'/ }"; msg="${msg//$'\n'/ }"; msg="${msg//$'\t'/ }"
-    [ "${#msg}" -gt 400 ] && msg="${msg:0:397}..."
-    echo '<-Start Result->'
-    echo "STATUS=${msg}"
-    echo '<-End Result->'
+    while [ "$msg" != "${msg//  / }" ]; do msg="${msg//  / }"; done
+    msg="${msg# }"; msg="${msg% }"
+    [ -n "$msg" ] || msg="Check produced no status text"
+    [ "${#msg}" -gt "$STATUS_MAX" ] && msg="${msg:0:$((STATUS_MAX - 3))}..."
+    printf '<-Start Result->\nSTATUS=%s\n<-End Result->\n' "$msg"
     EMITTED=1
     if [ "$1" -ne 0 ] && [ -n "$DIAG" ]; then
-        echo '<-Start Diagnostic->'
-        printf '%s' "$DIAG"
-        echo '<-End Diagnostic->'
+        printf '<-Start Diagnostic->\n%s<-End Diagnostic->\n' "$DIAG"
     fi
     exit "$1"
 }
 on_exit() {
     local rc=$?
-    [ -n "${TMP:-}" ] && rm -rf -- "$TMP" 2>/dev/null
+    trap '' HUP INT TERM
+    if declare -F tc_cleanup >/dev/null; then tc_cleanup; fi
     if [ "$EMITTED" -eq 0 ]; then
-        echo '<-Start Result->'
-        echo "STATUS=Check could not run: the monitor stopped unexpectedly (exit ${rc})"
-        echo '<-End Result->'
+        printf '<-Start Result->\nSTATUS=Check could not run: the monitor stopped unexpectedly (exit %s)\n<-End Result->\n' "$rc"
         exit 1
     fi
 }
 trap on_exit EXIT
-# A signal ends the run through the EXIT trap above, with the usual 128+N status.
+# <<< tc-docker result
+
+# The scratch directory of a run (one file per registry lookup), made further
+# down and removed on every way out. Set here, before anything can exit, and
+# under a name of its own: whatever an inherited TMP names is never touched.
+SCRATCH=""
+tc_cleanup() { [ -z "$SCRATCH" ] || rm -rf -- "$SCRATCH" 2>/dev/null; return 0; }
+# A signal ends the run through the EXIT trap, with the usual 128+N status.
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 
 # One PATH rule, whatever PATH the agent gives the script: the usual system
@@ -242,50 +223,82 @@ tc_docker_running() {
 }
 # <<< tc-docker running
 
+# >>> tc-docker state: identical in the prune and in the Containers, Health and Images monitors; change them together.
+# The one directory the tc-docker components keep state in, and the one way a
+# file in it is written. tc_state_write NAME CONTENT replaces
+# $TC_STATE_DIR/NAME with CONTENT, exactly as given. The new file is made in
+# the same directory (mode 0600), read back and compared (a full disk can
+# leave a short file), then renamed over the old one, so a reader sees the old
+# file or the new one and never part of one. The directory is created when it
+# is missing, and made root:root 0700 when it is root's but is not that.
+# Nothing is written, and it returns 1 with the reason in TC_STATE_WHY (and
+# the failing command's own words, when it had any, in TC_STATE_ERR), when:
+#   - the directory is a symlink, or is there and is not a directory;
+#   - NAME is there as a symlink, or as anything but a regular file (a symlink
+#     is never followed, written through or replaced);
+#   - the directory cannot be created, is not owned by root, or cannot be made
+#     root:root 0700;
+#   - no file can be created in it, what was written does not read back the
+#     same, or the rename fails.
+# What a failure means is the caller's to say: the prune removes no container
+# it could not record first. Needs GNU stat (-c), mktemp and mv (-T).
+TC_STATE_DIR=/var/lib/tc-docker
+TC_STATE_WHY=""
+TC_STATE_ERR=""
+# shellcheck disable=SC2034  # only the prune prints TC_STATE_ERR
+tc_state_write() {  # name, content
+    local d="$TC_STATE_DIR" f="$TC_STATE_DIR/$1" tmp="" err=""
+    TC_STATE_WHY=""; TC_STATE_ERR=""
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+        TC_STATE_WHY="$d is not a directory"
+    elif [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+        TC_STATE_WHY="$f is not a regular file"
+    elif ! err="$(mkdir -p -- "$d" 2>&1)"; then
+        TC_STATE_WHY="$d cannot be created"
+    elif [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then
+        TC_STATE_WHY="$d is not owned by root"
+    elif [ "$(stat -c '%u:%g:%a' -- "$d" 2>/dev/null)" != "0:0:700" ] \
+         && ! err="$( { chown 0:0 -- "$d" && chmod 700 -- "$d"; } 2>&1)"; then
+        TC_STATE_WHY="$d cannot be made root-only"
+    elif ! tmp="$(mktemp -- "$d/.$1.XXXXXX" 2>&1)"; then
+        err="$tmp"; tmp=""
+        TC_STATE_WHY="no file can be created in $d"
+    elif ! err="$( { printf '%s' "$2" >"$tmp"; } 2>&1)" || [ "$(cat -- "$tmp" 2>/dev/null; echo x)" != "${2}x" ] \
+         || ! err="$(chmod 600 -- "$tmp" 2>&1)"; then
+        TC_STATE_WHY="writing it failed"
+    elif ! err="$(mv -fT -- "$tmp" "$f" 2>&1)"; then
+        TC_STATE_WHY="the new file could not be renamed into place"
+    else
+        return 0
+    fi
+    [ -z "$tmp" ] || rm -f -- "$tmp"
+    TC_STATE_ERR="$(printf '%s' "$err" | tr -cd '[:print:]' | cut -c1-200)"
+    return 1
+}
+# <<< tc-docker state
+
 # >>> tc-docker monitor state: identical in the Health and Images monitors; change them together.
-# The state directory these monitors share. There is no other directory: no
-# fallback to /var/tmp, where another local user could have made the path first.
-# tc_state_dir uses it only if it is a real directory (not a symlink) owned by
-# root, creating it 0700 when it is missing and making it 0700 when it is not.
-# It sets STATE_DIR, or leaves STATE_DIR empty and sets STATE_WHY. Never fatal:
-# a monitor without its state directory runs without saved state and says so.
-# tc_state_read NAME prints the file only when it is a regular file (not a
-# symlink) owned by root; the caller keeps only the lines it can check.
-# tc_state_write NAME replaces the file with its stdin by renaming a new
-# root-only file into place, so a symlink there is replaced, never followed.
-# Needs GNU stat (-c) and mv (-T).
-TC_STATE_DIR=/var/lib/tc-docker-monitor
-STATE_DIR=""
-STATE_WHY=""
-tc_state_dir() {
+# tc_state_read NAME prints state file NAME from $TC_STATE_DIR (the tc-docker
+# state block), and only when it can be this monitor's own: the directory is a
+# real directory (not a symlink) owned by root, and the file a regular file
+# (not a symlink) owned by root. Otherwise it prints nothing, and the caller
+# starts without saved state. The caller still keeps only the lines it can
+# check.
+# MOVED STATE. Until Health version 2 and Images version 4 these two monitors
+# kept their state in /var/lib/tc-docker-monitor. While NAME is not in
+# $TC_STATE_DIR at all, the file of that name in the old directory is printed
+# instead, under the same rule. The run's tc_state_write then makes the new
+# file, so the old one is read once. Nothing here changes or removes the old
+# directory or what is in it. Remove this fallback (TC_STATE_OLD_DIR and the
+# line that uses it) once no host has state only in the old directory.
+# Needs GNU stat (-c).
+TC_STATE_OLD_DIR=/var/lib/tc-docker-monitor
+tc_state_read() {  # name
     local d="$TC_STATE_DIR"
-    STATE_DIR=""; STATE_WHY=""
-    if [ -L "$d" ]; then STATE_WHY="$d is a symlink"; return 1; fi
-    if [ ! -e "$d" ]; then
-        ( umask 077 && mkdir -m 700 -- "$d" ) 2>/dev/null
-    fi
-    if [ -L "$d" ] || [ ! -d "$d" ]; then STATE_WHY="$d is not a directory"; return 1; fi
-    if [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then STATE_WHY="$d is not owned by root"; return 1; fi
-    if [ "$(stat -c %a -- "$d" 2>/dev/null)" != "700" ] && ! chmod 700 -- "$d" 2>/dev/null; then
-        STATE_WHY="$d cannot be made 0700"; return 1
-    fi
-    STATE_DIR="$d"
-    return 0
-}
-tc_state_read() {
-    local f="$STATE_DIR/$1"
-    [ -n "$STATE_DIR" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ "$(stat -c %u -- "$f" 2>/dev/null)" = "0" ] || return 0
-    cat -- "$f" 2>/dev/null
-    return 0
-}
-tc_state_write() {
-    local f="$STATE_DIR/$1" tmp
-    [ -n "$STATE_DIR" ] || return 1
-    tmp="$(mktemp -- "$STATE_DIR/.$1.XXXXXX" 2>/dev/null)" || return 1
-    if ! cat > "$tmp" 2>/dev/null || ! chmod 600 -- "$tmp" 2>/dev/null || ! mv -fT -- "$tmp" "$f" 2>/dev/null; then
-        rm -f -- "$tmp" 2>/dev/null
-        return 1
-    fi
+    if [ ! -e "$d/$1" ] && [ ! -L "$d/$1" ]; then d="$TC_STATE_OLD_DIR"; fi
+    [ -d "$d" ] && [ ! -L "$d" ] && [ "$(stat -c %u -- "$d" 2>/dev/null)" = "0" ] \
+        && [ -f "$d/$1" ] && [ ! -L "$d/$1" ] && [ "$(stat -c %u -- "$d/$1" 2>/dev/null)" = "0" ] || return 0
+    cat -- "$d/$1" 2>/dev/null
     return 0
 }
 # <<< tc-docker monitor state
@@ -319,8 +332,8 @@ case $? in
     *) emit 1 "Check could not run: asking whether Docker is running failed unexpectedly" ;;
 esac
 
-TMP="$(mktemp -d)" || emit 1 "Check could not run: cannot create a temporary directory"
-BREAKER="${TMP}/rate-limited"
+SCRATCH="$(mktemp -d)" || emit 1 "Check could not run: cannot create a temporary directory"
+BREAKER="${SCRATCH}/rate-limited"
 
 # ------------------------------------------------------- gather local state
 
@@ -454,7 +467,6 @@ day() { date -u -d "@$1" +%Y-%m-%d 2>/dev/null || printf '%s' "$1"; }
 
 # ---------------------------------------------------------------------- state
 
-tc_state_dir
 declare -A S_DIG=() S_CRE=() S_OK=() S_ERR=() S_SINCE=()
 S_ORDER=()
 while IFS=$'\t' read -r -a f; do
@@ -479,29 +491,27 @@ while IFS=$'\t' read -r -a f; do
     S_ORDER+=("$r")
 done < <(tc_state_read "$STATE_NAME")
 
+# Never fatal: a run that cannot save its state says so in the status.
 STATE_NOTE=""
-[ -z "$STATE_DIR" ] && STATE_NOTE="; no saved state ($STATE_WHY), so nothing is cached and lookup failures are not tracked over time"
-
 save_state() {
-    [ -n "$STATE_DIR" ] || return 0
-    local r newest
+    local r newest out=""
     declare -A wrote=()
-    {
-        for r in ${UNIQ[@]+"${UNIQ[@]}"} ${S_ORDER[@]+"${S_ORDER[@]}"}; do
-            [ -n "$r" ] && [ -n "${S_OK[$r]+x}" ] && [ -z "${wrote[$r]+x}" ] || continue
-            wrote[$r]=1
-            if [ -z "${IN_USE[$r]+x}" ]; then
-                newest="${S_OK[$r]}"; [ "${S_SINCE[$r]:-0}" -gt "$newest" ] && newest="${S_SINCE[$r]:-0}"
-                [ $(( NOW - newest )) -lt $(( STATE_KEEP_DAYS * 86400 )) ] || continue
-            fi
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "${S_DIG[$r]:--}" "${S_CRE[$r]:--}" "${S_OK[$r]}" "${S_ERR[$r]:-none}" "${S_SINCE[$r]:-0}"
-        done
-    } | tc_state_write "$STATE_NAME" || STATE_NOTE="; saved state could not be written to $STATE_DIR"
+    for r in ${UNIQ[@]+"${UNIQ[@]}"} ${S_ORDER[@]+"${S_ORDER[@]}"}; do
+        [ -n "$r" ] && [ -n "${S_OK[$r]+x}" ] && [ -z "${wrote[$r]+x}" ] || continue
+        wrote[$r]=1
+        if [ -z "${IN_USE[$r]+x}" ]; then
+            newest="${S_OK[$r]}"; [ "${S_SINCE[$r]:-0}" -gt "$newest" ] && newest="${S_SINCE[$r]:-0}"
+            [ $(( NOW - newest )) -lt $(( STATE_KEEP_DAYS * 86400 )) ] || continue
+        fi
+        out="${out}${r}"$'\t'"${S_DIG[$r]:--}"$'\t'"${S_CRE[$r]:--}"$'\t'"${S_OK[$r]}"$'\t'"${S_ERR[$r]:-none}"$'\t'"${S_SINCE[$r]:-0}"$'\n'
+    done
+    tc_state_write "$STATE_NAME" "$out" \
+        || STATE_NOTE="; state not saved ($TC_STATE_WHY), so nothing is cached and lookup failures are not tracked over time"
 }
 
 if [ "${#NAMES[@]}" -eq 0 ]; then
     emit 0 "$(printf '%d container(s) running, none checkable (%d excluded, %d without a registry image)' \
-        "$TOTAL" "$EXCLUDED" "${#SKIPPED[@]}")${STATE_NOTE}"
+        "$TOTAL" "$EXCLUDED" "${#SKIPPED[@]}")"
 fi
 
 # A long TTL means every host refreshes in one burst. Hosts built from the same
@@ -591,13 +601,13 @@ for r in ${TO_QUERY[@]+"${TO_QUERY[@]}"}; do
     [ -e "$BREAKER" ] && break
     secs="$(lookup_secs)" || { TIMED_OUT_RUN=1; break; }
     n=$((n + 1)); QUERIED=$((QUERIED + 1))
-    lookup_digest "$r" "${TMP}/d${n}" "$secs" &
+    lookup_digest "$r" "${SCRATCH}/d${n}" "$secs" &
 done
 wait
 
 declare -A ATTEMPT=()
 for ((i = 1; i <= n; i++)); do
-    IFS=$'\t' read -r r what kind msg < "${TMP}/d${i}" 2>/dev/null || continue
+    IFS=$'\t' read -r r what kind msg < "${SCRATCH}/d${i}" 2>/dev/null || continue
     [ -n "$r" ] || continue
     case "$what" in
         sha256:*)
@@ -669,11 +679,11 @@ for r in ${MOVERS[@]+"${MOVERS[@]}"}; do
     [ -e "$BREAKER" ] && break
     secs="$(lookup_secs)" || { TIMED_OUT_RUN=1; break; }
     m=$((m + 1))
-    lookup_created "$r" "${TMP}/c${m}" "$secs" &
+    lookup_created "$r" "${SCRATCH}/c${m}" "$secs" &
 done
 wait
 for ((i = 1; i <= m; i++)); do
-    IFS=$'\t' read -r r c < "${TMP}/c${i}" 2>/dev/null || continue
+    IFS=$'\t' read -r r c < "${SCRATCH}/c${i}" 2>/dev/null || continue
     [ -n "$r" ] && [ -n "$c" ] || continue
     R_CRE[$r]="$c"
     [ "${S_DIG[$r]:-}" = "${R_DIG[$r]:-}" ] && S_CRE[$r]="$c"
@@ -738,7 +748,7 @@ kind_text() {
     esac
 }
 STALE_REFS=()
-if [ "$STALE_DAYS" -gt 0 ] && [ -n "$STATE_DIR" ]; then
+if [ "$STALE_DAYS" -gt 0 ]; then
     for r in ${UNIQ[@]+"${UNIQ[@]}"}; do
         [ -n "${S_ERR[$r]:-}" ] && [ "${S_ERR[$r]}" != none ] || continue
         if [ "${S_OK[$r]:-0}" -gt 0 ]; then base="${S_OK[$r]}"; since="no registry answer since $(day "${S_OK[$r]}")"

@@ -2,9 +2,20 @@
   "platforms": [
     "linux"
   ],
-  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. The prune refuses an age limit under 24 hours, so the tests make their containers and images 30 days old rather than lower it (a container by stopping Docker and editing config.v2.json; an image by loading a docker save archive written by hand, with the date in it). Before the list is reviewed, the prune removes no container and no image. After review, a stopped container that nothing protects is first recorded in /var/lib/tc-docker/pending-removal (0700 root directory, 0600 file) and left alone; a run inside the grace period leaves it and says until when; a run after it (the record moved back 145 hours) removes it and drops the record. Its age counts from when it stopped: one stopped 29 days ago and one never started, created 30 days ago, are recorded; one created 30 days ago that stopped just now is not (the times are set by stopping Docker and editing config.v2.json). A recorded container added to the list, or started again, loses its record. When the record cannot be written (a read-only bind mount), no container is removed and the exit is 1, through the timer's script and through Prune now; a GRACE_HOURS under 24 written by hand is refused by the prune; an OLDER_THAN_HOURS that is 0, 23, 8761, empty, not a number, quoted or followed by anything is refused too, with nothing at all recorded or removed and exit 1, while 8760 and 24 are used; the settings file is read as text and never run (commands on other lines, a command substitution or an arithmetic subscript as a value: nothing runs, and such a value is refused), and the last line for a name wins; and when the review is withdrawn the prune removes nothing and clears the record. Stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep are kept with their images. Images, with a test registry on 127.0.0.1 standing in for a real one: Dangling (and a settings file with no PRUNE_IMAGES) removes the untagged image only; All also removes the tagged image pushed to the registry, printing its repo@sha256 to the journal (and that reference pulls it back), keeps the one built here and says why, and keeps tc.keep; a failing docker image ls removes no image and exits 1. Which store the runner uses decides what All must do: on the classic image store as described; on the containerd image store, where every image has a digest, All keeps every tagged image and says why. The last steps restart Docker on the other store and check All there too, so both stores are covered whichever the runner starts with. The image is pushed to the test registry only on the classic store: on the containerd store it has a repo@sha256 digest without one, and that store's push used HTTPS on Docker 29.4.2 whatever insecure-registries said. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are not worked out from docker.service: log rotation is skipped with exit 3, build-cache limits are still added, Docker starts with the file, and the next run with Docker running finishes the job (it skips log rotation for a journald daemon, and adds it for a daemon with no logging flag); a daemon started with --config-file pointing at another file gets nothing written to either file, exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, and does not reach its network or build-cache step; Prune now exits 1; and the list is not created, exit 3. Writing daemon.json: the new file is made in the directory of the real target and renamed into place, so it keeps the mode, owner and group of the file it replaces (a 0600 file holding a fake proxy credential stays 0600 with its non-root group; a new file is 0644 root:root) and a symlinked daemon.json stays a symlink while its target changes and Docker restarts with it; a dangling symlink, or a link to a directory, is refused with exit 3 and nothing is created; after a successful Apply, a failed validation and Report mode, no .daemon.json.tc-* file is left in /etc/docker, and one left by a crashed earlier run is removed; Report mode on a host with no /etc/docker does not create it; seven changes in a row leave the newest five backups; and an immutable daemon.json makes the run exit 1 with the file byte-for-byte unchanged, no staging file and no backup. Docker stopped (docker.service stopped, docker.socket still listening, a restart: always container on the list): the prune service has Requisite=docker.service and After=, not Requires=; starting it, by hand or when the timer itself fires, does not start Docker and does not run the prune, and the timer stays active; the prune run by hand prints one line saying Docker is not running, removes nothing and exits 0; the component in Report, in Apply, and in Apply with Prune now (which does not run, exit 3), and with no list (not created, exit 3) leaves docker.service inactive, and does not read Docker's start flags (the daemon.json part is exit 3); started again, the timer's service runs the prune normally. A changed service file or prune script is rewritten with a daemon-reload and the timer is not restarted (same ActiveEnterTimestamp and NextElapseUSecRealtime, no prune run); a schedule change restarts it. With no docker.service unit (its file, drop-ins and /etc/init.d/docker moved away), the service is written without the dependency lines and says so, and the unit starts and runs the prune; with the unit back, the next run writes them again. Version 13: the installed prune reads the pending-removal file with the shared tc_pending_lines and has no parser of its own; and a pending-removal file with a comment, a blank line, a malformed line, a CRLF line and a second line for the same container gives what version 12 gave: two unreadable lines counted and dropped, the first line for the container used, nothing removed early, and the file written again clean.",
+  "description": "On a runner with Docker and systemd: report mode changes nothing and shows the expected-containers list it would create; apply adds log rotation and build-cache limits to daemon.json without disturbing the keys already there, writes a file dockerd accepts, creates the list once, from every container present, marks it not reviewed, and never rewrites it, and installs an enabled prune timer whose script never touches volumes. The prune refuses an age limit under 24 hours, so the tests make their containers and images 30 days old rather than lower it (a container by stopping Docker and editing config.v2.json; an image by loading a docker save archive written by hand, with the date in it). Before the list is reviewed, the prune removes no container and no image. After review, a stopped container that nothing protects is first recorded in /var/lib/tc-docker/pending-removal (0700 root directory, 0600 file) and left alone; a run inside the grace period leaves it and says until when; a run after it (the record moved back 145 hours) removes it and drops the record. Its age counts from when it stopped: one stopped 29 days ago and one never started, created 30 days ago, are recorded; one created 30 days ago that stopped just now is not (the times are set by stopping Docker and editing config.v2.json). A recorded container added to the list, or started again, loses its record. When the record cannot be written (a read-only bind mount), no container is removed and the exit is 1, through the timer's script and through Prune now; a GRACE_HOURS under 24 written by hand is refused by the prune; an OLDER_THAN_HOURS that is 0, 23, 8761, empty, not a number, quoted or followed by anything is refused too, with nothing at all recorded or removed and exit 1, while 8760 and 24 are used; the settings file is read as text and never run (commands on other lines, a command substitution or an arithmetic subscript as a value: nothing runs, and such a value is refused), and the last line for a name wins; and when the review is withdrawn the prune removes nothing and clears the record. Stopped containers that are on the list, have an unless-stopped policy, or are labelled tc.keep are kept with their images. Images, with a test registry on 127.0.0.1 standing in for a real one: Dangling (and a settings file with no PRUNE_IMAGES) removes the untagged image only; All also removes the tagged image pushed to the registry, printing its repo@sha256 to the journal (and that reference pulls it back), keeps the one built here and says why, and keeps tc.keep; a failing docker image ls removes no image and exits 1. Which store the runner uses decides what All must do: on the classic image store as described; on the containerd image store, where every image has a digest, All keeps every tagged image and says why. The last steps restart Docker on the other store and check All there too, so both stores are covered whichever the runner starts with. The image is pushed to the test registry only on the classic store: on the containerd store it has a repo@sha256 digest without one, and that store's push used HTTPS on Docker 29.4.2 whatever insecure-registries said. With Docker restarted under extra daemon flags each time: a --log-driver=journald daemon and a --log-opt daemon get no log-opts in daemon.json and still start; a --log-driver=json-file daemon gets them and starts with them; a stopped daemon's flags are not worked out from docker.service: log rotation is skipped with exit 3, build-cache limits are still added, Docker starts with the file, and the next run with Docker running finishes the job (it skips log rotation for a journald daemon, and adds it for a daemon with no logging flag); a daemon started with --config-file pointing at another file gets nothing written to either file, exit 3; a daemon.json an earlier version already broke is reported as DAEMON WILL NOT START, exit 3, unchanged, and Docker really does fail to start with it. Bad input is refused with exit 2 before anything is written. Restarting Docker to load the new settings, and a host without Docker, are Tier 2. A container label is untrusted: one whose Compose project label carries a forged row cannot add a row or a field to the container listing, so a reviewed prune keeps the listed stopped container the forged row named, names the containers whose labels cannot be read, keeps them, and never prints the label; a new list leaves them off and says so. When docker ps fails but docker info answers (a shim on PATH), the prune prints ERROR, exits 1 and removes nothing, and does not reach its network or build-cache step; Prune now exits 1; and the list is not created, exit 3. Writing daemon.json: the new file is made in the directory of the real target and renamed into place, so it keeps the mode, owner and group of the file it replaces (a 0600 file holding a fake proxy credential stays 0600 with its non-root group; a new file is 0644 root:root) and a symlinked daemon.json stays a symlink while its target changes and Docker restarts with it; a dangling symlink, or a link to a directory, is refused with exit 3 and nothing is created; after a successful Apply, a failed validation and Report mode, no .daemon.json.tc-* file is left in /etc/docker, and one left by a crashed earlier run is removed; Report mode on a host with no /etc/docker does not create it; seven changes in a row leave the newest five backups; and an immutable daemon.json makes the run exit 1 with the file byte-for-byte unchanged, no staging file and no backup. Docker stopped (docker.service stopped, docker.socket still listening, a restart: always container on the list): the prune service has Requisite=docker.service and After=, not Requires=; starting it, by hand or when the timer itself fires, does not start Docker and does not run the prune, and the timer stays active; the prune run by hand prints one line saying Docker is not running, removes nothing and exits 0; the component in Report, in Apply, and in Apply with Prune now (which does not run, exit 3), and with no list (not created, exit 3) leaves docker.service inactive, and does not read Docker's start flags (the daemon.json part is exit 3); started again, the timer's service runs the prune normally. A changed service file or prune script is rewritten with a daemon-reload and the timer is not restarted (same ActiveEnterTimestamp and NextElapseUSecRealtime, no prune run); a schedule change restarts it. With no docker.service unit (its file, drop-ins and /etc/init.d/docker moved away), the service is written without the dependency lines and says so, and the unit starts and runs the prune; with the unit back, the next run writes them again. Version 13: the installed prune reads the pending-removal file with the shared tc_pending_lines and has no parser of its own; and a pending-removal file with a comment, a blank line, a malformed line, a CRLF line and a second line for the same container gives what version 12 gave: two unreadable lines counted and dropped, the first line for the container used, nothing removed early, and the file written again clean. Version 14: the installed prune writes pending-removal with tc_state_write, the function in the block marked tc-docker state that the three Docker monitors share (a step reads the installed prune for it). A /var/lib/tc-docker that is not owned by root is not used and not taken over, and a symlink in the record's place is not followed, written through or replaced: either way no container is removed and the prune exits 1; with the record a regular file again, the same prune removes the container whose record is due. The script's opening comment is short and points to the README (a step reads it).",
   "variables": {},
   "steps": [
+    {
+      "type": "command",
+      "label": "Header: the script's opening comment is short (what it is, what it changes on the host, its exit codes) and points to the README, which holds the rest",
+      "run": "f=Scripts/docker-configure-host-maintenance-lin/docker-configure-host-maintenance-lin.sh; [ -f \"$f\" ] || { echo \"cannot find $f from $(pwd)\"; exit 1; }; n=$(awk 'NR > 1 && /^#/ { n++; next } NR > 1 { exit } END { print n + 0 }' \"$f\"); echo \"header comment: $n lines\"; [ \"$n\" -ge 10 ] && [ \"$n\" -le 35 ] && echo 'header is 35 lines or fewer'; h() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' \"$f\"; }; echo \"says what it changes: $(h | grep -c '^# Changes on the host')\"; echo \"points to its README: $(h | grep -c '^# https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/docker-configure-host-maintenance-lin$')\"; echo \"exit codes: $(h | grep -c '^# Exit codes:$')\"",
+      "outputContains": [
+        "header is 35 lines or fewer",
+        "says what it changes: 1",
+        "points to its README: 1",
+        "exit codes: 1"
+      ]
+    },
     {
       "type": "command",
       "label": "Record daemon.json as it was before the component",
@@ -123,6 +134,28 @@
         "tc_pending_lines: 1 defined, 1 called",
         "parsers of its own: 0",
         "running block first line: 1"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The installed prune writes its pending-removal file with tc_state_write, the function in the block marked tc-docker state that the three Docker monitors share, and has no directory, temporary-file or rename code of its own for it",
+      "run": "f=/usr/local/sbin/tc-docker-prune; echo \"state block: $(grep -c '^# >>> tc-docker state: ' $f) start, $(grep -c '^# <<< tc-docker state$' $f) end\"; echo \"state directory: $(grep -c '^TC_STATE_DIR=/var/lib/tc-docker$' $f)\"; echo \"tc_state_write: $(grep -c '^tc_state_write() {' $f) defined, $(grep -c '^    tc_state_write pending-removal ' $f) used for pending-removal\"; echo \"renames and temporary files for it outside the block: $(sed '/^# >>> tc-docker state: /,/^# <<< tc-docker state$/d' $f | grep -v '^[[:space:]]*#' | grep -cE 'mv -fT|mktemp .*pending|chown 0:0')\"; echo \"the old names: $(grep -cE 'PENDING_WHY|PENDING_DIR' $f)\"",
+      "outputContains": [
+        "state block: 1 start, 1 end",
+        "state directory: 1",
+        "tc_state_write: 1 defined, 1 used for pending-removal",
+        "renames and temporary files for it outside the block: 0",
+        "the old names: 0"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Header of the installed prune: after the version stamp it says in a few lines what the prune removes and its exit codes, and points to the README",
+      "run": "f=/usr/local/sbin/tc-docker-prune; n=$(awk 'NR > 1 && /^#/ { n++; next } NR > 1 && /^TC_PRUNE_VERSION=/ { next } NR > 1 { exit } END { print n + 0 }' \"$f\"); echo \"header comment: $n lines\"; [ \"$n\" -ge 10 ] && [ \"$n\" -le 30 ] && echo 'header is 30 lines or fewer'; echo \"points to the README: $(sed -n '1,/^set -u$/p' \"$f\" | grep -c '^# https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/docker-configure-host-maintenance-lin$')\"; echo \"first line after the header: $(sed -n '/^set -u$/{n;p;q}' \"$f\")\"",
+      "outputContains": [
+        "header is 30 lines or fewer",
+        "points to the README: 1",
+        "first line after the header: echo \"tc-docker-prune version $TC_PRUNE_VERSION\""
       ]
     },
     {
@@ -450,6 +483,68 @@
         "  tc-due (name:tc-due)",
         "prune exit 0",
         "tc-due removed"
+      ],
+      "outputNotContains": [
+        "STILL HERE",
+        "ERROR"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Unwritable record, other ways: tc-due2, created 30 days ago (Docker restarted to set that), recorded and its record already due (moved back 145 hours)",
+      "run": "set -e; docker create --name tc-due2 tc-test-listed:1 /bin/true >/dev/null; tc-test-age tc-due2=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ) >/dev/null; sleep 2; /usr/local/sbin/tc-docker-prune >/dev/null; sed -i -E \"s/\t[0-9]+$/\t$(( $(date +%s) - 145 * 3600 ))/\" /var/lib/tc-docker/pending-removal; grep -q 'name:tc-due2' /var/lib/tc-docker/pending-removal && echo 'tc-due2 recorded, due now'; cp -p /var/lib/tc-docker/pending-removal /root/tc-pending.copy",
+      "outputContains": [
+        "tc-due2 recorded, due now"
+      ],
+      "timeoutSeconds": 240
+    },
+    {
+      "type": "command",
+      "label": "A state directory that is not root's is not used and not taken over (before version 14 the prune made it root's and went on, believing the record in it): /var/lib/tc-docker and its record owned by another user: no container is removed, exit 1, the owner, mode and record as they were",
+      "run": "chown -R 65534:65534 /var/lib/tc-docker; chmod 755 /var/lib/tc-docker; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; docker inspect -f '{{.Name}} survived' tc-due2; stat -c 'directory: owner %u mode %a' /var/lib/tc-docker; stat -c 'record: owner %u' /var/lib/tc-docker/pending-removal; cmp /var/lib/tc-docker/pending-removal /root/tc-pending.copy && echo 'record unchanged'",
+      "outputContains": [
+        "ERROR: could not write /var/lib/tc-docker/pending-removal: /var/lib/tc-docker is not owned by root",
+        "No container was removed this run",
+        "Stopped containers removed: 0",
+        "prune exit 1",
+        "/tc-due2 survived",
+        "directory: owner 65534 mode 755",
+        "record: owner 65534",
+        "record unchanged"
+      ],
+      "outputNotContains": [
+        "  tc-due2 (name:tc-due2)"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "A symlink in the record's place is never followed, written through or replaced: the directory root's again, the record moved aside and a symlink to it put in its place: no container is removed, exit 1, the link and what it points to as they were",
+      "run": "chown -R 0:0 /var/lib/tc-docker; chmod 700 /var/lib/tc-docker; mv /var/lib/tc-docker/pending-removal /root/tc-pending.real; ln -s /root/tc-pending.real /var/lib/tc-docker/pending-removal; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; docker inspect -f '{{.Name}} survived' tc-due2; [ -L /var/lib/tc-docker/pending-removal ] && echo 'still a symlink'; cmp /root/tc-pending.real /root/tc-pending.copy && echo 'what it points to is unchanged'; echo \"files in the directory: $(ls -A /var/lib/tc-docker | wc -l)\"",
+      "outputContains": [
+        "ERROR: could not write /var/lib/tc-docker/pending-removal: /var/lib/tc-docker/pending-removal is not a regular file",
+        "No container was removed this run",
+        "Stopped containers removed: 0",
+        "prune exit 1",
+        "/tc-due2 survived",
+        "still a symlink",
+        "what it points to is unchanged",
+        "files in the directory: 1"
+      ],
+      "outputNotContains": [
+        "  tc-due2 (name:tc-due2)"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The record put back as a regular file: the same prune removes tc-due2, and leaves the directory 0700 root with one 0600 root file and no temporary file",
+      "run": "rm -f /var/lib/tc-docker/pending-removal; mv /root/tc-pending.real /var/lib/tc-docker/pending-removal; rm -f /root/tc-pending.copy; sleep 2; out=$(/usr/local/sbin/tc-docker-prune 2>&1); rc=$?; printf '%s\\n' \"$out\"; echo \"prune exit $rc\"; docker inspect tc-due2 >/dev/null 2>&1 && echo 'tc-due2 STILL HERE' || echo 'tc-due2 removed'; stat -c '%a %U:%G %n' /var/lib/tc-docker /var/lib/tc-docker/pending-removal; echo \"files in the directory: $(ls -A /var/lib/tc-docker | paste -sd' ')\"",
+      "outputContains": [
+        "  tc-due2 (name:tc-due2)",
+        "prune exit 0",
+        "tc-due2 removed",
+        "700 root:root /var/lib/tc-docker",
+        "600 root:root /var/lib/tc-docker/pending-removal",
+        "files in the directory: pending-removal"
       ],
       "outputNotContains": [
         "STILL HERE",

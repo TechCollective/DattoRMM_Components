@@ -1,106 +1,81 @@
 #!/usr/bin/env bash
 # Docker - Containers Differ From Expected [Lin]
 #
-# Datto RMM custom monitor. Runs as root. It changes one file only: its own
-# record of when each unlisted container was first seen,
-# /var/lib/tc-docker/monitor-first-seen (see "First seen" below). It never runs
-# a command that would start Docker, and every docker command it runs is
-# stopped if Docker has not answered DOCKER_TIMEOUT seconds after the monitor
-# started.
+# Datto RMM custom monitor. Runs as root. Compares the containers on a Docker
+# host with its expected-containers list, /etc/tc-docker/expected-containers
+# (created by "Docker - Configure Host Maintenance [Lin]", changed with
+# "Docker - Update Expected Containers [Lin]"), and reports what the host's
+# weekly prune is about to remove and whether that prune is out of date.
 #
-# Compares the containers on this host with its expected-containers list,
-# /etc/tc-docker/expected-containers (created by "Docker - Configure Host
-# Maintenance [Lin]", changed with "Docker - Update Expected Containers [Lin]"):
+# Changes on the host: one file, /var/lib/tc-docker/monitor-first-seen (when it
+# first saw each running container that is not on the list; the directory is
+# created root-only when missing). It never starts a stopped Docker, and every
+# docker command of a run is stopped DOCKER_TIMEOUT seconds after the start.
 #
-#   - an expected container that is stopped or gone      -> usrMissingAction
-#     (reported, but not alerted on, while the list is unreviewed)
-#   - a running container not on the list, first seen
-#     usrUnlistedAfterHours or more ago, and not ignored   -> usrUnlistedAction
-#     (first seen: see below; a restart or a redeploy does not reset it)
-#   - a list no person has confirmed yet                   -> usrUnreviewedAction
-#     (until it is, the weekly prune removes no containers or images). Under
-#     Warn, a list unreviewed for usrUnreviewedAfterDays or more alerts (0 never
-#     does); its age is the list file's modification time, and an age that
-#     cannot be read does not alert.
+# Result: exit 0 healthy, exit 1 alert; one result block on every way out.
+#   1  with the matching action set to Alert: an expected container stopped
+#      or gone on a reviewed list (usrMissingAction), an unlisted container or
+#      one with unreadable Compose labels (usrUnlistedAction), a stopped
+#      container the prune has recorded for removal (usrPendingRemovalAction),
+#      a stale prune (usrStalePruneAction), an unreviewed list
+#      (usrUnreviewedAction; under Warn once it is usrUnreviewedAfterDays old).
+#      Always: Docker stopped while the list has entries; Docker not answering
+#      or not returning its container list; a docker client missing where
+#      Docker's socket or unit is present; an invalid input variable or a
+#      missing tool; the script stopped unexpectedly.
+#   0  everything else, each finding named in the status.
 #
-#   - a container whose Compose labels are not plain names  -> usrUnlistedAction
-#     (it has no key, so it can never be listed; the label is never printed)
-#
-#   - a stopped container the prune has recorded for removal  -> usrPendingRemovalAction
-#     (/var/lib/tc-docker/pending-removal, written by the prune from version 9;
-#     shown with the date from which the prune removes it. Only while the list
-#     is reviewed, and only containers still stopped and unprotected. One whose
-#     key matches an ignore pattern is counted but never alerts. Lines of the
-#     file that are not well formed are counted, never shown or trusted.)
-#
-#   - a prune installed by an older version of Host Maintenance  -> usrStalePruneAction
-#     (/usr/local/sbin/tc-docker-prune older than PRUNE_MIN_VERSION, with no
-#     version stamp, or the version 1 layout where the systemd service runs
-#     docker directly; until the component is run on the host again the OLD
-#     prune's rules apply). Read from two files only; checked before the
-#     "no list yet" exit, because hosts on versions 1 and 2 have no list.
-#
-# Compose one-offs, --rm containers and anything matching /etc/tc-docker/ignore
-# are never "unlisted". A daemon that cannot be reached, that does not answer
-# within DOCKER_TIMEOUT seconds, or that does not return its container list, is
-# an alert: not knowing is the failure this monitor exists to catch. Before any
-# docker command, and in this order:
-#
-#   - no docker command (PATH plus the usual system directories)
-#       but /var/run/docker.sock is a socket or docker.service is loaded -> alert
-#       otherwise: Docker is not installed                              -> healthy
-#   - the stale-prune check (two files; it needs no daemon)
-#   - systemd says docker.service is not active (no docker command is run, so a
-#     socket-activated Docker stays stopped):
-#       with entries on the expected list                                -> alert
-#       with no list, or an empty one                                    -> healthy
-#   - docker info fails, and there is no docker.service, no socket and no list
-#     (a docker client with no daemon on this host)                      -> healthy
-#   - docker info fails otherwise                                        -> alert
-#   - no list yet                                                        -> healthy
-# A stale prune is reported on each of these, and alerts under Alert.
-#
-# First seen. The age of an unlisted container is counted from the first time
-# this monitor saw its key running, not from the container's own start, so a
-# container restarted or recreated more often than usrUnlistedAfterHours (a
-# nightly redeploy, a crash loop) is still reported once the hours have passed.
-# /var/lib/tc-docker/monitor-first-seen holds key, first seen and last seen
-# (seconds since 1970) for each running, unlisted, not-ignored key. A key with
-# no entry starts at its container's start time. An entry is dropped once its
-# key is on the list or has not been seen running for FIRST_SEEN_KEEP_DAYS. The
-# file is root-only, replaced by renaming a new file into place, never followed
-# through a symlink, and only its well-formed lines are read. If it cannot be
-# written, ages count from each container's start (as before version 7) and the
-# status says so; the check itself still runs.
+# Every condition, input variable and exit, the order of the checks and the
+# first-seen file:
+# https://github.com/TechCollective/DattoRMM_Components/tree/main/Monitors/docker-containers-differ-from-expected-lin
 
 set -u
+
+# >>> tc-docker result: identical in the Containers, Health and Images monitors; change them together.
+# The one result a run prints, as Datto reads it: <-Start Result->, one STATUS=
+# line, <-End Result->, on every way out. With an exit code that is not 0, and
+# only then, the lines diag collected follow as the diagnostic block.
+#   diag LINE         adds a line to the diagnostic
+#   emit CODE STATUS  prints the result (and the diagnostic), then exits CODE
+# The status is made one line (a CR, newline or tab becomes a space, a run of
+# spaces one space) and is cut at STATUS_MAX characters, so what matters most
+# goes first. A run that ends any other way (an unset variable under set -u, a
+# signal) leaves through the EXIT trap, which prints the result itself and
+# makes the exit non-zero: a monitor that exits non-zero with nothing printed
+# is an alert with no text. Before it does, it calls tc_cleanup when the
+# monitor has defined one (something to remove on every way out). Once the
+# result is being printed, HUP, INT and TERM are ignored, so it is printed
+# once and whole.
+STATUS_MAX=900
 EMITTED=0
-emit() {  # exit code, status line
-    local msg="${2//$'\n'/ }"
-    [ "${#msg}" -gt 400 ] && msg="${msg:0:397}..."
-    echo '<-Start Result->'
-    echo "STATUS=${msg}"
-    echo '<-End Result->'
+DIAG=""
+diag() { DIAG="${DIAG}${1}"$'\n'; }
+emit() {  # exit code, status
+    local msg="$2"
+    trap '' HUP INT TERM
+    msg="${msg//$'\r'/ }"; msg="${msg//$'\n'/ }"; msg="${msg//$'\t'/ }"
+    while [ "$msg" != "${msg//  / }" ]; do msg="${msg//  / }"; done
+    msg="${msg# }"; msg="${msg% }"
+    [ -n "$msg" ] || msg="Check produced no status text"
+    [ "${#msg}" -gt "$STATUS_MAX" ] && msg="${msg:0:$((STATUS_MAX - 3))}..."
+    printf '<-Start Result->\nSTATUS=%s\n<-End Result->\n' "$msg"
     EMITTED=1
-    if [ "$1" -ne 0 ] && [ -n "${DIAG:-}" ]; then
-        echo '<-Start Diagnostic->'
-        printf '%s' "$DIAG"
-        echo '<-End Diagnostic->'
+    if [ "$1" -ne 0 ] && [ -n "$DIAG" ]; then
+        printf '<-Start Diagnostic->\n%s<-End Diagnostic->\n' "$DIAG"
     fi
     exit "$1"
 }
 on_exit() {
     local rc=$?
+    trap '' HUP INT TERM
+    if declare -F tc_cleanup >/dev/null; then tc_cleanup; fi
     if [ "$EMITTED" -eq 0 ]; then
-        echo '<-Start Result->'
-        echo "STATUS=Check could not run: the monitor stopped unexpectedly (exit ${rc})"
-        echo '<-End Result->'
+        printf '<-Start Result->\nSTATUS=Check could not run: the monitor stopped unexpectedly (exit %s)\n<-End Result->\n' "$rc"
         exit 1
     fi
 }
 trap on_exit EXIT
-DIAG=""
-diag() { DIAG="${DIAG}${1}"$'\n'; }
+# <<< tc-docker result
 
 # One PATH rule, whatever PATH the agent gives the script: the usual system
 # directories are appended (never prepended, so what the agent's PATH finds
@@ -118,14 +93,12 @@ export PATH
 # prunes of versions 9 and 10 start a Docker that was stopped on purpose, and
 # every restart: always container with it. Version 12 only changes how the
 # prune reads its own settings file, which matters after a hand edit of that
-# file, and version 13 only moves code, so 11 is still accepted.
+# file, version 13 only moves code, and version 14 only refuses a
+# /var/lib/tc-docker that is not root's, so 11 is still accepted.
 PRUNE_MIN_VERSION=11
 PRUNE_BIN="/usr/local/sbin/tc-docker-prune"
 PRUNE_UNIT="/etc/systemd/system/tc-docker-prune.service"
 PRUNE_CONF="/etc/default/tc-docker-prune"
-PENDING_FILE="/var/lib/tc-docker/pending-removal"
-FIRST_SEEN_DIR="/var/lib/tc-docker"
-FIRST_SEEN_FILE="$FIRST_SEEN_DIR/monitor-first-seen"
 FIRST_SEEN_KEEP_DAYS=7
 DOCKER_SOCK="/var/run/docker.sock"
 # Every docker command of one run must have finished this many seconds after the
@@ -329,6 +302,64 @@ tc_docker_running() {
 }
 # <<< tc-docker running
 
+# >>> tc-docker state: identical in the prune and in the Containers, Health and Images monitors; change them together.
+# The one directory the tc-docker components keep state in, and the one way a
+# file in it is written. tc_state_write NAME CONTENT replaces
+# $TC_STATE_DIR/NAME with CONTENT, exactly as given. The new file is made in
+# the same directory (mode 0600), read back and compared (a full disk can
+# leave a short file), then renamed over the old one, so a reader sees the old
+# file or the new one and never part of one. The directory is created when it
+# is missing, and made root:root 0700 when it is root's but is not that.
+# Nothing is written, and it returns 1 with the reason in TC_STATE_WHY (and
+# the failing command's own words, when it had any, in TC_STATE_ERR), when:
+#   - the directory is a symlink, or is there and is not a directory;
+#   - NAME is there as a symlink, or as anything but a regular file (a symlink
+#     is never followed, written through or replaced);
+#   - the directory cannot be created, is not owned by root, or cannot be made
+#     root:root 0700;
+#   - no file can be created in it, what was written does not read back the
+#     same, or the rename fails.
+# What a failure means is the caller's to say: the prune removes no container
+# it could not record first. Needs GNU stat (-c), mktemp and mv (-T).
+TC_STATE_DIR=/var/lib/tc-docker
+TC_STATE_WHY=""
+TC_STATE_ERR=""
+# shellcheck disable=SC2034  # only the prune prints TC_STATE_ERR
+tc_state_write() {  # name, content
+    local d="$TC_STATE_DIR" f="$TC_STATE_DIR/$1" tmp="" err=""
+    TC_STATE_WHY=""; TC_STATE_ERR=""
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+        TC_STATE_WHY="$d is not a directory"
+    elif [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+        TC_STATE_WHY="$f is not a regular file"
+    elif ! err="$(mkdir -p -- "$d" 2>&1)"; then
+        TC_STATE_WHY="$d cannot be created"
+    elif [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then
+        TC_STATE_WHY="$d is not owned by root"
+    elif [ "$(stat -c '%u:%g:%a' -- "$d" 2>/dev/null)" != "0:0:700" ] \
+         && ! err="$( { chown 0:0 -- "$d" && chmod 700 -- "$d"; } 2>&1)"; then
+        TC_STATE_WHY="$d cannot be made root-only"
+    elif ! tmp="$(mktemp -- "$d/.$1.XXXXXX" 2>&1)"; then
+        err="$tmp"; tmp=""
+        TC_STATE_WHY="no file can be created in $d"
+    elif ! err="$( { printf '%s' "$2" >"$tmp"; } 2>&1)" || [ "$(cat -- "$tmp" 2>/dev/null; echo x)" != "${2}x" ] \
+         || ! err="$(chmod 600 -- "$tmp" 2>&1)"; then
+        TC_STATE_WHY="writing it failed"
+    elif ! err="$(mv -fT -- "$tmp" "$f" 2>&1)"; then
+        TC_STATE_WHY="the new file could not be renamed into place"
+    else
+        return 0
+    fi
+    [ -z "$tmp" ] || rm -f -- "$tmp"
+    TC_STATE_ERR="$(printf '%s' "$err" | tr -cd '[:print:]' | cut -c1-200)"
+    return 1
+}
+# <<< tc-docker state
+# The two files this monitor has in that directory: the prune's record of the
+# stopped containers it will remove (read only), and its own first-seen file.
+PENDING_FILE="$TC_STATE_DIR/pending-removal"
+FIRST_SEEN_FILE="$TC_STATE_DIR/monitor-first-seen"
+
 # A prune installed by an older Host Maintenance. Reads two files and nothing
 # else. STALE_STATUS is the status text ("" when nothing is stale or the action
 # is ignore); STALE_DIAG the diagnostic lines for an alert.
@@ -501,7 +532,7 @@ while IFS=$'\t' read -r id key name running _policy _created started _keep trans
     CAND+=("$key"); STARTED[$key]="$s"
 done <<<"$ROWS"
 
-# ---- first seen: /var/lib/tc-docker/monitor-first-seen (see the top)
+# ---- first seen: /var/lib/tc-docker/monitor-first-seen
 # The well-formed lines of the file, key<TAB>first<TAB>last, first <= last, last
 # no more than an hour ahead of now, each key once. Nothing else is trusted.
 first_seen_lines() {
@@ -511,10 +542,11 @@ first_seen_lines() {
         NF == 3 && $1 ~ keyre && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && length($2) <= 10 && length($3) <= 10 \
             && $2 + 0 <= $3 + 0 && $3 + 0 <= now + 3600 && !seen[$1]++ { print $1, $2 + 0, $3 + 0 }' "$FIRST_SEEN_FILE"
 }
-# Replaces the file with a header and $1 (lines ending in newlines): a new file
-# in the same root-only directory, checked, then renamed over the old one. A
-# symlink is never followed or written through. Returns 1, with FIRST_SEEN_WHY
-# set, when it cannot.
+# Replaces the file with a header and $1 (lines ending in newlines), through
+# tc_state_write (the tc-docker state block): a new root-only file in the same
+# root-only directory, read back, then renamed over the old one; a symlink is
+# never followed or written through. Returns 1, with FIRST_SEEN_WHY set, when
+# it cannot.
 FIRST_SEEN_WHY=""
 first_seen_text() {
     printf '%s\n' "# Running containers not on the expected list, as Docker - Containers Differ From" \
@@ -525,33 +557,11 @@ first_seen_text() {
     printf '%s' "$1"
 }
 first_seen_write() {
-    local tmp body
-    body="$(first_seen_text "$1"; echo x)"; body="${body%x}"
-    if [ -L "$FIRST_SEEN_DIR" ] || { [ -e "$FIRST_SEEN_DIR" ] && [ ! -d "$FIRST_SEEN_DIR" ]; }; then
-        FIRST_SEEN_WHY="$FIRST_SEEN_DIR is not a directory"; return 1
-    fi
-    if [ -L "$FIRST_SEEN_FILE" ] || { [ -e "$FIRST_SEEN_FILE" ] && [ ! -f "$FIRST_SEEN_FILE" ]; }; then
-        FIRST_SEEN_WHY="$FIRST_SEEN_FILE is not a regular file"; return 1
-    fi
-    if ! mkdir -p -- "$FIRST_SEEN_DIR" 2>/dev/null; then
-        FIRST_SEEN_WHY="$FIRST_SEEN_DIR cannot be created"; return 1
-    fi
-    if [ "$(stat -c '%u:%g:%a' -- "$FIRST_SEEN_DIR" 2>/dev/null)" != "0:0:700" ] \
-       && ! { chown 0:0 -- "$FIRST_SEEN_DIR" && chmod 700 -- "$FIRST_SEEN_DIR"; } 2>/dev/null; then
-        FIRST_SEEN_WHY="$FIRST_SEEN_DIR cannot be made root-only"; return 1
-    fi
-    if ! tmp="$(mktemp "$FIRST_SEEN_DIR/.monitor-first-seen.XXXXXX" 2>/dev/null)"; then
-        FIRST_SEEN_WHY="no file can be created in $FIRST_SEEN_DIR"; return 1
-    fi
-    # Compared after writing: a full disk can leave a short file.
-    if ! printf '%s' "$body" >"$tmp" 2>/dev/null || [ "$(cat -- "$tmp")" != "$(printf '%s' "$body")" ] \
-       || ! chmod 600 -- "$tmp" 2>/dev/null; then
-        rm -f -- "$tmp"; FIRST_SEEN_WHY="writing it failed"; return 1
-    fi
-    if ! mv -fT -- "$tmp" "$FIRST_SEEN_FILE" 2>/dev/null; then
-        rm -f -- "$tmp"; FIRST_SEEN_WHY="the new file could not be renamed into place"; return 1
-    fi
-    return 0
+    local body
+    body="$(first_seen_text "$1"; echo x)"
+    tc_state_write monitor-first-seen "${body%x}" && return 0
+    FIRST_SEEN_WHY="$TC_STATE_WHY"
+    return 1
 }
 declare -A FS_FIRST=() FS_LAST=() FROM=()
 while IFS=$'\t' read -r k f l; do
@@ -677,7 +687,7 @@ if [ "$PENDING_BAD" -gt 0 ]; then
 fi
 [ -n "$PENDING_STATUS" ] && SUMMARY="$PENDING_STATUS; $SUMMARY"
 # A stale prune goes first: it is what the old prune may delete that matters
-# most here, and emit cuts the status at 400 characters.
+# most here, and emit cuts the status at STATUS_MAX characters.
 [ -n "$STALE_STATUS" ] && SUMMARY="$STALE_STATUS; $SUMMARY"
 
 ALERT=0

@@ -1,39 +1,73 @@
 #!/bin/bash
 # Docker - Container Health and Resource Usage [Lin]
-# TechCollective custom monitor for Datto RMM.
 #
-# Read-only. Runs docker info / version / ps / stats / inspect, and docker logs
-# only when usrIncludeLogs is yes. Makes no change to any container, image or
-# daemon. No network access. No code is downloaded at run time. Writes one state
-# file so restart counts and resource breaches can be compared against the
-# previous run (see the shared state block below).
+# Datto RMM custom monitor. Runs as root. Watches the running containers of a
+# Docker host for CPU or memory over a threshold, failed healthchecks, restart
+# loops, out-of-memory kills and non-zero exits.
 #
-# Before any docker command, and in this order:
-#   - no docker command (PATH plus the usual system directories)
-#       but /var/run/docker.sock is a socket or docker.service is loaded -> alert
-#       otherwise: Docker is not installed                              -> healthy
-#   - systemd says docker.service is not active: no docker command is run (any
-#     would start Docker again through docker.socket)                    -> healthy
-#   - docker info fails with no docker.service and no socket (a client only) -> healthy
-#   - docker info fails otherwise                                        -> alert
-# Every docker command is stopped if Docker has not answered DOCKER_TIMEOUT
-# seconds after the monitor started, and the check says Docker did not answer.
+# Changes on the host: one file, its own state,
+# /var/lib/tc-docker/monitor-state.tsv (the directory is created root-only
+# when missing). It changes no container, image or daemon setting, makes no
+# network call, and never starts a stopped Docker.
 #
-# Input variables (Datto String/Selection types; all arrive as strings):
-#   usrCpuThreshold     90      percent of the container's OWN available CPU
-#   usrMemThreshold     90      percent of the container's memory limit
-#   usrConsecutive      2       runs a container must breach before alerting
-#   usrCheckHealth      alert   alert | warn | ignore
-#   usrRestartThreshold 3       restarts since the previous run
-#   usrExitedWindowMin  60      minutes; 0 disables the exited-container check
-#   usrExclude          (empty) ERE matched against container names
-#   usrIncludeLogs      no      yes | no - tail container logs into diagnostic
-#   usrStoppedExitAction warn   warn | alert - a container that exited 143 or 137
-#                               without being OOM-killed (usually docker stop)
+# Result: exit 0 healthy, exit 1 alert; one result block on every way out.
+#   1  a container over a threshold for usrConsecutive runs, unhealthy,
+#      restart-looping, OOM-killed or exited non-zero; Docker installed but
+#      unreachable, or not answering within DOCKER_TIMEOUT seconds; an invalid
+#      input variable or a missing tool; the script stopped unexpectedly
+#   0  everything else (Docker not installed or stopped, no containers, all
+#      within thresholds), with what was found named in the status
+#
+# Every condition, input variable and exit, and the state file:
+# https://github.com/TechCollective/DattoRMM_Components/tree/main/Monitors/docker-container-health-and-resource-usage-lin
 
 set -u
 
-RESULT_EMITTED=0
+# >>> tc-docker result: identical in the Containers, Health and Images monitors; change them together.
+# The one result a run prints, as Datto reads it: <-Start Result->, one STATUS=
+# line, <-End Result->, on every way out. With an exit code that is not 0, and
+# only then, the lines diag collected follow as the diagnostic block.
+#   diag LINE         adds a line to the diagnostic
+#   emit CODE STATUS  prints the result (and the diagnostic), then exits CODE
+# The status is made one line (a CR, newline or tab becomes a space, a run of
+# spaces one space) and is cut at STATUS_MAX characters, so what matters most
+# goes first. A run that ends any other way (an unset variable under set -u, a
+# signal) leaves through the EXIT trap, which prints the result itself and
+# makes the exit non-zero: a monitor that exits non-zero with nothing printed
+# is an alert with no text. Before it does, it calls tc_cleanup when the
+# monitor has defined one (something to remove on every way out). Once the
+# result is being printed, HUP, INT and TERM are ignored, so it is printed
+# once and whole.
+STATUS_MAX=900
+EMITTED=0
+DIAG=""
+diag() { DIAG="${DIAG}${1}"$'\n'; }
+emit() {  # exit code, status
+    local msg="$2"
+    trap '' HUP INT TERM
+    msg="${msg//$'\r'/ }"; msg="${msg//$'\n'/ }"; msg="${msg//$'\t'/ }"
+    while [ "$msg" != "${msg//  / }" ]; do msg="${msg//  / }"; done
+    msg="${msg# }"; msg="${msg% }"
+    [ -n "$msg" ] || msg="Check produced no status text"
+    [ "${#msg}" -gt "$STATUS_MAX" ] && msg="${msg:0:$((STATUS_MAX - 3))}..."
+    printf '<-Start Result->\nSTATUS=%s\n<-End Result->\n' "$msg"
+    EMITTED=1
+    if [ "$1" -ne 0 ] && [ -n "$DIAG" ]; then
+        printf '<-Start Diagnostic->\n%s<-End Diagnostic->\n' "$DIAG"
+    fi
+    exit "$1"
+}
+on_exit() {
+    local rc=$?
+    trap '' HUP INT TERM
+    if declare -F tc_cleanup >/dev/null; then tc_cleanup; fi
+    if [ "$EMITTED" -eq 0 ]; then
+        printf '<-Start Result->\nSTATUS=Check could not run: the monitor stopped unexpectedly (exit %s)\n<-End Result->\n' "$rc"
+        exit 1
+    fi
+}
+trap on_exit EXIT
+# <<< tc-docker result
 
 # One PATH rule, whatever PATH the agent gives the script: the usual system
 # directories are appended (never prepended, so what the agent's PATH finds
@@ -51,44 +85,7 @@ DOCKER_TIMEOUT=60
 BASELINE_MAX_AGE=21600
 STATE_NAME="monitor-state.tsv"
 
-# --------------------------------------------------------------------------
-# Result contract
-# --------------------------------------------------------------------------
-
-emit_result() {
-    local msg="$1"
-    msg="${msg//$'\r'/ }"
-    msg="${msg//$'\n'/ }"
-    msg="${msg//$'\t'/ }"
-    if [ "${#msg}" -gt 900 ]; then
-        msg="${msg:0:897}..."
-    fi
-    while [ "${msg}" != "${msg//  / }" ]; do msg="${msg//  / }"; done
-    msg="${msg# }"
-    msg="${msg% }"
-    [ -n "$msg" ] || msg="Check produced no status text"
-    printf '<-Start Result->\n'
-    printf 'STATUS=%s\n' "$msg"
-    printf '<-End Result->\n'
-    RESULT_EMITTED=1
-}
-
-on_exit() {
-    local rc=$?
-    if [ "$RESULT_EMITTED" -eq 0 ]; then
-        printf '<-Start Result->\n'
-        printf 'STATUS=Check failed before it could measure anything (exit %s)\n' "$rc"
-        printf '<-End Result->\n'
-        [ "$rc" -eq 0 ] && rc=1
-    fi
-    exit "$rc"
-}
-trap on_exit EXIT
-
-die_cannot_run() {
-    emit_result "Check could not run: $1"
-    exit 1
-}
+die_cannot_run() { emit 1 "Check could not run: $1"; }
 
 # --------------------------------------------------------------------------
 # Dependencies - checked FIRST, so a missing tool is never misreported as a
@@ -207,12 +204,9 @@ docker_unit_loaded() {
 }
 # <<< tc-docker bounded
 docker_hung() {  # what was running
-    emit_result "Check could not run: Docker did not answer within ${DOCKER_TIMEOUT} seconds"
-    printf '<-Start Diagnostic->\n'
-    printf '%s had not finished %s seconds after this monitor started, so it was stopped: timeout(1) sent TERM to the process group of the docker commands this run started, then anything left in that group was sent KILL; nothing else was signalled.\n' "$1" "$DOCKER_TIMEOUT"
-    printf 'A Docker daemon that accepts connections but does not answer is the usual cause. Look at dockerd: systemctl status docker; journalctl -u docker.\n'
-    printf '<-End Diagnostic->\n'
-    exit 1
+    diag "$1 had not finished $DOCKER_TIMEOUT seconds after this monitor started, so it was stopped: timeout(1) sent TERM to the process group of the docker commands this run started, then anything left in that group was sent KILL; nothing else was signalled."
+    diag "A Docker daemon that accepts connections but does not answer is the usual cause. Look at dockerd: systemctl status docker; journalctl -u docker."
+    emit 1 "Check could not run: Docker did not answer within $DOCKER_TIMEOUT seconds"
 }
 # A docker command with the run's deadline: dk SUBCOMMAND ARGS...
 dk() { bounded '"$@"' "$DOCKER" "$@"; }
@@ -254,30 +248,25 @@ if [ -z "$DOCKER" ]; then
     [ -S "$DOCKER_SOCK" ] && seen="$DOCKER_SOCK is a socket"
     docker_unit_loaded && seen="${seen:+$seen and }docker.service is loaded"
     if [ -n "$seen" ]; then
-        emit_result "Docker appears to be installed but no docker command was found"
-        printf '<-Start Diagnostic->\nNo docker command was found in %s, but %s, so Docker looks installed here. Find where its client went (a package removed only the CLI, a snap or a custom path) and put docker on one of those directories.\n<-End Diagnostic->\n' "$PATH" "$seen"
-        exit 1
+        diag "No docker command was found in $PATH, but $seen, so Docker looks installed here. Find where its client went (a package removed only the CLI, a snap or a custom path) and put docker on one of those directories."
+        emit 1 "Docker appears to be installed but no docker command was found"
     fi
     # Docker absent is a normal state on a broadly-assigned monitor, not a fault.
-    emit_result "Docker is not installed on this host; nothing to check"
-    exit 0
+    emit 0 "Docker is not installed on this host; nothing to check"
 fi
 
 DSTATE="$(bounded "$(declare -f tc_docker_running)"$'\n''DOCKER=$1; tc_docker_running; rc=$?; printf "%s" "$DOCKER_STATE"; exit "$rc"' "$DOCKER")"
 case $? in
     0) ;;
-    1)  emit_result "Docker is stopped (${DSTATE:-docker.service is not active}); nothing to check"
-        exit 0 ;;
+    1)  emit 0 "Docker is stopped (${DSTATE:-docker.service is not active}); nothing to check" ;;
     2)  if [ ! -S "$DOCKER_SOCK" ] && ! docker_unit_loaded; then
-            emit_result "Docker client installed ($DOCKER) but no Docker daemon on this host (no docker.service, no $DOCKER_SOCK); nothing to check"
-            exit 0
+            emit 0 "Docker client installed ($DOCKER) but no Docker daemon on this host (no docker.service, no $DOCKER_SOCK); nothing to check"
         fi
         DOCKER_INFO_OUT="$(dk info 2>&1)"
         case $? in 124|137) docker_hung "docker info" ;; esac
         DOCKER_ERR="$(printf '%s' "$DOCKER_INFO_OUT" | grep -iE 'cannot connect|permission denied|daemon running|dial unix|timed out|failed to connect' | head -1 | tr -cd '[:print:]' | cut -c1-300)"
         [ -n "$DOCKER_ERR" ] || DOCKER_ERR="docker info failed with no recognisable error line"
-        emit_result "Docker is installed but the daemon is not reachable: ${DOCKER_ERR}"
-        exit 1 ;;
+        emit 1 "Docker is installed but the daemon is not reachable: ${DOCKER_ERR}" ;;
     124|137) docker_hung "docker info" ;;
     *) die_cannot_run "asking whether Docker is running failed unexpectedly" ;;
 esac
@@ -286,62 +275,92 @@ esac
 # State file - previous restart counts and breach streaks
 # --------------------------------------------------------------------------
 
+# >>> tc-docker state: identical in the prune and in the Containers, Health and Images monitors; change them together.
+# The one directory the tc-docker components keep state in, and the one way a
+# file in it is written. tc_state_write NAME CONTENT replaces
+# $TC_STATE_DIR/NAME with CONTENT, exactly as given. The new file is made in
+# the same directory (mode 0600), read back and compared (a full disk can
+# leave a short file), then renamed over the old one, so a reader sees the old
+# file or the new one and never part of one. The directory is created when it
+# is missing, and made root:root 0700 when it is root's but is not that.
+# Nothing is written, and it returns 1 with the reason in TC_STATE_WHY (and
+# the failing command's own words, when it had any, in TC_STATE_ERR), when:
+#   - the directory is a symlink, or is there and is not a directory;
+#   - NAME is there as a symlink, or as anything but a regular file (a symlink
+#     is never followed, written through or replaced);
+#   - the directory cannot be created, is not owned by root, or cannot be made
+#     root:root 0700;
+#   - no file can be created in it, what was written does not read back the
+#     same, or the rename fails.
+# What a failure means is the caller's to say: the prune removes no container
+# it could not record first. Needs GNU stat (-c), mktemp and mv (-T).
+TC_STATE_DIR=/var/lib/tc-docker
+TC_STATE_WHY=""
+TC_STATE_ERR=""
+# shellcheck disable=SC2034  # only the prune prints TC_STATE_ERR
+tc_state_write() {  # name, content
+    local d="$TC_STATE_DIR" f="$TC_STATE_DIR/$1" tmp="" err=""
+    TC_STATE_WHY=""; TC_STATE_ERR=""
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+        TC_STATE_WHY="$d is not a directory"
+    elif [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+        TC_STATE_WHY="$f is not a regular file"
+    elif ! err="$(mkdir -p -- "$d" 2>&1)"; then
+        TC_STATE_WHY="$d cannot be created"
+    elif [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then
+        TC_STATE_WHY="$d is not owned by root"
+    elif [ "$(stat -c '%u:%g:%a' -- "$d" 2>/dev/null)" != "0:0:700" ] \
+         && ! err="$( { chown 0:0 -- "$d" && chmod 700 -- "$d"; } 2>&1)"; then
+        TC_STATE_WHY="$d cannot be made root-only"
+    elif ! tmp="$(mktemp -- "$d/.$1.XXXXXX" 2>&1)"; then
+        err="$tmp"; tmp=""
+        TC_STATE_WHY="no file can be created in $d"
+    elif ! err="$( { printf '%s' "$2" >"$tmp"; } 2>&1)" || [ "$(cat -- "$tmp" 2>/dev/null; echo x)" != "${2}x" ] \
+         || ! err="$(chmod 600 -- "$tmp" 2>&1)"; then
+        TC_STATE_WHY="writing it failed"
+    elif ! err="$(mv -fT -- "$tmp" "$f" 2>&1)"; then
+        TC_STATE_WHY="the new file could not be renamed into place"
+    else
+        return 0
+    fi
+    [ -z "$tmp" ] || rm -f -- "$tmp"
+    TC_STATE_ERR="$(printf '%s' "$err" | tr -cd '[:print:]' | cut -c1-200)"
+    return 1
+}
+# <<< tc-docker state
+
 # >>> tc-docker monitor state: identical in the Health and Images monitors; change them together.
-# The state directory these monitors share. There is no other directory: no
-# fallback to /var/tmp, where another local user could have made the path first.
-# tc_state_dir uses it only if it is a real directory (not a symlink) owned by
-# root, creating it 0700 when it is missing and making it 0700 when it is not.
-# It sets STATE_DIR, or leaves STATE_DIR empty and sets STATE_WHY. Never fatal:
-# a monitor without its state directory runs without saved state and says so.
-# tc_state_read NAME prints the file only when it is a regular file (not a
-# symlink) owned by root; the caller keeps only the lines it can check.
-# tc_state_write NAME replaces the file with its stdin by renaming a new
-# root-only file into place, so a symlink there is replaced, never followed.
-# Needs GNU stat (-c) and mv (-T).
-TC_STATE_DIR=/var/lib/tc-docker-monitor
-STATE_DIR=""
-STATE_WHY=""
-tc_state_dir() {
+# tc_state_read NAME prints state file NAME from $TC_STATE_DIR (the tc-docker
+# state block), and only when it can be this monitor's own: the directory is a
+# real directory (not a symlink) owned by root, and the file a regular file
+# (not a symlink) owned by root. Otherwise it prints nothing, and the caller
+# starts without saved state. The caller still keeps only the lines it can
+# check.
+# MOVED STATE. Until Health version 2 and Images version 4 these two monitors
+# kept their state in /var/lib/tc-docker-monitor. While NAME is not in
+# $TC_STATE_DIR at all, the file of that name in the old directory is printed
+# instead, under the same rule. The run's tc_state_write then makes the new
+# file, so the old one is read once. Nothing here changes or removes the old
+# directory or what is in it. Remove this fallback (TC_STATE_OLD_DIR and the
+# line that uses it) once no host has state only in the old directory.
+# Needs GNU stat (-c).
+TC_STATE_OLD_DIR=/var/lib/tc-docker-monitor
+tc_state_read() {  # name
     local d="$TC_STATE_DIR"
-    STATE_DIR=""; STATE_WHY=""
-    if [ -L "$d" ]; then STATE_WHY="$d is a symlink"; return 1; fi
-    if [ ! -e "$d" ]; then
-        ( umask 077 && mkdir -m 700 -- "$d" ) 2>/dev/null
-    fi
-    if [ -L "$d" ] || [ ! -d "$d" ]; then STATE_WHY="$d is not a directory"; return 1; fi
-    if [ "$(stat -c %u -- "$d" 2>/dev/null)" != "0" ]; then STATE_WHY="$d is not owned by root"; return 1; fi
-    if [ "$(stat -c %a -- "$d" 2>/dev/null)" != "700" ] && ! chmod 700 -- "$d" 2>/dev/null; then
-        STATE_WHY="$d cannot be made 0700"; return 1
-    fi
-    STATE_DIR="$d"
-    return 0
-}
-tc_state_read() {
-    local f="$STATE_DIR/$1"
-    [ -n "$STATE_DIR" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ "$(stat -c %u -- "$f" 2>/dev/null)" = "0" ] || return 0
-    cat -- "$f" 2>/dev/null
-    return 0
-}
-tc_state_write() {
-    local f="$STATE_DIR/$1" tmp
-    [ -n "$STATE_DIR" ] || return 1
-    tmp="$(mktemp -- "$STATE_DIR/.$1.XXXXXX" 2>/dev/null)" || return 1
-    if ! cat > "$tmp" 2>/dev/null || ! chmod 600 -- "$tmp" 2>/dev/null || ! mv -fT -- "$tmp" "$f" 2>/dev/null; then
-        rm -f -- "$tmp" 2>/dev/null
-        return 1
-    fi
+    if [ ! -e "$d/$1" ] && [ ! -L "$d/$1" ]; then d="$TC_STATE_OLD_DIR"; fi
+    [ -d "$d" ] && [ ! -L "$d" ] && [ "$(stat -c %u -- "$d" 2>/dev/null)" = "0" ] \
+        && [ -f "$d/$1" ] && [ ! -L "$d/$1" ] && [ "$(stat -c %u -- "$d/$1" 2>/dev/null)" = "0" ] || return 0
+    cat -- "$d/$1" 2>/dev/null
     return 0
 }
 # <<< tc-docker monitor state
 
-tc_state_dir
 NOW_EPOCH="$(date +%s)"
 
 declare -A PREV_RESTARTS=()
 declare -A PREV_STREAK=()
 STATE_AGE_MIN="no previous run recorded"
 STATE_NOTE=""
-[ -n "$STATE_DIR" ] || STATE_NOTE="; no saved state ($STATE_WHY), so restart and breach counts start again every run"
 
 # Only well-formed lines are trusted: name, restarts, streak, epoch.
 prev_epoch=0
@@ -634,10 +653,10 @@ fi
 # Persist state
 # --------------------------------------------------------------------------
 
-if [ -n "$STATE_DIR" ]; then
-    printf '%s' "$NEW_STATE" | tc_state_write "$STATE_NAME" \
-        || STATE_NOTE="${STATE_NOTE}; saved state could not be written to $STATE_DIR"
-fi
+# Never fatal: a run that cannot save its state says so, and the next run
+# starts without one (or from whatever older state can still be read).
+tc_state_write "$STATE_NAME" "$NEW_STATE" \
+    || STATE_NOTE="${STATE_NOTE}; state not saved ($TC_STATE_WHY), so restart and breach counts start again every run"
 
 # --------------------------------------------------------------------------
 # Report
@@ -654,8 +673,7 @@ fi
 suffix="${suffix}${STATE_NOTE}"
 
 if [ "$RUNNING_COUNT" -eq 0 ] && [ "${#ALERTS[@]}" -eq 0 ]; then
-    emit_result "Docker is running but no containers are running on this host${suffix}"
-    exit 0
+    emit 0 "Docker is running but no containers are running on this host${suffix}"
 fi
 
 if [ "${#ALERTS[@]}" -gt 0 ]; then
@@ -682,32 +700,30 @@ if [ "${#ALERTS[@]}" -gt 0 ]; then
         [ "$log_late" -eq 1 ] && suffix="${suffix} (Docker did not return the logs in time)"
     fi
 
-    first="${ALERTS[0]}"
-    if [ "${#ALERTS[@]}" -eq 1 ]; then
-        emit_result "Docker: ${first}${suffix}"
-    else
-        emit_result "Docker: ${#ALERTS[@]} container problems - ${first} (and $(( ${#ALERTS[@]} - 1 )) more; see diagnostic)${suffix}"
-    fi
-
-    printf '<-Start Diagnostic->\n'
-    printf 'Docker server %s | host CPUs %s | %s running container(s) checked | previous run: %s\n' \
-        "$DOCKER_VERSION" "$HOST_CPUS" "$RUNNING_COUNT" "$STATE_AGE_MIN"
-    printf 'Thresholds: cpu>=%s%% of container allowance, mem>=%s%% of limit, %s consecutive run(s); restarts>=%s since last run; exited window %s min; health mode %s\n' \
-        "$CPU_THRESHOLD" "$MEM_THRESHOLD" "$CONSECUTIVE" "$RESTART_THRESHOLD" "$EXITED_WINDOW_MIN" "$HEALTH_MODE"
-    printf '\nConditions met:\n'
-    for a in "${ALERTS[@]}"; do printf '  - %s\n' "$a"; done
-    printf '\nAll running containers:\n'
-    for r in ${DIAG_ROWS[@]+"${DIAG_ROWS[@]}"}; do printf '  %s\n' "$r"; done
+    diag "Docker server $DOCKER_VERSION | host CPUs $HOST_CPUS | $RUNNING_COUNT running container(s) checked | previous run: $STATE_AGE_MIN"
+    diag "Thresholds: cpu>=${CPU_THRESHOLD}% of container allowance, mem>=${MEM_THRESHOLD}% of limit, $CONSECUTIVE consecutive run(s); restarts>=$RESTART_THRESHOLD since last run; exited window $EXITED_WINDOW_MIN min; health mode $HEALTH_MODE"
+    diag ""
+    diag "Conditions met:"
+    for a in "${ALERTS[@]}"; do diag "  - $a"; done
+    diag ""
+    diag "All running containers:"
+    for r in ${DIAG_ROWS[@]+"${DIAG_ROWS[@]}"}; do diag "  $r"; done
     if [ "${#EXITED_LINES[@]}" -gt 0 ]; then
-        printf '\nRecently exited (non-zero):\n'
-        for e in "${EXITED_LINES[@]}"; do printf '  %s\n' "$e"; done
+        diag ""
+        diag "Recently exited (non-zero):"
+        for e in "${EXITED_LINES[@]}"; do diag "  $e"; done
     fi
     if [ -n "$LOGS_TEXT" ]; then
-        printf '\nLast 20 log lines from up to 3 affected containers:\n'
-        printf '%s' "$LOGS_TEXT"
+        diag ""
+        diag "Last 20 log lines from up to 3 affected containers:"
+        diag "${LOGS_TEXT%$'\n'}"
     fi
-    printf '<-End Diagnostic->\n'
-    exit 1
+
+    first="${ALERTS[0]}"
+    if [ "${#ALERTS[@]}" -eq 1 ]; then
+        emit 1 "Docker: ${first}${suffix}"
+    fi
+    emit 1 "Docker: ${#ALERTS[@]} container problems - ${first} (and $(( ${#ALERTS[@]} - 1 )) more; see diagnostic)${suffix}"
 fi
 
 healthy_msg="All ${RUNNING_COUNT} running container(s) within thresholds"
@@ -717,5 +733,4 @@ fi
 if [ -n "$worst_mem_name" ]; then
     healthy_msg="${healthy_msg}, highest memory ${worst_mem}% (${worst_mem_name})"
 fi
-emit_result "${healthy_msg}${suffix}"
-exit 0
+emit 0 "${healthy_msg}${suffix}"
