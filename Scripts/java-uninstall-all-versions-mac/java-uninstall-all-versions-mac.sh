@@ -117,18 +117,23 @@ ObjC.import('Foundation');
 var env = $.NSProcessInfo.processInfo.environment;
 function E(k) { var v = env.objectForKey(k); return (v && !v.isNil()) ? v.js : ''; }
 var path = E('UDF_PATH'), name = E('UDF_NAME'), value = E('UDF_VALUE'), own = E('UDF_OWN');
-var fm = $.NSFileManager.defaultManager, doc = null, result = '';
-if (fm.fileExistsAtPath(path)) {
-    doc = $.NSXMLDocument.alloc.initWithContentsOfURLOptionsError($.NSURL.fileURLWithPath(path), 0, null);
-    if (!doc || doc.isNil() || doc.rootElement.isNil()) { result = 'UDF=WRITE_FAILED ' + name + ': could not parse ' + path; }
-} else {
-    fm.createDirectoryAtPathWithIntermediateDirectoriesAttributesError($(path).stringByDeletingLastPathComponent, true, null, null);
-    doc = $.NSXMLDocument.alloc.initWithRootElement($.NSXMLElement.elementWithName('values'));
-}
-if (!result) {
-    var root = doc.rootElement, kids = root.elementsForName('value'), found = null;
-    for (var i = 0; i < kids.count; i++) {
-        var k = kids.objectAtIndex(i), a = k.attributeForName('name');
+var result = '';
+try {
+    var fm = $.NSFileManager.defaultManager, doc = null;
+    if (fm.fileExistsAtPath(path)) {
+        doc = $.NSXMLDocument.alloc.initWithContentsOfURLOptionsError($.NSURL.fileURLWithPath(path), 0, null);
+        if (!doc || doc.isNil() || doc.rootElement.isNil()) { throw new Error('could not parse ' + path); }
+    } else {
+        fm.createDirectoryAtPathWithIntermediateDirectoriesAttributesError($(path).stringByDeletingLastPathComponent, true, null, null);
+        doc = $.NSXMLDocument.alloc.initWithRootElement($.NSXMLElement.elementWithName('values'));
+    }
+    // Walk the children by index: elementsForName hands back null, not an
+    // empty list, when the file has no entries yet.
+    var root = doc.rootElement, found = null, n = Number(root.childCount);
+    for (var i = 0; i < n; i++) {
+        var k = root.childAtIndex(i);
+        if (Number(k.kind) !== 2 || k.name.js !== 'value') { continue; }   // 2 = NSXMLElementKind
+        var a = k.attributeForName('name');
         if (a && !a.isNil() && a.stringValue.js === name) { found = k; break; }
     }
     if (found) {
@@ -145,11 +150,11 @@ if (!result) {
         root.addChild(el);
     }
     if (!result) {
-        var data = doc.XMLDataWithOptions(1 << 17);
-        result = data.writeToFileAtomically(path, true)
-            ? 'UDF=WRITTEN ' + name + ': ' + value
-            : 'UDF=WRITE_FAILED ' + name + ': could not write ' + path;
+        if (!doc.XMLDataWithOptions(1 << 17).writeToFileAtomically(path, true)) { throw new Error('could not write ' + path); }
+        result = 'UDF=WRITTEN ' + name + ': ' + value;
     }
+} catch (e) {
+    result = 'UDF=WRITE_FAILED ' + name + ': ' + e.message;
 }
 result;
 JXA
@@ -274,11 +279,16 @@ remove_path() {
 # Programs running from what is about to go: listed, never stopped.
 targets=(${R_PATHS[@]+"${R_PATHS[@]}"})
 [ "$PLUGIN_STATE" = remove ] && targets+=("$PLUGIN")
-running=$(ps -axo pid=,comm= 2>/dev/null | while read -r pid cmd; do
-    for t in ${targets[@]+"${targets[@]}"}; do
-        case "$cmd" in "$t"/*) printf '  %s (PID %s) keeps running until it quits\n' "${cmd##*/}" "$pid" ;; esac
+# A function, not a case inside $( ): bash 3.2 misreads that and aborts.
+list_running() {
+    local pid cmd t
+    ps -axo pid=,comm= 2>/dev/null | while read -r pid cmd; do
+        for t in "$@"; do
+            [ "${cmd#"$t"/}" != "$cmd" ] && printf '  %s (PID %s) keeps running until it quits\n' "${cmd##*/}" "$pid"
+        done
     done
-done)
+}
+running=$(list_running ${targets[@]+"${targets[@]}"})
 [ -n "$running" ] && { say 'Running from Java being removed:'; say "$running"; }
 
 say 'Removing:'
