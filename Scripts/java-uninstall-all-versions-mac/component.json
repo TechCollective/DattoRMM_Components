@@ -1,0 +1,47 @@
+{
+  "general": {
+    "name": "Java - Uninstall All Versions [Mac]",
+    "category": "scripts",
+    "description": "Removes system-wide Java from any vendor and Oracle's plug-in; never touches Java bundled inside apps. Report mode changes nothing.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/java-uninstall-all-versions-mac",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "900",
+    "securityLevel": "2",
+    "installType": "unix"
+  },
+  "body": "java-uninstall-all-versions-mac.sh",
+  "variables": [
+    {
+      "name": "usrMode",
+      "type": "map",
+      "direction": "false",
+      "description": "Remove = remove every system-wide Java not matched by usrKeep. Report = list what Remove would do and change nothing.",
+      "defaultVal": "Remove",
+      "options": [
+        {
+          "name": "Remove",
+          "value": "Remove"
+        },
+        {
+          "name": "Report",
+          "value": "Report"
+        }
+      ]
+    },
+    {
+      "name": "usrKeep",
+      "type": "string",
+      "direction": "false",
+      "description": "Optional. Comma-separated text matched against each JDK's folder, product name, vendor and version; matches are kept, e.g. corretto-17. Each term at least 3 characters.",
+      "defaultVal": ""
+    },
+    {
+      "name": "usrUdfNumber",
+      "type": "string",
+      "direction": "false",
+      "description": "UDF to write a one-line summary to, 1 to 300. Blank = write no UDF. Never overwrites a value another component wrote.",
+      "defaultVal": ""
+    }
+  ]
+}
