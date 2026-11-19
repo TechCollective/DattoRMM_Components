@@ -1,0 +1,153 @@
+{
+  "platforms": [
+    "macos"
+  ],
+  "description": "Installs a real Eclipse Temurin JRE pkg, plus stand-ins for Oracle's Java 8 plug-in and updater, a JRE bundled inside an app, and a Homebrew-style symlinked JDK. Proves Report changes nothing, the keep list keeps, Remove removes the JRE, its package receipt and Oracle's leftovers, and that the bundled JRE and the symlinked JDK are never touched. Also checks the UDF lands in the agent's values.xml as valid XML. Bad input is refused and a second run is harmless.",
+  "variables": {
+    "usrUdfNumber": "250"
+  },
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Unknown mode is refused",
+      "expectExitCode": 1,
+      "variables": {
+        "usrMode": "Nuke"
+      },
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrMode"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A keep term under 3 characters is refused",
+      "expectExitCode": 1,
+      "variables": {
+        "usrKeep": "temurin, Ja"
+      },
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrKeep"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "UDF number 301 is refused",
+      "expectExitCode": 1,
+      "variables": {
+        "usrUdfNumber": "301"
+      },
+      "outputContains": [
+        "STATUS=REFUSED",
+        "usrUdfNumber"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Set up: real Temurin JRE, Oracle plug-in and updater stand-ins, an app-bundled JRE, a symlinked JDK",
+      "run": "set -e\ncase \"$(uname -m)\" in arm64) a=aarch64 ;; *) a=x64 ;; esac\ncurl -fsSL -o /tmp/temurin.pkg \"https://api.adoptium.net/v3/installer/latest/21/ga/mac/$a/jre/hotspot/normal/eclipse\"\ninstaller -pkg /tmp/temurin.pkg -target / >/dev/null\nls -d /Library/Java/JavaVirtualMachines/temurin-21.*\npkgutil --pkgs | grep '^net\\.temurin\\.'\nP='/Library/Internet Plug-Ins/JavaAppletPlugin.plugin'\nmkdir -p \"$P/Contents/Home/bin\" '/Library/Application Support/Oracle/Java'\n/usr/libexec/PlistBuddy -c 'Add :CFBundleVersion string 1.8.431.10' \"$P/Contents/Info.plist\"\n/usr/libexec/PlistBuddy -c 'Add :Label string com.oracle.java.Java-Updater' /Library/LaunchAgents/com.oracle.java.Java-Updater.plist\nmkdir -p /Applications/TCTestApp.app/Contents/Resources/jre/bin\ntouch /Applications/TCTestApp.app/Contents/Resources/jre/bin/java\nmkdir -p /opt/tc-test/openjdk.jdk/Contents/Home/bin\nln -s /opt/tc-test/openjdk.jdk /Library/Java/JavaVirtualMachines/tc-test-openjdk.jdk\necho SETUP_OK",
+      "timeoutSeconds": 600,
+      "outputContains": [
+        "SETUP_OK"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Report lists the JRE and the plug-in, leaves the symlink, changes nothing",
+      "expectExitCode": 0,
+      "variables": {
+        "usrMode": "Report"
+      },
+      "outputContains": [
+        "Mode: Report",
+        "temurin-21.",
+        "[remove] Oracle Java Plug-in 1.8.431.10",
+        "symlink, managed elsewhere: tc-test-openjdk.jdk",
+        "Report only, nothing changed",
+        "UDF=WRITTEN Custom250",
+        "STATUS=FOUND"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Report wrote valid XML with the summary and changed nothing",
+      "run": "xmllint --noout /var/root/.mono/registry/LocalMachine/software/centrastage/values.xml && grep 'name=\"Custom250\"' /var/root/.mono/registry/LocalMachine/software/centrastage/values.xml && grep -q 'Java: FOUND' /var/root/.mono/registry/LocalMachine/software/centrastage/values.xml && ls -d /Library/Java/JavaVirtualMachines/temurin-21.* && test -d '/Library/Internet Plug-Ins/JavaAppletPlugin.plugin' && echo REPORT_OK",
+      "outputContains": [
+        "REPORT_OK"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Remove with usrKeep temurin keeps the JRE, removes the plug-in, leaves Oracle leftovers",
+      "expectExitCode": 0,
+      "variables": {
+        "usrKeep": "temurin"
+      },
+      "outputContains": [
+        "[keep]",
+        "deleted /Library/Internet Plug-Ins/JavaAppletPlugin.plugin",
+        "Oracle leftovers left in place",
+        "STATUS=REMOVED"
+      ],
+      "outputNotContains": [
+        "forgot net.temurin"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Kept JRE and its receipt are still there",
+      "run": "ls -d /Library/Java/JavaVirtualMachines/temurin-21.* && pkgutil --pkgs | grep -q '^net\\.temurin\\.' && test ! -e '/Library/Internet Plug-Ins/JavaAppletPlugin.plugin' && test -e /Library/LaunchAgents/com.oracle.java.Java-Updater.plist && echo KEEP_OK",
+      "outputContains": [
+        "KEEP_OK"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Remove with no keep list removes the JRE, its receipt and Oracle's leftovers",
+      "expectExitCode": 0,
+      "outputContains": [
+        "temurin-21.",
+        "deleted /Library/LaunchAgents/com.oracle.java.Java-Updater.plist",
+        "forgot net.temurin",
+        "STATUS=REMOVED"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Java is gone; the app-bundled JRE and the symlinked JDK are untouched",
+      "run": "! ls -d /Library/Java/JavaVirtualMachines/temurin-21.* 2>/dev/null && ! pkgutil --pkgs | grep -q '^net\\.temurin\\.' && test ! -e /Library/LaunchAgents/com.oracle.java.Java-Updater.plist && test ! -e '/Library/Application Support/Oracle/Java' && test -e /Applications/TCTestApp.app/Contents/Resources/jre/bin/java && test -L /Library/Java/JavaVirtualMachines/tc-test-openjdk.jdk && test -d /opt/tc-test/openjdk.jdk/Contents/Home && echo ALL_GOOD",
+      "outputContains": [
+        "ALL_GOOD"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Second Remove run is harmless",
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=CLEAN"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "UDF updated in place, still valid XML, one Custom250 entry",
+      "run": "xmllint --noout /var/root/.mono/registry/LocalMachine/software/centrastage/values.xml && test \"$(grep -c 'name=\"Custom250\"' /var/root/.mono/registry/LocalMachine/software/centrastage/values.xml)\" = 1 && grep -q 'Java: NONE' /var/root/.mono/registry/LocalMachine/software/centrastage/values.xml && echo UDF_OK",
+      "outputContains": [
+        "UDF_OK"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2: on an internal Mac with a real Datto agent, the Report summary appears in the UDF on the device page after check-in",
+      "tier": 2,
+      "variables": {
+        "usrMode": "Report"
+      },
+      "expectExitCode": 0,
+      "outputContains": [
+        "UDF=WRITTEN"
+      ]
+    }
+  ]
+}
