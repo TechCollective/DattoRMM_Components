@@ -3,7 +3,7 @@
     "name": "Java - Uninstall All Versions [Win]",
     "category": "scripts",
     "description": "Uninstalls every standalone Java JRE/JDK from any vendor and cleans leftovers; Report mode lists them without changes.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/java-uninstall-all-versions-win",
-    "uid": "",
+    "uid": "60ae63cc-6e58-41c0-b148-d5414807afeb",
     "hash": "",
     "version": "1",
     "timeout": "3600",
