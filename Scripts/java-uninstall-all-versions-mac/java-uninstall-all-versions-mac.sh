@@ -111,6 +111,9 @@ udf_write() {
     [ "$UDF_NUM" -gt 0 ] || return 0
     local val="$1"
     [ ${#val} -gt 255 ] && val="${val:0:252}..."
+    # The folder is made here, not in the JavaScript: there a JS null passed
+    # as an options dictionary reaches Foundation as NSNull and crashes it.
+    mkdir -p "${UDF_FILE%/*}" || { say "UDF=WRITE_FAILED Custom$UDF_NUM: could not create ${UDF_FILE%/*}"; return 0; }
     UDF_PATH="$UDF_FILE" UDF_NAME="Custom$UDF_NUM" UDF_VALUE="$val" UDF_OWN="$OWN_UDF_PREFIX" \
         /usr/bin/osascript -l JavaScript 2>&1 <<'JXA'
 ObjC.import('Foundation');
@@ -121,10 +124,9 @@ var result = '';
 try {
     var fm = $.NSFileManager.defaultManager, doc = null;
     if (fm.fileExistsAtPath(path)) {
-        doc = $.NSXMLDocument.alloc.initWithContentsOfURLOptionsError($.NSURL.fileURLWithPath(path), 0, null);
+        doc = $.NSXMLDocument.alloc.initWithContentsOfURLOptionsError($.NSURL.fileURLWithPath(path), 0, Ref());
         if (!doc || doc.isNil() || doc.rootElement.isNil()) { throw new Error('could not parse ' + path); }
     } else {
-        fm.createDirectoryAtPathWithIntermediateDirectoriesAttributesError($(path).stringByDeletingLastPathComponent, true, null, null);
         doc = $.NSXMLDocument.alloc.initWithRootElement($.NSXMLElement.elementWithName('values'));
     }
     // Walk the children by index: elementsForName hands back null, not an
