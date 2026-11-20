@@ -1,0 +1,18 @@
+{
+  "general": {
+    "name": "Harness Self-Test Monitor [Lin]",
+    "category": "monitors",
+    "description": "Fixture for the harness self-test. Never imported into Datto.",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "60",
+    "securityLevel": "1",
+    "installType": "unix"
+  },
+  "body": "monitor-lin.sh",
+  "variables": [
+    { "name": "fixtureBlocks", "type": "string", "direction": "false",
+      "description": "one, diag, zero, two or unclosed: which result blocks to print.", "defaultVal": "one" }
+  ]
+}

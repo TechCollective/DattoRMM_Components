@@ -24,7 +24,8 @@ component on one internal device before it goes wide — see the checklist in
 | `Invoke-ComponentTest.ps1` | The Windows harness. Reads `component.json` and `test.json` and runs the steps. |
 | `invoke-component-test.sh` | The macOS and Linux harness. Same `test.json` format, bash + `jq`. |
 | `Invoke-Job.ps1` | Runs one command inside a scheduled task, so a step can run as SYSTEM or as the test user. |
-| `discover.py` | Decides which components a pull request should test. |
+| `discover.py` | Decides which components a pull request should test, and whether the harness itself changed. |
+| `self-test/` | Tests the harness: fixture components whose right answer is known. See [Testing the harness](#testing-the-harness). |
 | [`../../.github/workflows/test-components.yml`](../../.github/workflows/test-components.yml) | The workflow. |
 
 The harness changes the machine it runs on — it creates a local user and
@@ -94,6 +95,14 @@ Linux, with a clean environment and the shebang honoured).
 | `expectExitCode` | `0` | The exit code that counts as a pass. Use a non-zero one to test that bad input is refused. |
 | `outputContains` | none | Strings stdout must contain (case-insensitive). |
 | `variables` | none | Overrides for this run only, over the top-level ones. |
+
+**For a monitor, every run is also checked for exactly one result block.**
+When `component.json` says the category is `monitors`, a run passes only if
+its output holds one `<-Start Result->` line followed by one `<-End Result->`
+line. Diagnostic blocks are not counted. A run that prints none, two, or an
+unclosed one fails, and says how many start and end markers it found. This is
+the review checklist's "exactly one result block, on every path" rule; nobody
+needs to write it into a `test.json`, and there is no way to turn it off.
 
 Run it twice in a row to prove a second run is harmless — most components get
 re-run, and "already installed" must not be an error.
@@ -210,6 +219,26 @@ not work:
 
 Nothing a test prints may identify a customer — the logs of this public repo
 are public.
+
+## Testing the harness
+
+Every result above depends on the harness being right, so the harness has its
+own test. `self-test/Invoke-HarnessSelfTest.ps1` runs the harness on a fixture
+monitor (`self-test/monitor-win` on Windows, `self-test/monitor-lin` on macOS
+and Linux) that prints whatever result blocks a variable asks for, and checks
+the harness passes what it should pass and fails what it should fail, for the
+reason it should.
+
+The workflow runs it on Windows and Linux whenever anything under
+`tools/test-harness/` or the workflow changes, and the **Component tests**
+check fails if it does. Locally it needs `pwsh`, and the same throwaway
+machine the harness does — a container works for the Linux side:
+
+    docker run --rm -v "$PWD":/repo:ro -w /repo mcr.microsoft.com/powershell:7.4-ubuntu-22.04 \
+      bash -c 'apt-get update -qq && apt-get install -y -qq jq sudo && pwsh tools/test-harness/self-test/Invoke-HarnessSelfTest.ps1'
+
+A new harness check gets a case there: a fixture output it must fail, and one
+it must pass.
 
 ## Adding a check type
 
