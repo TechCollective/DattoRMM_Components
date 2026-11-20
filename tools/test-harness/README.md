@@ -81,8 +81,9 @@ Not every step type exists on every harness yet:
 |---|---|---|
 | `runComponent` | yes | yes |
 | `file` | yes | yes |
+| `command` | yes | yes |
 | `registry`, `uninstallEntry`, `activeSetup`, `launch` | yes | — |
-| `testUser`, `command` | — | yes |
+| `testUser` | — | yes |
 
 A step a harness does not know fails with a message saying so, rather than
 passing silently.
@@ -167,6 +168,21 @@ step still works for stubs that do not call `msiexec`.
 `aliveSeconds` (default `15`). There is no desktop in a CI session, so this
 proves "starts and does not crash", not "shows a window". Takes `path` and `as`
 the same way `file` does, including `as: runner`.
+
+**`command`** on Windows — run PowerShell and check it: the way to plant
+what a component reacts to before it runs (a registry key, a file, a fake
+install), and to check what it left behind.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `run` | — | PowerShell, run by Windows PowerShell with `-EncodedCommand`, so it needs no extra quoting. |
+| `as` | `system` | `system`, `testuser` (the local standard user, created on first use), or `runner` (the runner's own account, in its own session). |
+| `expectExitCode` | `0` | |
+| `outputContains` / `outputNotContains` | none | Case-insensitive, stdout and stderr together. |
+| `timeoutSeconds` | `120` | A command still running then fails, and is stopped. |
+
+Use reserved names in anything planted — `example.com` hosts, documentation
+IP ranges — because the log of this public repo shows every command.
 
 ### macOS and Linux only
 
