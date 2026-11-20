@@ -130,6 +130,9 @@ function Invoke-As {
     $out  = Join-Path $WorkRoot "$id.out.txt"
     $err  = Join-Path $WorkRoot "$id.err.txt"
     $done = Join-Path $WorkRoot "$id.done.txt"
+    # A file left by an earlier run in the same work folder would read as this
+    # job already finished.
+    Remove-Item -LiteralPath $done, $out, $err -Force -ErrorAction SilentlyContinue
 
     @{ exe = $Exe; args = $Arguments; workDir = $WorkDir; env = $Environment; out = $out; err = $err; done = $done } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $jobF -Encoding UTF8
