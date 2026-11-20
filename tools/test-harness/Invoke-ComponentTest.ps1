@@ -266,9 +266,20 @@ $timeout     = [int](Get-Prop $general 'timeout' 600)
 $body        = Join-Path $ComponentPath (Get-Prop $manifest 'body')
 
 # Input variables: defaults from component.json, then test.json's overrides.
+# A drop-down (map) variable's defaultVal holds the display name of an option;
+# Datto gives the script that option's value, so pass the value. A default that
+# names no option is a manifest error. Values in test.json are passed as
+# written: they are what the script receives.
 $baseVars = @{}
 foreach ($v in @(Get-Prop $manifest 'variables' @())) {
-    if ($v) { $baseVars[[string]$v.name] = [string](Get-Prop $v 'defaultVal' '') }
+    if (-not $v) { continue }
+    $dv = [string](Get-Prop $v 'defaultVal' '')
+    if ([string](Get-Prop $v 'type' '') -eq 'map' -and $dv -ne '') {
+        $opt = @(Get-Prop $v 'options' @()) | Where-Object { $_ -and [string]$_.name -ceq $dv } | Select-Object -First 1
+        if (-not $opt) { throw "component.json: map variable '$($v.name)' has defaultVal '$dv', which is not the name of any of its options." }
+        $dv = [string]$opt.value
+    }
+    $baseVars[[string]$v.name] = $dv
 }
 $specVars = Get-Prop $spec 'variables'
 if ($specVars) { foreach ($p in $specVars.PSObject.Properties) { $baseVars[$p.Name] = [string]$p.Value } }

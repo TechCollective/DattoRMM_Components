@@ -44,6 +44,18 @@ BODY="$COMP/$(jq -r '.body' "$MANIFEST")"
 [ "$INSTALL_TYPE" = "unix" ] || { echo "installType '$INSTALL_TYPE' is not supported by the macOS/Linux harness" >&2; exit 2; }
 [ -f "$BODY" ] || { echo "Missing component body $BODY" >&2; exit 2; }
 
+# Input variable defaults, as Datto passes them. A drop-down (map) variable's
+# defaultVal holds the display name of an option; the script receives that
+# option's value. A default that names no option is a manifest error.
+DEFAULTS=$(jq -c '
+    [ .variables[]? | . as $v | { (.name): (
+        if .type == "map" and (.defaultVal // "") != "" then
+            ([ .options[]? | select(.name == $v.defaultVal) | .value ] | first)
+            // error("map variable \($v.name): defaultVal \"\($v.defaultVal)\" is not the name of any of its options")
+        else (.defaultVal // "") end
+    ) } ] | add // {}' "$MANIFEST") \
+    || { echo "component.json: a drop-down default does not match its options (see the jq error above)" >&2; exit 2; }
+
 WORK="${RUNNER_TEMP:-/tmp}/component-test"
 mkdir -p "$WORK" && chmod 777 "$WORK"
 
@@ -204,12 +216,13 @@ for ((i = 0; i < STEP_COUNT; i++)); do
         rundir="$WORK/run-$n"; rm -rf "$rundir"; mkdir -p "$rundir"
         cp "$BODY" "$rundir/"; [ -d "$COMP/files" ] && cp -R "$COMP/files/." "$rundir/"
         runbody="$rundir/$(basename "$BODY")"; chmod 755 "$runbody"
-        # Variables: component.json defaults, then test.json, then this step.
+        # Variables: component.json defaults (drop-downs as their values), then
+        # test.json, then this step. Values in test.json are passed as written:
+        # they are what the script receives.
         envargs=()
         while IFS= read -r -d '' kv; do envargs+=("$kv"); done < <(
-            jq -j -n --slurpfile m "$MANIFEST" --slurpfile s "$SPEC" --argjson st "$step" '
-                ([ $m[0].variables[]? | { (.name): (.defaultVal // "") } ] | add // {})
-                + ($s[0].variables // {}) + ($st.variables // {})
+            jq -j -n --argjson d "$DEFAULTS" --slurpfile s "$SPEC" --argjson st "$step" '
+                $d + ($s[0].variables // {}) + ($st.variables // {})
                 | to_entries[] | "\(.key)=\(.value | tostring)\u0000"')
         out="$rundir/stdout.txt"
         # Honour the shebang, as Datto does for unix components.
