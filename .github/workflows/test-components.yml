@@ -40,6 +40,7 @@ jobs:
     outputs:
       matrix: ${{ steps.find.outputs.matrix }}
       count: ${{ steps.find.outputs.count }}
+      harness: ${{ steps.find.outputs.harness }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -88,6 +89,24 @@ jobs:
           COMPONENT: ${{ matrix.component }}
         run: ./tools/test-harness/invoke-component-test.sh "$COMPONENT"
 
+  # The harness decides every result above, so a change to it is tested
+  # first: it is run on fixture components whose right answer is known, and
+  # must pass what it should pass and fail what it should fail.
+  harness-self-test:
+    name: Harness self-test (${{ matrix.os }})
+    needs: discover
+    if: needs.discover.outputs.harness == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - shell: pwsh
+        run: ./tools/test-harness/self-test/Invoke-HarnessSelfTest.ps1
+
   # Some components carry the same block of code between "# >>> <name>" and
   # "# <<< <name>" markers (the tc-docker components share how they read the
   # container list). Every copy must be byte-identical; this fails when one
@@ -105,17 +124,20 @@ jobs:
   # otherwise.
   result:
     name: Component tests
-    needs: [discover, test]
+    needs: [discover, test, harness-self-test]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - env:
           DISCOVER: ${{ needs.discover.result }}
           TEST: ${{ needs.test.result }}
+          SELFTEST: ${{ needs.harness-self-test.result }}
         run: |
-          echo "discover: $DISCOVER, test: $TEST"
+          echo "discover: $DISCOVER, test: $TEST, harness self-test: $SELFTEST"
           [ "$DISCOVER" = "success" ] || exit 1
-          case "$TEST" in
-            success|skipped) exit 0 ;;
-            *) exit 1 ;;
-          esac
+          for r in "$TEST" "$SELFTEST"; do
+            case "$r" in
+              success|skipped) ;;
+              *) exit 1 ;;
+            esac
+          done

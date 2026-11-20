@@ -130,6 +130,9 @@ function Invoke-As {
     $out  = Join-Path $WorkRoot "$id.out.txt"
     $err  = Join-Path $WorkRoot "$id.err.txt"
     $done = Join-Path $WorkRoot "$id.done.txt"
+    # A file left by an earlier run in the same work folder would read as this
+    # job already finished.
+    Remove-Item -LiteralPath $done, $out, $err -Force -ErrorAction SilentlyContinue
 
     @{ exe = $Exe; args = $Arguments; workDir = $WorkDir; env = $Environment; out = $out; err = $err; done = $done } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $jobF -Encoding UTF8
@@ -262,6 +265,7 @@ $spec     = Get-Content -Raw -LiteralPath $specFile     | ConvertFrom-Json
 $general     = Get-Prop $manifest 'general'
 $name        = Get-Prop $general 'name' (Split-Path $ComponentPath -Leaf)
 $installType = Get-Prop $general 'installType' 'powershell'
+$category    = Get-Prop $general 'category' ''
 $timeout     = [int](Get-Prop $general 'timeout' 600)
 $body        = Join-Path $ComponentPath (Get-Prop $manifest 'body')
 
@@ -280,6 +284,20 @@ Write-Host "Component: $name"
 Write-Host "Body:      $body ($installType, timeout ${timeout}s)"
 Write-Host "Steps:     $($steps.Count)"
 Write-Host ''
+
+# A monitor must print exactly one result block on every path, or Datto
+# cannot read what it found. Returns what is wrong, or '' when nothing is.
+function Get-ResultBlockProblem {
+    param([string]$Out)
+    if ($category -ne 'monitors') { return '' }
+    $markers = @(($Out -split "`r?`n") | Where-Object { $_ -cmatch '^<-(Start|End) Result->$' })
+    if ($markers.Count -eq 2 -and $markers[0] -ceq '<-Start Result->' -and $markers[1] -ceq '<-End Result->') { return '' }
+    $starts = @($markers | Where-Object { $_ -ceq '<-Start Result->' }).Count
+    $ends   = $markers.Count - $starts
+    $problem = "a monitor must print exactly one result block, found $starts start and $ends end markers"
+    if ($starts -eq 1 -and $ends -eq 1) { $problem += ', end before start' }
+    return $problem
+}
 
 # ---------------------------------------------------------------- steps
 
@@ -343,8 +361,11 @@ foreach ($s in $steps) {
                     foreach ($t in @(Get-Prop $s 'outputContains' @())) {
                         if ($t -and $r.Out.IndexOf([string]$t, [StringComparison]::OrdinalIgnoreCase) -lt 0) { $missing += $t }
                     }
+                    $blockProblem = if ($missing.Count) { '' } else { Get-ResultBlockProblem $r.Out }
                     if ($missing.Count) {
                         Add-Result $label $false ("Exit code $($r.Code) as expected, but output is missing: " + ($missing -join ' | '))
+                    } elseif ($blockProblem) {
+                        Add-Result $label $false "Exit code $($r.Code) as expected, but $blockProblem"
                     } else {
                         Add-Result $label $true "Exit code $($r.Code) as expected."
                     }

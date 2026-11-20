@@ -39,6 +39,7 @@ esac
 
 NAME=$(jq -r '.general.name // empty' "$MANIFEST"); [ -n "$NAME" ] || NAME=$(basename "$COMP")
 INSTALL_TYPE=$(jq -r '.general.installType // "unix"' "$MANIFEST")
+CATEGORY=$(jq -r '.general.category // empty' "$MANIFEST")
 TIMEOUT=$(jq -r '.general.timeout // "600"' "$MANIFEST")
 BODY="$COMP/$(jq -r '.body' "$MANIFEST")"
 [ "$INSTALL_TYPE" = "unix" ] || { echo "installType '$INSTALL_TYPE' is not supported by the macOS/Linux harness" >&2; exit 2; }
@@ -153,6 +154,18 @@ check_output() {   # step-json
     done < <(jq -r '.outputNotContains[]? // empty' <<<"$1")
 }
 
+# A monitor must print exactly one result block on every path, or Datto
+# cannot read what it found. Sets MISSING when the run's output breaks that.
+check_result_block() {
+    [ "$CATEGORY" = monitors ] || return 0
+    local markers starts ends
+    markers=$(tr -d '\r' <<<"$OUT" | grep -xE '<-(Start|End) Result->')
+    [ "$markers" = $'<-Start Result->\n<-End Result->' ] && return 0
+    starts=$(grep -c Start <<<"$markers"); ends=$(grep -c End <<<"$markers")
+    MISSING="a monitor must print exactly one result block, found $starts start and $ends end markers"
+    [ "$starts" -eq 1 ] && [ "$ends" -eq 1 ] && MISSING="$MISSING, end before start"
+}
+
 # ---------------------------------------------------------------- steps
 
 STEP_COUNT=$(jq '.steps | length' "$SPEC")
@@ -224,6 +237,7 @@ for ((i = 0; i < STEP_COUNT; i++)); do
             add_result FAIL "$label" "Exit code $RC, expected $want."; stop=true
         else
             check_output "$step"
+            [ -z "$MISSING" ] && check_result_block
             if [ -n "$MISSING" ]; then add_result FAIL "$label" "Exit code $RC as expected, but $MISSING"
             else add_result PASS "$label" "Exit code $RC as expected."; fi
         fi

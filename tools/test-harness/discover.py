@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Work out which components the Tier 1 test workflow should test.
 
-Prints a GitHub Actions matrix (JSON) on stdout and writes `matrix=` and
-`count=` to $GITHUB_OUTPUT when it is set. Warnings go to stderr as workflow
+Prints a GitHub Actions matrix (JSON) on stdout and writes `matrix=`,
+`count=` and `harness=` to $GITHUB_OUTPUT when it is set. `harness=true` means
+the harness itself should be tested (its self-test), because it changed or
+everything is being tested. Warnings go to stderr as workflow
 annotations.
 
   discover.py --base <sha>      components touched since <sha>
@@ -110,7 +112,7 @@ def main():
     print(text)
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"matrix={text}\ncount={len(matrix)}\n")
+            f.write(f"matrix={text}\ncount={len(matrix)}\nharness={str(everything).lower()}\n")
 
 
 if __name__ == "__main__":
