@@ -5,7 +5,7 @@
     {
       "type": "command",
       "label": "Plant tctest-apt-pkg 1.0, installed, in a local repository",
-      "run": "set -e\nmk() { d=$(mktemp -d); mkdir -p \"$d/DEBIAN\"; printf 'Package: tctest-apt-pkg\\nVersion: %s\\nArchitecture: all\\nMaintainer: TC Test <test@example.com>\\nDescription: Tier 1 test package\\n' \"$1\" > \"$d/DEBIAN/control\"; dpkg-deb -b \"$d\" \"/opt/tctest-repo/tctest-apt-pkg_$1_all.deb\" >/dev/null; }\nmkdir -p /opt/tctest-repo\nmk 1.0\ndpkg -i /opt/tctest-repo/tctest-apt-pkg_1.0_all.deb >/dev/null\ncd /opt/tctest-repo && apt-ftparchive packages . > Packages && apt-ftparchive release . > Release\necho 'deb [trusted=yes] file:/opt/tctest-repo ./' > /etc/apt/sources.list.d/tctest.list\necho planted 1.0",
+      "run": "set -e\nmkdir -p /opt/tctest-repo\n# publish VERSION: build the package and rewrite the repository index (by hand: the runner has no apt-utils)\ncat > /opt/tctest-publish.sh <<'EOF'\nset -e\nd=$(mktemp -d); mkdir -p \"$d/DEBIAN\"\nprintf 'Package: tctest-apt-pkg\\nVersion: %s\\nArchitecture: all\\nMaintainer: TC Test <test@example.com>\\nDescription: Tier 1 test package\\n' \"$1\" > \"$d/DEBIAN/control\"\ndpkg-deb -b \"$d\" \"/opt/tctest-repo/tctest-apt-pkg_$1_all.deb\" >/dev/null\ncd /opt/tctest-repo\nfor f in *.deb; do dpkg-deb -f \"$f\"; echo \"Filename: ./$f\"; echo \"Size: $(stat -c %s \"$f\")\"; echo \"SHA256: $(sha256sum \"$f\" | cut -d ' ' -f 1)\"; echo; done > Packages\n# apt compares whole-second mtimes, so a republish in the same second as the last update would read as unchanged\nrm -f /var/lib/apt/lists/_opt_tctest-repo_*\ngrep -q \"^Version: $1$\" Packages\nEOF\nbash /opt/tctest-publish.sh 1.0\ndpkg -i /opt/tctest-repo/tctest-apt-pkg_1.0_all.deb >/dev/null\necho 'deb [trusted=yes] file:/opt/tctest-repo ./' > /etc/apt/sources.list.d/tctest.list\necho planted 1.0",
       "outputContains": ["planted 1.0"]
     },
     {
@@ -18,7 +18,7 @@
     {
       "type": "command",
       "label": "Publish tctest-apt-pkg 2.0 to the local repository",
-      "run": "set -e\nd=$(mktemp -d); mkdir -p \"$d/DEBIAN\"; printf 'Package: tctest-apt-pkg\\nVersion: 2.0\\nArchitecture: all\\nMaintainer: TC Test <test@example.com>\\nDescription: Tier 1 test package\\n' > \"$d/DEBIAN/control\"\ndpkg-deb -b \"$d\" /opt/tctest-repo/tctest-apt-pkg_2.0_all.deb >/dev/null\ncd /opt/tctest-repo && apt-ftparchive packages . > Packages && apt-ftparchive release . > Release\n# apt compares whole-second mtimes, so a republish in the same second as the last update would read as unchanged\nrm -f /var/lib/apt/lists/_opt_tctest-repo_*\necho published 2.0",
+      "run": "bash /opt/tctest-publish.sh 2.0 && echo published 2.0",
       "outputContains": ["published 2.0"]
     },
     {
