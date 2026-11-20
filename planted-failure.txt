@@ -1,0 +1,4 @@
+Deliberate failure to prove the Public safety job; removed before merge. All values are fake.
+service_api_key = "x7Kp2Qm9Zr4Wt8Vn3Bc6Yd1Hf5Js0LgT"
+ping 8.8.4.4
+curl https://unlisted-client.com/
