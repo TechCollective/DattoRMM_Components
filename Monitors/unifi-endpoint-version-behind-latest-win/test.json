@@ -1,6 +1,6 @@
 {
   "platform": "windows",
-  "description": "Runs the monitor as SYSTEM on a runner without UniFi Endpoint. It must stay healthy by default, alert when alertIfMissing is on, and turn an out-of-range variable into a 'Check could not run' alert - each with exactly the documented exit code and a result block. The installed/behind paths need the product present and are exercised by the component's own test and the first internal run.",
+  "description": "Runs the monitor as SYSTEM. On a runner without UniFi Endpoint it must stay healthy by default, alert when alertIfMissing is on, and turn an out-of-range variable into a 'Check could not run' alert - each with exactly the documented exit code and a result block. Then it plants an uninstall entry and a fresh cached latest version (so the vendor is never asked) and proves an old version alerts and a current one, with an extra build number, is healthy.",
   "variables": {},
   "steps": [
     {
@@ -29,6 +29,39 @@
       "outputContains": [
         "STATUS=Check could not run:",
         "<-Start Diagnostic->"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Plant UniFi Endpoint 3.6.0.100 and a fresh cached latest of 3.7.4",
+      "run": "$ErrorActionPreference = 'Stop'\n$key = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\TCTestUniFiEndpoint'\nNew-Item -Path $key -Force | Out-Null\nNew-ItemProperty -Path $key -Name DisplayName -Value 'UniFi Endpoint' -Force | Out-Null\nNew-ItemProperty -Path $key -Name Publisher -Value 'Ubiquiti Inc.' -Force | Out-Null\nNew-ItemProperty -Path $key -Name DisplayVersion -Value '3.6.0.100' -Force | Out-Null\n# A fresh cache answer, so the monitor does not ask the vendor\n$dir = Join-Path $env:ProgramData '_automation\\UniFiEndpoint'\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\n[pscustomobject]@{ Version = '3.7.4'; FirstSeenUtc = $null; LastSuccessUtc = [datetime]::UtcNow.ToString('o'); FirstFailureUtc = $null } |\n    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'latest.json') -Encoding UTF8\n'planted 3.6.0.100'",
+      "outputContains": [
+        "planted 3.6.0.100"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Installed and behind: alert, from the cache without asking the vendor",
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=UniFi Endpoint 3.6.0.100 is behind the latest version 3.7.4.",
+        "Latest: 3.7.4 (cached)"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Plant UniFi Endpoint 3.7.4.301, the cached latest with a build number",
+      "run": "$ErrorActionPreference = 'Stop'\n$key = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\TCTestUniFiEndpoint'\nNew-Item -Path $key -Force | Out-Null\nNew-ItemProperty -Path $key -Name DisplayName -Value 'UniFi Endpoint' -Force | Out-Null\nNew-ItemProperty -Path $key -Name Publisher -Value 'Ubiquiti Inc.' -Force | Out-Null\nNew-ItemProperty -Path $key -Name DisplayVersion -Value '3.7.4.301' -Force | Out-Null\n# A fresh cache answer, so the monitor does not ask the vendor\n$dir = Join-Path $env:ProgramData '_automation\\UniFiEndpoint'\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\n[pscustomobject]@{ Version = '3.7.4'; FirstSeenUtc = $null; LastSuccessUtc = [datetime]::UtcNow.ToString('o'); FirstFailureUtc = $null } |\n    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'latest.json') -Encoding UTF8\n'planted 3.7.4.301'",
+      "outputContains": [
+        "planted 3.7.4.301"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Installed and current: healthy",
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=UniFi Endpoint 3.7.4.301 is current (latest 3.7.4, cached)."
       ]
     }
   ]
