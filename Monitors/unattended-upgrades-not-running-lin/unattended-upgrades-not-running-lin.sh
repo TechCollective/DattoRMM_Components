@@ -13,7 +13,7 @@ CRIT=2;
 UNK=3
 
 _out() {
-  local status="$1" short="$2" detail="${3:-}"
+  local status="$1" detail="${3:-}"   # $2, the one-line summary, is not printed
   echo "<-Start Result->"; echo "Status=${status}"; echo "<-End Result->"
   [[ -n $detail ]] && { echo "<-Start Diagnostic->"; echo "$detail"; echo "<-End Diagnostic->"; }
 }
@@ -109,9 +109,9 @@ check_debian() {
   # 4. Compare age against thresholds.
   local warn_sec=93600   # 26 h
   local crit_sec=187200  # 52 h
-  local now=$(date +%s)
+  local now; now=$(date +%s)
   local diff=$(( now - last_run ))
-  local msg="- unattended-upgrades last ran at $(date -d "@$last_run" '+%F %T') (age ${diff}s)."
+  local msg; msg="- unattended-upgrades last ran at $(date -d "@$last_run" '+%F %T') (age ${diff}s)."
 
   if   (( diff >= crit_sec )); then _out "CRITICAL" "CRITICAL: last run ${diff}s ago" "$msg" ; exit $CRIT
   elif (( diff >= warn_sec )); then _out "WARNING"  "WARNING: last run ${diff}s ago" "$msg" ; exit $WARN

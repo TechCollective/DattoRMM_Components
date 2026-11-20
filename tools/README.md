@@ -358,6 +358,29 @@ than you typing it:
 Check the body it extracted matches the one already committed, delete the
 duplicate body it writes, and point `"body"` at the committed file.
 
+## Linting every component
+
+[`lint-components.ps1`](lint-components.ps1) parses and lints every script
+under `Applications/`, `Scripts/` and `Monitors/`, including any test scripts
+kept in a component's folder. It covers every component, whether or not it
+has a `test.json`. The
+[Lint components](../.github/workflows/lint-components.yml) workflow runs it
+on every pull request.
+
+| Language | Checks | Fails on |
+|---|---|---|
+| Shell (`.sh`) | `bash -n`, then shellcheck 0.10.0 | A parse error, or anything shellcheck rates warning or above. Notes and style hints are not shown. |
+| PowerShell (`.ps1`) | The PowerShell parser, then PSScriptAnalyzer 1.23.0 | A parse error, or an Error-severity rule. Warnings are listed in the log and do not fail. |
+
+A deliberate exception is suppressed in the script itself, with the reason
+beside it, so a reviewer sees it in the diff:
+
+    # shellcheck disable=SC2154  # the input variables arrive from Datto as environment variables
+
+Run it locally with shellcheck and PSScriptAnalyzer installed:
+
+    pwsh tools/lint-components.ps1
+
 ## Later: reading this out of Datto
 
 Everything in `component.json` beyond the script — the inputs, the timeout, the
