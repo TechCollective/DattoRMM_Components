@@ -151,13 +151,15 @@ Windows PowerShell 5.1 and PowerShell 7.6, 29 cases each:**
   ranges.
 
 **Tier 1 (CI, every PR):** every invalid input is refused, and the runner
-(no WireGuard) reports `NOT_INSTALLED` and writes nothing. The Windows harness
-can't yet build a tunnel, so the live-tunnel cases are listed in `test.json`
-as Tier 2.
+(no WireGuard) reports `NOT_INSTALLED` and writes nothing. Then the test
+compiles a fake `wg.exe`, which prints handshake times from a file, and a
+do-nothing service named `WireGuardTunnel$tctest`, and walks every decision:
+no service, healthy, stopped, far end down, cooldown, `Always`, and Disabled.
+Only a real tunnel with a real peer stays Tier 2.
 
 **Not verified:**
-- a live tunnel service: healthy, stopped, restarted, Disabled, cooldown and
-  `Always`;
+- a real WireGuard tunnel service: that a restart re-reads its configuration
+  and the real peer handshakes again (Tier 1 fakes `wg.exe` and the service);
 - Windows PowerShell 2.0;
 - a 32-bit agent.
 
@@ -181,6 +183,7 @@ as Tier 2.
 
 - **Level** (access tier) isn't standardised. Decide at save time; this
   component changes network state.
-- **A Windows harness `command` step** would let Tier 1 build a real tunnel on
-  the runner (install WireGuard, `wireguard.exe /installtunnelservice`), as the
-  Linux test does.
+- **A real tunnel in Tier 1.** The harness's `command` step could install
+  WireGuard and run `wireguard.exe /installtunnelservice` on the runner, as the
+  Linux test does. That would replace the fakes, but it needs a peer to
+  handshake with.
