@@ -3,6 +3,14 @@
 Read README.md and CONTRIBUTING.md first: this repo is public, and every
 component change goes branch → PR → merge → paste into Datto.
 
+## Checks
+
+Before pushing, run `tools/check.sh`: every CI check that runs on Linux, in
+about 30 seconds. Windows is tested only in CI. To wait for a PR's CI, run
+`tools/wait-ci.sh <pr>`; it always ends and prints only what failed.
+
+Reviews apply `CODING_STANDARDS.md`.
+
 ## Agent skills
 
 ### Issue tracker
