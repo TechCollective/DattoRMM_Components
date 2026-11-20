@@ -218,6 +218,28 @@ function Invoke-Direct {
     return @{ Code = $code; Out = (Read-Text $out); Err = (Read-Text $err); TimedOut = (-not $done) }
 }
 
+# A step's outputContains / outputNotContains, case-insensitive, against
+# Out. Returns what is wrong, or '' when nothing is.
+function Get-OutputProblem {
+    param($Step, [string]$Out)
+    foreach ($t in @(Get-Prop $Step 'outputContains' @())) {
+        if ($t -and $Out.IndexOf([string]$t, [StringComparison]::OrdinalIgnoreCase) -lt 0) { return "output is missing: $t" }
+    }
+    foreach ($t in @(Get-Prop $Step 'outputNotContains' @())) {
+        if ($t -and $Out.IndexOf([string]$t, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return "output should not contain: $t" }
+    }
+    return ''
+}
+
+# A scheduled task that is stopped leaves the process it started running, so
+# a command that timed out is found by its encoded command line and killed.
+function Stop-EncodedCommand {
+    param([string]$Encoded)
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($Encoded) } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
 # When a file check misses, look for the same file name where installers
 # usually put things, so a wrong expected path shows the right one.
 function Find-Candidates {
@@ -396,6 +418,37 @@ foreach ($s in $steps) {
                     } else {
                         Add-Result $label $true "Found: $path"
                     }
+                }
+            }
+
+            'command' {
+                # Run PowerShell and check its exit code and output: the way to
+                # plant what a component reacts to before it runs, and to check
+                # what it left behind. Passed as -EncodedCommand, so test.json
+                # needs no quoting.
+                $run = [string](Get-Prop $s 'run' '')
+                if (-not $run) { throw "A command step needs 'run'." }
+                $secs = [int](Get-Prop $s 'timeoutSeconds' 120)
+                $enc  = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($run))
+                $arg  = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $enc"
+                switch ($as) {
+                    'system'   { $r = Invoke-As -Label 'command' -Exe 'powershell.exe' -Arguments $arg -As system -TimeoutSeconds $secs }
+                    'testuser' { New-TestUser; $r = Invoke-As -Label 'command' -Exe 'powershell.exe' -Arguments $arg -As testuser -TimeoutSeconds $secs }
+                    'runner'   { $r = Invoke-Direct -Exe 'powershell.exe' -Arguments $arg -WorkDir $WorkRoot -TimeoutSeconds $secs }
+                    default    { throw "Unknown 'as' value '$as': use system, testuser or runner." }
+                }
+                $out = ($r.Out + "`n" + $r.Err).Trim()
+                Write-Block "$label - output" $out
+                $want = [int](Get-Prop $s 'expectExitCode' 0)
+                if ($r.TimedOut) {
+                    Stop-EncodedCommand $enc
+                    Add-Result $label $false "Timed out after ${secs}s as $as, and was stopped."
+                } elseif ($r.Code -ne $want) {
+                    Add-Result $label $false "Exit code $($r.Code), expected $want, as $as."
+                } else {
+                    $problem = Get-OutputProblem $s $out
+                    if ($problem) { Add-Result $label $false "Exit code $($r.Code) as expected, but $problem" }
+                    else { Add-Result $label $true "Exit code $($r.Code) as expected, as $as." }
                 }
             }
 
