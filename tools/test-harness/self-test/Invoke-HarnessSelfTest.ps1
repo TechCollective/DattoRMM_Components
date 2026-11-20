@@ -62,6 +62,7 @@ $cases = @(
         @{ type = 'command'; as = 'testuser'; label = 'Plant a file as the test user'; outputContains = @('tctest')
            run = 'Set-Content "$env:LOCALAPPDATA\tc-planted.txt" x; whoami' }
         @{ type = 'file'; as = 'testuser'; path = '%LOCALAPPDATA%\tc-planted.txt' }
+        @{ type = 'command'; as = 'testuser'; script = 'tests/check.ps1'; outputContains = @('from the script file', 'tctest') }
         @{ type = 'command'; as = 'runner'; outputContains = @($env:USERNAME); run = 'whoami' }
         @{ type = 'command'; label = 'A non-zero exit and stderr, as expected'; expectExitCode = 3
            outputContains = @('to stderr'); outputNotContains = @('never printed'); run = "Write-Error 'to stderr'; exit 3" }
@@ -81,7 +82,9 @@ $cases += @(
     @{ Name = 'Command script: runs the file from the component folder, as each identity'; Category = 'scripts'; Pass = $true
        Steps = @(
         @{ type = 'command'; script = "tests/check.$ext"; outputContains = @('from the script file', $system) }
-        @{ type = 'command'; script = "tests/check.$ext"; as = 'testuser'; outputContains = @('from the script file', 'tctest') }
+        # On Windows the case above runs this as the test user: the harness
+        # creates that account once per machine.
+        @{ type = 'command'; script = "tests/check.$ext"; as = 'testuser'; outputContains = @('from the script file', 'tctest'); platforms = @('linux', 'macos') }
     ) }
     Get-ScriptCase 'Command script: its output checks apply' @{ script = "tests/check.$ext"; outputContains = @('never printed') } 'output is missing: never printed'
     Get-ScriptCase 'Command script: run and script both given' @{ script = "tests/check.$ext"; run = 'echo hi' } "either 'run' or 'script', not both"

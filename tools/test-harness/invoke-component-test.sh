@@ -139,9 +139,10 @@ run_as() {   # who timeout command
     OUT=$(cat "$out" 2>/dev/null); rm -f "$out"
 }
 
-# A command step's script: a file inside the component folder, copied into
-# WORK, where the test user can read it. Sets SCRIPT, or MISSING when refused.
-copy_script() {   # path-relative-to-the-component
+# A command step's script: a file inside the component folder. Sets SCRIPT to
+# its text, which run_as passes to bash -c: on a runner the test user cannot
+# reach the checkout or RUNNER_TEMP. Sets MISSING when refused.
+read_script() {   # path-relative-to-the-component
     local root dir real
     root=$(cd "$COMP" && pwd -P)
     case "$1" in /*) MISSING="Script $1 is outside the component folder."; return 1 ;; esac
@@ -149,8 +150,7 @@ copy_script() {   # path-relative-to-the-component
     real="$dir/$(basename "$1")"
     case "$real" in "$root"/*) ;; *) MISSING="Script $1 is outside the component folder."; return 1 ;; esac
     [ -f "$real" ] || { MISSING="Script not found: $1"; return 1; }
-    SCRIPT="$WORK/script.$$.$RANDOM.$(basename "$1")"
-    if ! { cp "$real" "$SCRIPT" && chmod 644 "$SCRIPT"; }; then MISSING="Could not copy $1 to $SCRIPT."; return 1; fi
+    SCRIPT=$(cat "$real")
 }
 
 # Check OUT against a step's outputContains / outputNotContains.
@@ -296,8 +296,8 @@ for ((i = 0; i < STEP_COUNT; i++)); do
         run=$(j '.run // empty'); script=$(j '.script // empty')
         if [ -n "$run" ] && [ -n "$script" ]; then add_result FAIL "$label" "Give a command step either 'run' or 'script', not both."; continue; fi
         if [ -n "$script" ]; then
-            copy_script "$script" || { add_result FAIL "$label" "$MISSING"; continue; }
-            cmd="/bin/bash $(printf '%q' "$SCRIPT")"; what=$script
+            read_script "$script" || { add_result FAIL "$label" "$MISSING"; continue; }
+            cmd=$SCRIPT; what=$script
         elif [ -n "$run" ]; then
             cmd=$(expand "$run"); what=$cmd
         else

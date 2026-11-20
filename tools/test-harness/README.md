@@ -219,7 +219,7 @@ landed.
 | Field | Default | Meaning |
 |---|---|---|
 | `run` | — | The command, run with `bash -c`, stdin closed. |
-| `script` | — | Instead of `run`: a file in the component folder, run with `bash`. See [Test scripts](#test-scripts). |
+| `script` | — | Instead of `run`: a file in the component folder, its text run with `bash -c` like `run`. See [Test scripts](#test-scripts). |
 | `as` | `root` | `root`, `testuser` (a login shell as the test user), or `runner`. |
 | `expectExitCode` | `0` | |
 | `outputContains` / `outputNotContains` | none | Case-insensitive, stdout and stderr together. |
@@ -236,8 +236,8 @@ A `command` step can give `script` instead of `run`: a path relative to the
 component's folder, by convention in a `tests` subfolder
 (`"script": "tests/plant-rogue-client.ps1"`). Test logic longer than a line or
 two belongs in one, where it shows in the diff and is linted like the body.
-The harness copies the file where every identity can read it and runs it with
-the same `as`, exit code, output and timeout checks as `run`. Giving both
+The harness runs it as any `as` identity (the test user need not be able to
+read the checkout) with the same `as`, exit code, output and timeout checks as `run`. Giving both
 `run` and `script` fails the step, and so does a path that leads outside the
 component folder. The packer never puts `tests/` in an export.
 
