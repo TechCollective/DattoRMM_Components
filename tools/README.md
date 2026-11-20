@@ -377,6 +377,20 @@ beside it, so a reviewer sees it in the diff:
 
     # shellcheck disable=SC2154  # the input variables arrive from Datto as environment variables
 
+It also checks each component folder against the conventions in
+[CONTRIBUTING.md](../CONTRIBUTING.md#naming). The display name is
+`component.json`'s `general.name`, or the README's `#` title when there is no
+manifest. When both exist, they must match.
+
+| Rule | Fails when |
+|---|---|
+| OS tags | The name doesn't end with its OS tags (`[Win]`, `[Mac]`, `[Lin]`), each once, space-separated, in that order. |
+| Folder | The folder isn't the slug of the name: lowercase, with every run of other characters turned into one hyphen. |
+| Platforms | A `test.json` runs on platforms other than exactly the ones the OS tags name. |
+| README | The README has no `## What it does` or `## How to tell it worked` section, the two every component needs. |
+
+Each failure names the folder and what is wrong.
+
 Run it locally with shellcheck and PSScriptAnalyzer installed:
 
     pwsh tools/lint-components.ps1

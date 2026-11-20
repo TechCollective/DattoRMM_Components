@@ -26,7 +26,7 @@ One folder per component. See [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `Active Directory - Domain Trust Secure Channel [Win]` | [`active-directory-domain-trust-secure-channel-win`](active-directory-domain-trust-secure-channel-win) | Not validated — imported, unreviewed. **Cannot currently alert** |
 | `Connection Health - Ping Targets Not Responding [Lin]` | [`connection-health-ping-targets-not-responding-lin`](connection-health-ping-targets-not-responding-lin) | Not validated — written and reviewed, not yet run for real |
 | `Connection Health - Ping Targets Not Responding [Win]` | [`connection-health-ping-targets-not-responding-win`](connection-health-ping-targets-not-responding-win) | Not validated — written and reviewed, not yet run on Windows |
-| `Disk Health - SMART Failure Detected [Mac][Lin]` | [`disk-health-smart-failure-detected-mac-lin`](disk-health-smart-failure-detected-mac-lin) | Not validated — written, not yet run for real |
+| `Disk Health - SMART Failure Detected [Mac] [Lin]` | [`disk-health-smart-failure-detected-mac-lin`](disk-health-smart-failure-detected-mac-lin) | Not validated — written, not yet run for real |
 | `Disk Space - Free Space Below Threshold [Lin]` | [`disk-space-free-space-below-threshold-lin`](disk-space-free-space-below-threshold-lin) | Not validated — written and reviewed, not yet run for real |
 | `Docker - Container Health and Resource Usage [Lin]` | [`docker-container-health-and-resource-usage-lin`](docker-container-health-and-resource-usage-lin) | Not validated — written and reviewed, not yet run for real |
 | `Unattended Upgrades - Not Running [Lin]` | [`unattended-upgrades-not-running-lin`](unattended-upgrades-not-running-lin) | Not validated — imported, unreviewed. **Alert text is unusable** |

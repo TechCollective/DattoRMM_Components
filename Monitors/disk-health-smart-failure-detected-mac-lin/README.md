@@ -1,4 +1,4 @@
-# Disk Health - SMART Failure Detected [Mac][Lin]
+# Disk Health - SMART Failure Detected [Mac] [Lin]
 
 A Datto RMM custom monitor for Linux and macOS. Reads each physical disk's SMART
 data and alerts on a failed self-assessment, a failing attribute, or a threshold
@@ -94,7 +94,7 @@ Automation → Components → New Component.
 
 | Field | Value |
 |---|---|
-| Name | `Disk Health - SMART Failure Detected [Mac][Lin]` |
+| Name | `Disk Health - SMART Failure Detected [Mac] [Lin]` |
 | Description | Reads SMART data on every physical disk and alerts on a failed self-assessment, failing attribute or threshold breach. |
 | Category | **Monitors** — permanent, cannot be changed after the first save |
 | Script type | Shell (Unix, macOS) |
