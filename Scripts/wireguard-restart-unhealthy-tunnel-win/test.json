@@ -2,7 +2,7 @@
   "platforms": [
     "windows"
   ],
-  "description": "Proves every invalid input is refused with exit 2 before anything is read or changed, and that a machine without WireGuard for Windows (the runner) reports NOT_INSTALLED with exit 3 and changes nothing. The Windows harness cannot yet build a tunnel, so every live-tunnel behaviour is listed as Tier 2.",
+  "description": "Proves every invalid input is refused with exit 2 before anything is read or changed, and that a machine without WireGuard for Windows (the runner) reports NOT_INSTALLED with exit 3 and changes nothing. Then it plants a fake wg.exe (printing handshake times from a file) and a do-nothing service named like a tunnel, both compiled on the runner, and walks every decision: no service, healthy, stopped, far end down, cooldown, always, and Disabled. Only a restart of a real tunnel with a real peer stays Tier 2.",
   "variables": {
     "usrWgTunnel": "tctest",
     "usrVerifySec": "20",
@@ -132,13 +132,29 @@
       "exists": false
     },
     {
+      "type": "command",
+      "label": "Plant a fake wg.exe: WireGuard installed, no tunnel service",
+      "run": "$ErrorActionPreference = 'Stop'\nNew-Item -ItemType Directory -Force -Path 'C:\\ProgramData\\tc-wg-fake', 'C:\\Program Files\\WireGuard' | Out-Null\n# Prints the lines of latest-handshakes.txt (or allowed-ips.txt) beside it; NOW and OLD become the current Unix time and an hour ago\nAdd-Type -OutputType ConsoleApplication -OutputAssembly 'C:\\Program Files\\WireGuard\\wg.exe' -TypeDefinition @'\nusing System; using System.IO;\npublic static class FakeWg {\n    public static int Main(string[] a) {\n        if (a.Length != 3 || a[0] != \"show\") { Console.Error.WriteLine(\"fake wg: only 'show <tunnel> <field>'\"); return 1; }\n        string f = Path.Combine(@\"C:\\ProgramData\\tc-wg-fake\", a[2] + \".txt\");\n        long now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;\n        if (File.Exists(f)) foreach (string l in File.ReadAllLines(f))\n            Console.WriteLine(l.Replace(\"NOW\", now.ToString()).Replace(\"OLD\", (now - 3600).ToString()));\n        return 0;\n    }\n}\n'@\nif (-not (Test-Path -LiteralPath 'C:\\Program Files\\WireGuard\\wg.exe')) { 'fake wg.exe was not built'; exit 1 }\n'fake wg.exe built'",
+      "outputContains": [
+        "fake wg.exe built"
+      ]
+    },
+    {
       "type": "runComponent",
       "label": "Tunnel deactivated in the WireGuard app (no service): NOT_ACTIVE, not activated",
       "expectExitCode": 3,
       "outputContains": [
-        "STATUS=NOT_ACTIVE"
-      ],
-      "tier": 2
+        "STATUS=NOT_ACTIVE",
+        "Not activated"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Plant a running fake tunnel service whose peer handshaked just now",
+      "run": "$ErrorActionPreference = 'Stop'\n# A service that does nothing but start and stop, standing in for the tunnel\nAdd-Type -OutputType ConsoleApplication -OutputAssembly 'C:\\ProgramData\\tc-wg-fake\\tunnel-service.exe' -ReferencedAssemblies System.ServiceProcess -TypeDefinition @'\nusing System.ServiceProcess;\npublic class FakeTunnel : ServiceBase {\n    public static void Main() { ServiceBase.Run(new FakeTunnel { ServiceName = \"FakeTunnel\" }); }\n}\n'@\nNew-Service -Name 'WireGuardTunnel$tctest' -BinaryPathName '\"C:\\ProgramData\\tc-wg-fake\\tunnel-service.exe\"' -StartupType Automatic | Out-Null\nSet-Content -LiteralPath 'C:\\ProgramData\\tc-wg-fake\\latest-handshakes.txt' -Value \"fakepeer=`tNOW\"\nStart-Service -Name 'WireGuardTunnel$tctest'\n'service ' + (Get-Service -Name 'WireGuardTunnel$tctest').Status",
+      "outputContains": [
+        "service Running"
+      ]
     },
     {
       "type": "runComponent",
@@ -147,8 +163,15 @@
       "outputContains": [
         "STATUS=HEALTHY",
         "nothing to do"
-      ],
-      "tier": 2
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Stop the tunnel service",
+      "run": "Stop-Service -Name 'WireGuardTunnel$tctest'\n'service ' + (Get-Service -Name 'WireGuardTunnel$tctest').Status",
+      "outputContains": [
+        "service Stopped"
+      ]
     },
     {
       "type": "runComponent",
@@ -157,17 +180,24 @@
       "outputContains": [
         "STATUS=RESTARTED",
         "Restarting the WireGuardTunnel$tctest service"
-      ],
-      "tier": 2
+      ]
+    },
+    {
+      "type": "command",
+      "label": "The peer last handshaked an hour ago",
+      "run": "Set-Content -LiteralPath 'C:\\ProgramData\\tc-wg-fake\\latest-handshakes.txt' -Value \"fakepeer=`tOLD\"\n'handshake old'",
+      "outputContains": [
+        "handshake old"
+      ]
     },
     {
       "type": "runComponent",
       "label": "Far end down: restarted, STILL_UNHEALTHY",
       "expectExitCode": 1,
       "outputContains": [
+        "Restarting the WireGuardTunnel$tctest service",
         "STATUS=STILL_UNHEALTHY"
-      ],
-      "tier": 2
+      ]
     },
     {
       "type": "runComponent",
@@ -178,21 +208,36 @@
       ],
       "variables": {
         "usrCooldownMin": "15"
-      },
-      "tier": 2
+      }
+    },
+    {
+      "type": "command",
+      "label": "The peer handshakes again",
+      "run": "Set-Content -LiteralPath 'C:\\ProgramData\\tc-wg-fake\\latest-handshakes.txt' -Value \"fakepeer=`tNOW\"\n'handshake now'",
+      "outputContains": [
+        "handshake now"
+      ]
     },
     {
       "type": "runComponent",
       "label": "Always inside the cooldown: restarted anyway",
       "expectExitCode": 0,
       "outputContains": [
+        "Restarting the WireGuardTunnel$tctest service",
         "STATUS=RESTARTED"
       ],
       "variables": {
         "usrMode": "always",
         "usrCooldownMin": "15"
-      },
-      "tier": 2
+      }
+    },
+    {
+      "type": "command",
+      "label": "The peer is stale and the tunnel service is set to Disabled",
+      "run": "Set-Content -LiteralPath 'C:\\ProgramData\\tc-wg-fake\\latest-handshakes.txt' -Value \"fakepeer=`tOLD\"\nSet-Service -Name 'WireGuardTunnel$tctest' -StartupType Disabled\n'disabled'",
+      "outputContains": [
+        "disabled"
+      ]
     },
     {
       "type": "runComponent",
@@ -201,8 +246,16 @@
       "outputContains": [
         "STATUS=NOT_ACTIVE",
         "Disabled"
-      ],
-      "tier": 2
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2 (a runner has no real tunnel or peer; the steps above use a fake wg.exe and service): a real tunnel whose service is stopped is restarted, re-reads its configuration and the real peer handshakes again",
+      "tier": 2,
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=RESTARTED"
+      ]
     }
   ]
 }
