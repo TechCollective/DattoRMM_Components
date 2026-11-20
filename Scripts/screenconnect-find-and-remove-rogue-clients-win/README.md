@@ -7,9 +7,11 @@ against MSP ScreenConnect panels, and in Remove mode deletes them.
 > **Status: Not Validated.** Written and reviewed 2026-11-11/12 in response to
 > the campaign. Its logic has been run end to end against simulated machines
 > (a clean one, an infected one, mistyped inputs) with the Windows cmdlets
-> mocked; it has **not yet run on Windows**. The registry code in particular is
-> first exercised by the pull request's Tier 1 run, and removal by the Tier 2
-> steps on an internal VM.
+> mocked. Its Tier 1 test now runs it on a Windows runner against a planted
+> infected machine: Detect finds every planted item, Remove deletes them and a
+> fake client from another instance, saves evidence, and leaves a fake client of
+> ours alone. Uninstalling a real MSI-installed client is still only tested by
+> the Tier 2 step on an internal VM.
 
 ## What it does
 
@@ -175,10 +177,9 @@ Never a customer first.
 
 1. One internal device, Detect. Read the output: our client on an `[ok] Known:`
    line, `HKLM 2 view(s)`, and the UDF showing in Datto after the next check-in.
-2. One internal VM with planted indicators (an empty `C:\ProgramData\RelayTrap`
-   folder, an empty `C:\Windows\Temp\sckit-test` file, a harmless scheduled task
-   named `TrapWatch`, and a `RelayTrapLiteAlert` value under HKLM Run), Detect
-   then Remove — the Tier 2 steps in `test.json`.
+2. One internal VM with our real client and a real second client from another
+   instance, Remove — the Tier 2 step in `test.json`. (The planted indicators
+   are covered by the pull request's Tier 1 run.)
 3. One site, one device, Detect. Then the fleet, Detect.
 4. Remove only where Detect found something, and only after the panel itself
    has been checked and locked down.
