@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2154  # the input variables (reallocMax, failOnPastTrip, ...) arrive from Datto as environment variables
 :<<'WINDOWS_STUB'
 @echo off
 goto WindowsScript

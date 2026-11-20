@@ -1,0 +1,43 @@
+name: Lint components
+
+# Parses and lints every component script, tested or not: bash -n and
+# shellcheck for shell, the PowerShell parser and PSScriptAnalyzer for
+# PowerShell. The cheapest safety net there is, and the only one a component
+# without a test.json gets. See tools/lint-components.ps1 for what fails.
+#
+# Runs on every pull request, not only ones touching components, so
+# "Lint components" always reports and can be made a required check.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint components
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pinned, and checked against its checksum, so a new shellcheck release
+      # cannot fail a pull request that changed nothing.
+      - name: Install shellcheck 0.10.0
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/shellcheck.tar.xz" \
+            https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
+          echo "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-v0.10.0" >> "$GITHUB_PATH"
+
+      - name: Install PSScriptAnalyzer 1.23.0
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.23.0 -Scope CurrentUser
+
+      - name: Lint
+        shell: pwsh
+        run: ./tools/lint-components.ps1
