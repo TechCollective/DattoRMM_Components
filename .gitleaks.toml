@@ -1,0 +1,10 @@
+# Secret scan (gitleaks) run by .github/workflows/public-safety.yml.
+# Known false positives go in the allowlist below, each with its reason.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known false positives"
+regexes = [
+  '''^0123456789abcdef$''',  # fake ScreenConnect thumbprint in its test.json
+]
