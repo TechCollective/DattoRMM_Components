@@ -18,7 +18,7 @@
     {
       "type": "command",
       "label": "Publish tctest-apt-pkg 2.0 to the local repository",
-      "run": "set -e\nd=$(mktemp -d); mkdir -p \"$d/DEBIAN\"; printf 'Package: tctest-apt-pkg\\nVersion: 2.0\\nArchitecture: all\\nMaintainer: TC Test <test@example.com>\\nDescription: Tier 1 test package\\n' > \"$d/DEBIAN/control\"\ndpkg-deb -b \"$d\" /opt/tctest-repo/tctest-apt-pkg_2.0_all.deb >/dev/null\ncd /opt/tctest-repo && apt-ftparchive packages . > Packages && apt-ftparchive release . > Release\necho published 2.0",
+      "run": "set -e\nd=$(mktemp -d); mkdir -p \"$d/DEBIAN\"; printf 'Package: tctest-apt-pkg\\nVersion: 2.0\\nArchitecture: all\\nMaintainer: TC Test <test@example.com>\\nDescription: Tier 1 test package\\n' > \"$d/DEBIAN/control\"\ndpkg-deb -b \"$d\" /opt/tctest-repo/tctest-apt-pkg_2.0_all.deb >/dev/null\ncd /opt/tctest-repo && apt-ftparchive packages . > Packages && apt-ftparchive release . > Release\n# apt compares whole-second mtimes, so a republish in the same second as the last update would read as unchanged\nrm -f /var/lib/apt/lists/_opt_tctest-repo_*\necho published 2.0",
       "outputContains": ["published 2.0"]
     },
     {
