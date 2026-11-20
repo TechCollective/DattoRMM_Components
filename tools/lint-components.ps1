@@ -11,6 +11,12 @@
     PowerShell (.ps1): the PowerShell parser, then PSScriptAnalyzer. A parse
     error or an Error-severity rule fails; warnings are listed but do not fail.
 
+    Conventions, per component folder: the name ends with its OS tags in
+    order, the folder is the name's slug, a test.json runs on exactly the
+    platforms the tags name, and the README has the sections every component
+    needs. The name is component.json's, or the README title without one;
+    with both, they must match.
+
     A deliberate exception is suppressed in the script itself, with the reason
     beside it - "# shellcheck disable=SCxxxx  # why", or a
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute] - so the reviewer sees
@@ -74,7 +80,62 @@ foreach ($f in $ps) {
     }
 }
 
+# ---- Conventions (CONTRIBUTING.md "Naming", COMPONENT-README-TEMPLATE.md) ----
+# The display name is component.json's general.name, or the README title when
+# there is no manifest; where both exist they must agree. The folder is its
+# slug, its OS tags match test.json's platforms, and the README has the
+# sections every component needs.
+$tagPlatform = [ordered]@{ Win = 'windows'; Mac = 'macos'; Lin = 'linux' }
+$requiredSections = @('What it does', 'How to tell it worked')
+$components = @($files | ForEach-Object { ($_ -split '/')[0..1] -join '/' } | Sort-Object -Unique |
+    Where-Object { $_ -match '^[^/]+/[^/]+$' -and (Test-Path -LiteralPath $_ -PathType Container) })
+foreach ($dir in $components) {
+    $readme = "$dir/README.md"
+    if (-not (Test-Path -LiteralPath $readme)) { Write-Failure $dir 1 "$dir has no README.md"; continue }
+    $lines = @(Get-Content -LiteralPath $readme)
+    $title = @($lines | Where-Object { $_ -match '^# \S' } | Select-Object -First 1) -replace '^# ', ''
+    $name = "$title".Trim()
+    $manifestFile = "$dir/component.json"
+    if (Test-Path -LiteralPath $manifestFile) {
+        $general = (Get-Content -Raw -LiteralPath $manifestFile | ConvertFrom-Json).PSObject.Properties['general']
+        $named = if ($general) { $general.Value.PSObject.Properties['name'] } else { $null }
+        if ($named -and "$($named.Value)" -cne $name) {
+            Write-Failure $manifestFile 1 "$dir`: component.json names it '$($named.Value)' but the README title is '$name'; they must match"
+        }
+        if ($named) { $name = "$($named.Value)" }
+    }
+    if (-not $name) { Write-Failure $readme 1 "$dir`: README has no '# Component name' title"; continue }
+
+    # Tags: one or more of [Win] [Mac] [Lin], space-separated, in that order, at the end.
+    $tags = @()
+    if ($name -cmatch '^\S.*?((?: \[(?:Win|Mac|Lin)\])+)$') { $tags = @([regex]::Matches($Matches[1], '\[(\w+)\]') | ForEach-Object { $_.Groups[1].Value }) }
+    $inOrder = @($tagPlatform.Keys | Where-Object { $tags -contains $_ })
+    if ($tags.Count -eq 0 -or ($tags -join ' ') -cne ($inOrder -join ' ')) {
+        Write-Failure $readme 1 "$dir`: '$name' must end with its OS tags, each once, space-separated, in the order [Win] [Mac] [Lin]"
+    }
+
+    $slug = ($name.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+    if ((Split-Path $dir -Leaf) -cne $slug) {
+        Write-Failure $readme 1 "$dir`: the folder must be named '$slug', the slug of '$name'"
+    }
+
+    $specFile = "$dir/test.json"
+    if ($tags.Count -and (Test-Path -LiteralPath $specFile)) {
+        $spec = Get-Content -Raw -LiteralPath $specFile | ConvertFrom-Json
+        $p = $spec.PSObject.Properties['platforms']; if (-not $p) { $p = $spec.PSObject.Properties['platform'] }
+        $have = @(if ($p) { $p.Value }) | Sort-Object
+        $want = @($inOrder | ForEach-Object { $tagPlatform[$_] }) | Sort-Object
+        if (($have -join ',') -cne ($want -join ',')) {
+            Write-Failure $specFile 1 "$dir`: test.json runs on [$($have -join ', ')] but the OS tags say [$($want -join ', ')]"
+        }
+    }
+
+    foreach ($s in $requiredSections) {
+        if (-not ($lines -cmatch "^## $([regex]::Escape($s))\s*$")) { Write-Failure $readme 1 "$dir`: README is missing the '## $s' section" }
+    }
+}
+
 Write-Host ''
-Write-Host "Linted $($sh.Count) shell and $($ps.Count) PowerShell scripts: $script:failures failure(s), $warnings PowerShell warning(s) listed above."
+Write-Host "Linted $($sh.Count) shell and $($ps.Count) PowerShell scripts, and the conventions of $($components.Count) components: $script:failures failure(s), $warnings PowerShell warning(s) listed above."
 if ($script:failures) { exit 1 }
 exit 0

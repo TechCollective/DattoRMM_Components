@@ -1,6 +1,6 @@
 {
   "general": {
-    "name": "Domain Trust",
+    "name": "Active Directory - Domain Trust Secure Channel [Win]",
     "category": "monitors",
     "description": "Test-ComputerSecureChannel\nand nltest /sc_verify:$domain",
     "uid": "",

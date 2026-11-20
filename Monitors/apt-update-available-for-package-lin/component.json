@@ -1,6 +1,6 @@
 {
   "general": {
-    "name": "APT update availble for PACKAGE [LIN]",
+    "name": "APT - Update Available for Package [Lin]",
     "category": "monitors",
     "description": "Will run apt -y update, then check if a package can be updated and alert if it can be.",
     "uid": "",
