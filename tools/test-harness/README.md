@@ -185,6 +185,7 @@ install), and to check what it left behind.
 | Field | Default | Meaning |
 |---|---|---|
 | `run` | — | PowerShell, run by Windows PowerShell with `-EncodedCommand`, so it needs no extra quoting. |
+| `script` | — | Instead of `run`: a `.ps1` in the component folder, run with `-File`. See [Test scripts](#test-scripts). |
 | `as` | `system` | `system`, `testuser` (the local standard user, created on first use), or `runner` (the runner's own account, in its own session). |
 | `expectExitCode` | `0` | |
 | `outputContains` / `outputNotContains` | none | Case-insensitive, stdout and stderr together. |
@@ -218,6 +219,7 @@ landed.
 | Field | Default | Meaning |
 |---|---|---|
 | `run` | — | The command, run with `bash -c`, stdin closed. |
+| `script` | — | Instead of `run`: a file in the component folder, run with `bash`. See [Test scripts](#test-scripts). |
 | `as` | `root` | `root`, `testuser` (a login shell as the test user), or `runner`. |
 | `expectExitCode` | `0` | |
 | `outputContains` / `outputNotContains` | none | Case-insensitive, stdout and stderr together. |
@@ -227,6 +229,17 @@ A user-facing script that ends by waiting for input gets end-of-file and
 exits, so a `command` can run one up to the point where it would need a
 person, a browser or a real server, and check it got that far — see
 [`google-cloud-iap-connect-mac-lin/test.json`](../../Applications/google-cloud-iap-connect-mac-lin/test.json).
+
+### Test scripts
+
+A `command` step can give `script` instead of `run`: a path relative to the
+component's folder, by convention in a `tests` subfolder
+(`"script": "tests/plant-rogue-client.ps1"`). Test logic longer than a line or
+two belongs in one, where it shows in the diff and is linted like the body.
+The harness copies the file where every identity can read it and runs it with
+the same `as`, exit code, output and timeout checks as `run`. Giving both
+`run` and `script` fails the step, and so does a path that leads outside the
+component folder. The packer never puts `tests/` in an export.
 
 ### Which checks to write
 
