@@ -13,6 +13,10 @@ annotations.
 
 A change to the harness itself, or to the workflow, tests everything - the
 harness is what every result depends on.
+
+A touched component without a test.json fails discovery, unless it is listed
+in untested-components.txt (today's untested components, a list to shrink),
+which only warns.
 """
 import argparse
 import json
@@ -23,6 +27,7 @@ from pathlib import Path
 
 CATEGORIES = ("Applications", "Scripts", "Monitors")
 RETEST_ALL = ("tools/test-harness/", ".github/workflows/test-components.yml")
+EXEMPT_LIST = "tools/test-harness/untested-components.txt"
 
 # platform in test.json -> GitHub-hosted runner. Windows runs
 # Invoke-ComponentTest.ps1; macOS and Linux run invoke-component-test.sh.
@@ -41,15 +46,41 @@ def all_components(root):
 
 
 def changed_components(root, base):
+    """The component folders this change touched, and whether it retests everything."""
     out = subprocess.run(
         ["git", "diff", "--name-only", f"{base}...HEAD"],
         cwd=root, check=True, capture_output=True, text=True,
-    ).stdout.split()
-    if any(f.startswith(RETEST_ALL) for f in out):
-        return list(all_components(root)), True
+    ).stdout.splitlines()
     dirs = sorted({Path(*Path(f).parts[:2]) for f in out
                    if Path(f).parts[0] in CATEGORIES and len(Path(f).parts) > 2})
-    return [root / d for d in dirs if (root / d).is_dir()], False
+    return [root / d for d in dirs if (root / d).is_dir()], any(f.startswith(RETEST_ALL) for f in out)
+
+
+def read_exempt(root):
+    path = root / EXEMPT_LIST
+    if not path.is_file():
+        return set()
+    return {l.strip().rstrip("/") for l in path.read_text().splitlines() if l.strip() and not l.startswith("#")}
+
+
+def check_touched(root, touched):
+    """Fails a touched component that has no test.json, unless it is exempt."""
+    exempt = read_exempt(root)
+    missing = False
+    for d in touched:
+        rel = d.relative_to(root).as_posix()
+        has_spec = (d / "test.json").is_file()
+        if not has_spec and rel in exempt:
+            warn(f"{rel} has no test.json, so it was not tested. It is on the legacy list in "
+                 f"{EXEMPT_LIST}; giving it one is how that list shrinks.")
+        elif not has_spec:
+            print(f"::error file={rel}::{rel} has no test.json. Every new component ships one; "
+                  "see tools/test-harness/README.md.", file=sys.stderr)
+            missing = True
+        elif rel in exempt:
+            warn(f"{rel} now has a test.json: remove it from {EXEMPT_LIST}.")
+    if missing:
+        sys.exit(1)
 
 
 def main():
@@ -68,18 +99,16 @@ def main():
     elif args.only:
         dirs = [root / args.only.strip("/")]
     else:
-        dirs, everything = changed_components(root, args.base)
+        touched, everything = changed_components(root, args.base)
+        check_touched(root, touched)
+        dirs = list(all_components(root)) if everything else touched
 
     matrix = []
     for d in dirs:
         rel = d.relative_to(root).as_posix()
         spec_file = d / "test.json"
         if not spec_file.is_file():
-            # Old components and monitors have no spec yet. Say so, but only
-            # for the ones this change actually touched - not on a full sweep.
-            if not everything and not rel.startswith("Monitors/"):
-                warn(f"{rel} has no test.json, so it was not tested. See tools/test-harness/README.md.")
-            continue
+            continue   # check_touched has already passed judgement on it
         try:
             spec = json.loads(spec_file.read_text())
         except json.JSONDecodeError as e:

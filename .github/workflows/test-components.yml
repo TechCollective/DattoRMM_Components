@@ -5,8 +5,8 @@ name: Test components
 # its test.json lists - Windows, macOS, Linux - the way Datto would, and
 # checks it did what its test.json says. See tools/test-harness/.
 #
-# A component without a test.json gets a warning, not a failure, so older
-# components and monitors do not block a pull request.
+# A touched component without a test.json fails discovery, unless it is on
+# the legacy list in tools/test-harness/untested-components.txt, which warns.
 #
 # Nothing here uses a secret, and nothing here writes to the repository. This
 # repo is public, so the logs are public: test output must never carry
@@ -45,6 +45,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      # Discovery decides what every other job does, so its own tests run first.
+      - name: Test discovery
+        run: python3 -m unittest discover -s tools/test-harness -p 'test_*.py'
 
       - id: find
         env:
