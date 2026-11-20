@@ -1,6 +1,6 @@
 {
   "platforms": ["windows"],
-  "description": "Proves bad input is refused (an attacker thumbprint given as ours, and Remove without a thumbprint or without a relay), that Detect and Remove on a runner with no ScreenConnect report CLEAN, read both registry views and write the UDF summary, and that a second run is harmless. Defender exclusions are skipped because GitHub's image excludes whole drives on purpose. Finding and removing planted indicators, and removing a real second client, are Tier 2 on an internal VM.",
+  "description": "Proves bad input is refused (an attacker thumbprint given as ours, and Remove without a thumbprint or without a relay), that Detect and Remove on a runner with no ScreenConnect report CLEAN, read both registry views and write the UDF summary, and that a second run is harmless. Then it plants an infected machine (our client, a client from another instance, and the RelayTrap folder, temp file, task and Run value, all with reserved example names) and proves Detect reports every item and deletes nothing, Remove deletes them all and saves evidence while leaving our client alone, and a Detect afterwards is clean. The planted clients are services pointing at an empty executable. Defender exclusions are skipped because GitHub's image excludes whole drives on purpose. Uninstalling a real MSI-installed client, and our own client still connecting afterwards, are Tier 2 on an internal VM.",
   "variables": {
     "usrKnownThumbprints": "0123456789abcdef",
     "usrUdfNumber": "250",
@@ -89,23 +89,52 @@
       "exists": false
     },
     {
+      "type": "command",
+      "label": "Plant an infected machine: our client, a client from another instance (relay.example.net), the RelayTrap folder, a sckit-test file in Windows\\Temp, a harmless TrapWatch task and a RelayTrapLiteAlert Run value",
+      "run": "$ErrorActionPreference = 'Stop'\n$pf = ${env:ProgramFiles(x86)}\nforeach ($c in @(@{ thumb = '0123456789abcdef'; relay = 'relay.example.com' }, @{ thumb = 'aaaabbbbccccdddd'; relay = 'relay.example.net' })) {\n    $name = 'ScreenConnect Client ({0})' -f $c.thumb\n    $dir  = Join-Path $pf $name\n    New-Item -ItemType Directory -Force -Path $dir | Out-Null\n    $exe  = Join-Path $dir 'ScreenConnect.ClientService.exe'\n    Set-Content -LiteralPath $exe -Value ''\n    $bin  = '\"{0}\" \"?e=Access&y=Guest&h={1}&p=8041\"' -f $exe, $c.relay\n    New-Service -Name $name -BinaryPathName $bin -StartupType Manual | Out-Null\n}\nNew-Item -ItemType Directory -Force -Path 'C:\\ProgramData\\RelayTrap' | Out-Null\nSet-Content -LiteralPath 'C:\\ProgramData\\RelayTrap\\payload.txt' -Value 'test payload'\nNew-Item -ItemType File -Force -Path 'C:\\Windows\\Temp\\sckit-test' | Out-Null\n$action  = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c exit 0'\n$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(1)\nRegister-ScheduledTask -TaskName 'TrapWatch' -Action $action -Trigger $trigger -User 'SYSTEM' -Force | Out-Null\nNew-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'RelayTrapLiteAlert' -Value 'cmd.exe /c exit 0' -Force | Out-Null\n'planted'",
+      "outputContains": [ "planted" ]
+    },
+    {
       "type": "runComponent",
-      "label": "Tier 2: on an internal VM with a planted C:\\ProgramData\\RelayTrap folder, a sckit-test file in C:\\Windows\\Temp, a harmless scheduled task named TrapWatch and a RelayTrapLiteAlert value under HKLM Run, Detect reports IOC_HIT",
-      "tier": 2,
+      "label": "Detect on the planted machine reports every planted item, keeps ours, and changes nothing",
       "expectExitCode": 3,
-      "outputContains": [ "FOLDER:", "TEMP ARTIFACT:", "SCHEDULED TASK:", "RUN VALUE:", "STATUS=IOC_HIT" ]
+      "outputContains": [ "[ok] Known: ScreenConnect client thumb=0123456789abcdef", "NOT OUR INSTANCE: ScreenConnect client thumb=aaaabbbbccccdddd relay=relay.example.net", "FOLDER:", "TEMP ARTIFACT:", "SCHEDULED TASK:", "RUN VALUE:", "STATUS=IOC_HIT" ]
+    },
+    {
+      "type": "file",
+      "label": "Detect left the planted payload alone",
+      "path": "C:\\ProgramData\\RelayTrap\\payload.txt"
+    },
+    {
+      "type": "file",
+      "label": "Detect left the planted temp file alone",
+      "path": "C:\\Windows\\Temp\\sckit-test"
     },
     {
       "type": "runComponent",
-      "label": "Tier 2: Remove on that VM deletes all four, saves evidence, and the re-check finds nothing left",
-      "tier": 2,
-      "variables": { "usrMode": "Remove", "usrKnownRelayHosts": "relay.example.com" },
+      "label": "Remove deletes the other instance's client and every planted indicator, saves evidence, and the re-check finds nothing left",
+      "variables": {
+        "usrMode": "Remove",
+        "usrKnownRelayHosts": "relay.example.com"
+      },
       "expectExitCode": 0,
-      "outputContains": [ "Deleted scheduled task", "Deleted Run value", "Evidence log:", "STATUS=REMOVED" ]
+      "outputContains": [ "Removing ScreenConnect client thumb=aaaabbbbccccdddd", "Deleted scheduled task", "Deleted Run value", "Deleted C:\\Windows\\Temp\\sckit-test", "Evidence log:", "Re-check after removal", "STATUS=REMOVED" ]
+    },
+    {
+      "type": "command",
+      "label": "Every planted item is gone, our client is untouched, the evidence log names what was removed, and a zip was saved",
+      "run": "$pf = ${env:ProgramFiles(x86)}\n$wrong = @()\nif (Test-Path -LiteralPath 'C:\\ProgramData\\RelayTrap') { $wrong += 'RelayTrap folder still there' }\nif (Test-Path -LiteralPath 'C:\\Windows\\Temp\\sckit-test') { $wrong += 'sckit-test still there' }\nif (Get-ScheduledTask -TaskName 'TrapWatch' -ErrorAction SilentlyContinue) { $wrong += 'TrapWatch task still there' }\nif ((Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run').PSObject.Properties['RelayTrapLiteAlert']) { $wrong += 'Run value still there' }\nif (Get-Service -Name 'ScreenConnect Client (aaaabbbbccccdddd)' -ErrorAction SilentlyContinue) { $wrong += 'other instance service still there' }\nif (Test-Path -LiteralPath (Join-Path $pf 'ScreenConnect Client (aaaabbbbccccdddd)')) { $wrong += 'other instance folder still there' }\nif (-not (Get-Service -Name 'ScreenConnect Client (0123456789abcdef)' -ErrorAction SilentlyContinue)) { $wrong += 'OUR service was removed' }\nif (-not (Test-Path -LiteralPath (Join-Path $pf 'ScreenConnect Client (0123456789abcdef)\\ScreenConnect.ClientService.exe'))) { $wrong += 'OUR folder was removed' }\n$log = @(Get-ChildItem -LiteralPath 'C:\\ProgramData\\TechCollective\\SCHunt' -Filter 'findings-*.txt' -ErrorAction SilentlyContinue)\nif ($log.Count -eq 0) { $wrong += 'no evidence log' }\nelse {\n    $saved = Get-Content -Raw -LiteralPath $log[0].FullName\n    foreach ($s in @('TrapWatch', 'RelayTrapLiteAlert', 'relay.example.net')) { if (-not $saved.Contains($s)) { $wrong += \"evidence log does not mention $s\" } }\n}\nif (@(Get-ChildItem -LiteralPath 'C:\\ProgramData\\TechCollective\\SCHunt' -Filter 'evidence-*.zip' -ErrorAction SilentlyContinue).Count -eq 0) { $wrong += 'no evidence zip' }\nif ($wrong.Count) { 'WRONG: ' + ($wrong -join '; '); exit 1 }\n'all planted items gone, our client kept, evidence saved'",
+      "outputContains": [ "our client kept" ]
     },
     {
       "type": "runComponent",
-      "label": "Tier 2: on an internal VM with our client and a second ScreenConnect client from another instance, Remove (with our real thumbprint and relay) uninstalls the other one and ours keeps working",
+      "label": "Detect after Remove is clean, still sees our client, and notes the saved evidence",
+      "expectExitCode": 0,
+      "outputContains": [ "[ok] Known: ScreenConnect client thumb=0123456789abcdef", "An earlier Remove run saved evidence", "STATUS=CLEAN" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Tier 2 (a runner has no real MSI-installed client to uninstall, and nothing to connect to): on an internal VM with our client and a second real ScreenConnect client from another instance, Remove (with our real thumbprint and relay) uninstalls the other one through msiexec and ours keeps working",
       "tier": 2,
       "variables": { "usrMode": "Remove" },
       "expectExitCode": 0,
