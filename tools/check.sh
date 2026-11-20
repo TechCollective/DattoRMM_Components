@@ -27,6 +27,12 @@ step "Discovery tests"     python3 -m unittest discover -s tools/test-harness -p
 step "Audit committed .cpt" python3 tools/cpt.py audit
 step "Build every component" python3 tools/cpt.py pack-all --out-dir "$dist"
 step "Shared blocks match" python3 tools/check-shared-blocks.py
+step "Addresses and domains" python3 tools/check-public-safety.py
+if gitleaks git --help >/dev/null 2>&1; then
+    step "Secret scan (this branch)" gitleaks git --no-banner --redact --log-opts=origin/main..HEAD .
+else
+    echo "=== Skipped: secret scan (needs gitleaks 8.19 or later; CI runs it)"
+fi
 
 # shellcheck disable=SC2317  # called through step, which shellcheck cannot follow
 in_container() {
