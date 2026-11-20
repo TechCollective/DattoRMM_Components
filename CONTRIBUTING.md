@@ -137,22 +137,29 @@ whose folder already exists. Replace every `TODO`, then add the folder:
 
     git add Monitors/disk-space-free-space-below-threshold-lin
 
-**4. Write the commit message into a file, then commit with it.**
+**4. Run the checks.** Every CI check that can run on Linux, in about 30
+seconds (it needs Docker for the lint and harness self-test):
+
+    tools/check.sh
+
+Windows tests run only in CI, on the pull request.
+
+**5. Write the commit message into a file, then commit with it.**
 
 Do this rather than typing a multi-line `-m` string — a quoted string spanning
 lines gets mangled often enough to be worth avoiding entirely.
 
     git commit -F .git/COMMIT_DRAFT
 
-**5. Push the branch.**
+**6. Push the branch.**
 
     git push -u origin disk-space-free-space-below-threshold-lin
 
-**6. Open the pull request.** A push does not create one. Open it on GitHub, or:
+**7. Open the pull request.** A push does not create one. Open it on GitHub, or:
 
     gh pr create --fill
 
-**7. Merge, then paste into Datto.** In that order — the merge commit is the
+**8. Merge, then paste into Datto.** In that order — the merge commit is the
 record of what was pasted. A component edited in Datto without a matching commit
 here is invisible to everyone else, and nothing will ever catch it.
 

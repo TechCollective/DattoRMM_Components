@@ -9,7 +9,11 @@
     fails; notes and style hints are left out.
 
     PowerShell (.ps1): the PowerShell parser, then PSScriptAnalyzer. A parse
-    error or an Error-severity rule fails; warnings are listed but do not fail.
+    error or an Error-severity rule fails, and so does any warning not already
+    in tools/lint-baseline.txt. The baseline holds the warnings that predate
+    it, keyed on file, rule and message (not line, so an edit elsewhere in the
+    file does not shift it); fixing one and rerunning with -UpdateBaseline
+    shrinks it.
 
     Conventions, per component folder: the name ends with its OS tags in
     order, the folder is the name's slug, a test.json runs on exactly the
@@ -27,7 +31,14 @@
 
 .EXAMPLE
     pwsh tools/lint-components.ps1
+
+.EXAMPLE
+    pwsh tools/lint-components.ps1 -UpdateBaseline
+    Rewrites tools/lint-baseline.txt to today's warnings. Use it after fixing
+    warnings, never to wave a new one through: suppress that in the script
+    with its reason instead.
 #>
+param([switch]$UpdateBaseline)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
@@ -63,6 +74,14 @@ if ($sh.Count) {
     if ($LASTEXITCODE -gt 1) { Write-Failure $sh[0] 1 "shellcheck could not run (exit $LASTEXITCODE); see its output above" }
 }
 
+# Warnings as "file<TAB>rule<TAB>message", one per occurrence, so a second
+# copy of a known warning in the same file still counts as new.
+$baselineFile = 'tools/lint-baseline.txt'
+$known = @{}
+if (Test-Path $baselineFile) {
+    foreach ($k in Get-Content $baselineFile) { if ($k) { $known[$k] = 1 + $(if ($known.ContainsKey($k)) { $known[$k] } else { 0 }) } }
+}
+$found = [System.Collections.Generic.List[string]]::new()
 $warnings = 0
 foreach ($f in $ps) {
     $errors = $null
@@ -74,8 +93,10 @@ foreach ($f in $ps) {
         if ("$($d.Severity)" -in 'Error', 'ParseError') {
             Write-Failure $f $d.Line "$($d.RuleName): $($d.Message)"
         } elseif ("$($d.Severity)" -eq 'Warning') {
-            $warnings++
-            Write-Host "${f}:$($d.Line): warning $($d.RuleName): $($d.Message)"
+            $key = "$f`t$($d.RuleName)`t$("$($d.Message)" -replace '\s+', ' ')"
+            $found.Add($key)
+            if (-not $UpdateBaseline -and $known.ContainsKey($key) -and $known[$key] -gt 0) { $known[$key]--; $warnings++ }
+            elseif (-not $UpdateBaseline) { Write-Failure $f $d.Line "new warning $($d.RuleName): $($d.Message) (fix it, or suppress it in the script with the reason)" }
         }
     }
 }
@@ -135,7 +156,16 @@ foreach ($dir in $components) {
     }
 }
 
+if ($UpdateBaseline) {
+    $found | Sort-Object | Set-Content -Encoding utf8NoBOM $baselineFile
+    Write-Host "Wrote $($found.Count) warning(s) to $baselineFile."
+    $warnings = $found.Count
+} else {
+    $gone = @($known.Keys | Where-Object { $known[$_] -gt 0 })
+    if ($gone.Count) { Write-Host "$($gone.Count) baseline warning(s) no longer occur; run with -UpdateBaseline to drop them from $baselineFile." }
+}
+
 Write-Host ''
-Write-Host "Linted $($sh.Count) shell and $($ps.Count) PowerShell scripts, and the conventions of $($components.Count) components: $script:failures failure(s), $warnings PowerShell warning(s) listed above."
+Write-Host "Linted $($sh.Count) shell and $($ps.Count) PowerShell scripts, and the conventions of $($components.Count) components: $script:failures failure(s), $warnings known PowerShell warning(s) in $baselineFile."
 if ($script:failures) { exit 1 }
 exit 0

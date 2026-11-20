@@ -391,7 +391,16 @@ on every pull request.
 | Language | Checks | Fails on |
 |---|---|---|
 | Shell (`.sh`) | `bash -n`, then shellcheck 0.10.0 | A parse error, or anything shellcheck rates warning or above. Notes and style hints are not shown. |
-| PowerShell (`.ps1`) | The PowerShell parser, then PSScriptAnalyzer 1.23.0 | A parse error, or an Error-severity rule. Warnings are listed in the log and do not fail. |
+| PowerShell (`.ps1`) | The PowerShell parser, then PSScriptAnalyzer 1.23.0 | A parse error, an Error-severity rule, or a warning not in [`lint-baseline.txt`](lint-baseline.txt). |
+
+The baseline holds the PowerShell warnings that predate it, keyed on file,
+rule and message rather than line, so editing elsewhere in a file does not
+disturb it. It only shrinks: after fixing warnings, rewrite it with
+
+    pwsh tools/lint-components.ps1 -UpdateBaseline
+
+A new warning is fixed, or suppressed in the script with its reason, never
+added to the baseline.
 
 A deliberate exception is suppressed in the script itself, with the reason
 beside it, so a reviewer sees it in the diff:
@@ -415,6 +424,26 @@ Each failure names the folder and what is wrong.
 Run it locally with shellcheck and PSScriptAnalyzer installed:
 
     pwsh tools/lint-components.ps1
+
+or let [`check.sh`](check.sh) run it in a container with the pinned versions.
+
+## Running the checks locally
+
+    tools/check.sh              # everything that runs on Linux; needs Docker
+    tools/check.sh --no-docker  # the Python checks only
+
+It runs the packer and discovery tests, the audit, a build of every component
+and the shared-blocks check, then the lint job and the Linux harness self-test
+in a throwaway container. The Windows harness and the per-component tests run
+only in CI. When a workflow gains a step that can run on Linux, add it here
+too.
+
+To wait for a pull request's CI without leaving a watcher running:
+
+    tools/wait-ci.sh <pr number or branch> [minutes, default 45]
+
+It prints the checks that did not pass and exits 0, 1, or 124 at the
+deadline.
 
 ## Later: reading this out of Datto
 
