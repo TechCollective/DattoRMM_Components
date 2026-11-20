@@ -24,7 +24,9 @@ component on one internal device before it goes wide — see the checklist in
 | `Invoke-ComponentTest.ps1` | The Windows harness. Reads `component.json` and `test.json` and runs the steps. |
 | `invoke-component-test.sh` | The macOS and Linux harness. Same `test.json` format, bash + `jq`. |
 | `Invoke-Job.ps1` | Runs one command inside a scheduled task, so a step can run as SYSTEM or as the test user. |
-| `discover.py` | Decides which components a pull request should test, and whether the harness itself changed. |
+| `discover.py` | Decides which components a pull request should test, and whether the harness itself changed. Fails a touched component that has no `test.json`. |
+| `untested-components.txt` | The legacy list: components from before every new one had to ship a `test.json`. Touching one warns instead of failing. It only shrinks. |
+| `test_discover.py` | Tests for `discover.py`, against a throwaway git repository. |
 | `self-test/` | Tests the harness: fixture components whose right answer is known. See [Testing the harness](#testing-the-harness). |
 | [`../../.github/workflows/test-components.yml`](../../.github/workflows/test-components.yml) | The workflow. |
 
@@ -34,6 +36,13 @@ Actions unless given `-AllowLocal` (Windows) or `ALLOW_LOCAL=1` (macOS, Linux),
 and then only belongs on a VM you are about to throw away.
 
 ## Writing a `test.json`
+
+**Every component needs one.** A pull request that touches a component with
+no `test.json` fails at "Find components to test", unless the component is on
+the legacy list in `untested-components.txt`. That list holds the components
+that were untested when the rule came in. Touching one of them only warns.
+Giving one a `test.json` and deleting its line from the list, in the same pull
+request, is how the list shrinks. Nothing is ever added to it.
 
 It sits beside `component.json`, which a tested component must have. The
 harness reads the body, the timeout and the input variables' defaults from
@@ -255,6 +264,13 @@ machine the harness does — a container works for the Linux side:
 
 A new harness check gets a case there: a fixture output it must fail, and one
 it must pass.
+
+`discover.py` has its own tests, `test_discover.py`. They build a throwaway git
+repository and check which components and platforms a change selects. "Find
+components to test" runs them on every pull request before it discovers
+anything:
+
+    python3 -m unittest discover -s tools/test-harness -p 'test_*.py'
 
 ## Adding a check type
 

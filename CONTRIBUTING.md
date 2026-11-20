@@ -52,7 +52,8 @@ so GitHub highlights it and the diff is readable.
 |---|---|---|
 | The script | Yes | This is what gets reviewed. |
 | `README.md` | Yes | Same commit as the script. See [`COMPONENT-README-TEMPLATE.md`](COMPONENT-README-TEMPLATE.md). |
-| `component.json` | No | The component's metadata and input variables, in a form that diffs. When present, CI builds an importable `.cpt` for you on every pull request — see [`tools/README.md`](tools/README.md). |
+| `component.json` | Yes, with a `test.json` | The component's metadata and input variables, in a form that diffs. When present, CI builds an importable `.cpt` for you on every pull request — see [`tools/README.md`](tools/README.md). |
+| `test.json` | Yes | Its Tier 1 test: what CI runs it on and checks. A pull request touching a component without one fails, except the legacy components listed in [`tools/test-harness/untested-components.txt`](tools/test-harness/untested-components.txt). See [`tools/test-harness/README.md`](tools/test-harness/README.md). |
 | `icon.png` | No | 48x48 RGBA. Without one, a built export gets the TechCollective logo. |
 
 **Never commit a `.cpt`.** They are built, not stored — CI fails if it finds one.
