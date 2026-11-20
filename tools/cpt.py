@@ -23,12 +23,14 @@ Usage:
     cpt.py pack   <component-dir> [-o out.cpt]
     cpt.py unpack <file.cpt> -o <component-dir>
     cpt.py verify <file.cpt>          round-trip a .cpt through unpack+pack
+    cpt.py new "<Name [Win]>" <category>   start a component that passes every check
 """
 
 import argparse
 import hashlib
 import json
 import pathlib
+import re
 import sys
 import zipfile
 from xml.etree import ElementTree as ET
@@ -555,6 +557,186 @@ def stage_release(directory: pathlib.Path) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# new: scaffold a component that passes every check from its first commit
+# --------------------------------------------------------------------------
+
+TAG_PLATFORM = {"Win": "windows", "Mac": "macos", "Lin": "linux"}
+NAME_RE = re.compile(r"^(\S.*?)((?: \[(?:Win|Mac|Lin)\])+)$")
+VERSION_RE = re.compile(r"\bv?\d+\.\d+|\bv\d+\b|\b(19|20)\d\d\b", re.IGNORECASE)
+TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "COMPONENT-README-TEMPLATE.md"
+REPO_URL = "https://github.com/TechCollective/DattoRMM_Components/tree/main"
+
+MONITOR_PS1 = """<#
+.SYNOPSIS
+    Datto RMM Monitor - {name}
+
+.DESCRIPTION
+    TODO: what it watches, and what "could not tell" means for it (see the
+    README's What it does).
+
+    Exit 0 = healthy. Exit 1 = alert, or the check could not run.
+#>
+$ErrorActionPreference = 'Stop'
+
+function Write-Result {{
+    param([string]$Status, [int]$Code)
+    Write-Output '<-Start Result->'
+    Write-Output "STATUS=$Status"
+    Write-Output '<-End Result->'
+    exit $Code
+}}
+
+try {{
+    $raw = "$env:usrThreshold".Trim()
+    $threshold = 0
+    if (-not [int]::TryParse($raw, [ref]$threshold) -or $threshold -lt 1 -or $threshold -gt 100) {{
+        throw "usrThreshold '$raw' is not a whole number from 1 to 100."
+    }}
+    # TODO: measure what this monitor watches and compare it with $threshold.
+    Write-Result "TODO: the healthy state, with the measured value (threshold $threshold)." 0
+}} catch {{
+    Write-Result "Check could not run: $($_.Exception.Message)" 1
+}}
+"""
+
+MONITOR_SH = """#!/usr/bin/env bash
+# Datto RMM Monitor - {name}
+#
+# TODO: what it watches, and what "could not tell" means for it (see the
+# README's What it does).
+#
+# Exit 0 = healthy. Exit 1 = alert, or the check could not run.
+
+result() {{
+    printf '<-Start Result->\\nSTATUS=%s\\n<-End Result->\\n' "$1"
+    exit "$2"
+}}
+
+threshold="${{usrThreshold:-}}"
+case "$threshold" in
+    '' | *[!0-9]* | ????*) result "Check could not run: usrThreshold '$threshold' is not a whole number from 1 to 100." 1 ;;
+esac
+if [ "$threshold" -lt 1 ] || [ "$threshold" -gt 100 ]; then
+    result "Check could not run: usrThreshold '$threshold' is not a whole number from 1 to 100." 1
+fi
+
+# TODO: measure what this monitor watches and compare it with $threshold.
+result "TODO: the healthy state, with the measured value (threshold $threshold)." 0
+"""
+
+SCRIPT_PS1 = """<#
+.SYNOPSIS
+    Datto RMM {kind} - {name}
+
+.DESCRIPTION
+    TODO: what it changes, and its exit codes (see the README).
+#>
+$ErrorActionPreference = 'Stop'
+
+# TODO: the work.
+Write-Output 'TODO: say what was done.'
+exit 0
+"""
+
+SCRIPT_SH = """#!/usr/bin/env bash
+# Datto RMM {kind} - {name}
+#
+# TODO: what it changes, and its exit codes (see the README).
+set -euo pipefail
+
+# TODO: the work.
+echo 'TODO: say what was done.'
+exit 0
+"""
+
+
+def name_problems(name: str) -> list:
+    """Why a display name breaks CONTRIBUTING.md's naming rules, if it does."""
+    m = NAME_RE.match(name)
+    if not m:
+        return ["it must end with its OS tags, e.g. 'Veeam - Last Successful Backup Age [Win]'"]
+    problems = []
+    tags = re.findall(r"\[(\w+)\]", m.group(2))
+    if tags != [t for t in TAG_PLATFORM if t in tags]:
+        problems.append("its OS tags must each appear once, in the order [Win] [Mac] [Lin]")
+    if "Win" in tags and len(tags) > 1:
+        problems.append("one component body cannot run on Windows and on macOS/Linux; make two components")
+    if VERSION_RE.search(m.group(1)):
+        problems.append("it must not carry a version number; components are updated in place")
+    return problems
+
+
+def new(root: pathlib.Path, name: str, category: str) -> pathlib.Path:
+    problems = name_problems(name)
+    if problems:
+        sys.exit(f"Refused {name!r}: " + "; ".join(problems))
+    tags = re.findall(r"\[(\w+)\]", NAME_RE.match(name).group(2))
+    platforms = [TAG_PLATFORM[t] for t in tags]
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    rel = f"{category.capitalize()}/{slug}"
+    directory = root / rel
+    if directory.exists():
+        sys.exit(f"Refused {name!r}: {rel} already exists")
+
+    windows = platforms == ["windows"]
+    body = f"{slug}.{'ps1' if windows else 'sh'}"
+    monitor = category == "monitors"
+    kind = {"applications": "Application", "scripts": "Script", "monitors": "Monitor"}[category]
+
+    manifest = {
+        "general": {
+            "name": name,
+            "category": category,
+            "description": f"TODO: one line, what it does.\nSource: {REPO_URL}/{rel}",
+            "uid": "",
+            "hash": "",
+            "version": "1",
+            "timeout": "120" if monitor else "600",
+            "securityLevel": "1",
+            "installType": "powershell" if windows else "unix",
+        },
+        "body": body,
+        "variables": [{
+            "name": "usrThreshold",
+            "type": "string",
+            "direction": "false",
+            "description": "TODO: rename to what it measures. 1-100.",
+            "defaultVal": "90",
+        }] if monitor else [],
+    }
+
+    run = {"type": "runComponent"}
+    if monitor:
+        steps = [
+            {**run, "label": "Healthy with the defaults", "expectExitCode": 0, "outputContains": ["STATUS="]},
+            {**run, "label": "Bad input: check could not run", "expectExitCode": 1,
+             "variables": {"usrThreshold": "abc"}, "outputContains": ["STATUS=Check could not run:"]},
+            {**run, "label": "Second run is harmless", "expectExitCode": 0, "outputContains": ["STATUS="]},
+        ]
+    else:
+        steps = [
+            {**run, "label": "Runs with the defaults", "expectExitCode": 0},
+            {**run, "label": "Second run is harmless", "expectExitCode": 0},
+        ]
+    spec = {"platforms": platforms,
+            "description": "TODO: one sentence, what this test proves.",
+            "variables": {}, "steps": steps}
+
+    template = TEMPLATE.read_text(encoding="utf-8")
+    readme = template[template.index("\n---\n") + 5:].lstrip("\n")
+    readme = readme.replace("[Exact component name as saved in Datto, brackets and all]", name, 1)
+
+    stub = (MONITOR_PS1 if windows else MONITOR_SH) if monitor else (SCRIPT_PS1 if windows else SCRIPT_SH)
+
+    directory.mkdir(parents=True)
+    (directory / "component.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (directory / "test.json").write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+    (directory / "README.md").write_text(readme, encoding="utf-8")
+    (directory / body).write_text(stub.format(name=name, kind=kind), encoding="utf-8", newline="\n")
+    return directory
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -580,7 +762,19 @@ def main() -> int:
     p = sub.add_parser("stage-release", help="drop exports that must not be published")
     p.add_argument("--dir", type=pathlib.Path, default=pathlib.Path("dist"))
 
+    p = sub.add_parser("new", help="start a component: folder, manifest, README, test.json and a stub body")
+    p.add_argument("name", help='the display name, OS tags included, e.g. "Veeam - Last Successful Backup Age [Win]"')
+    p.add_argument("category", choices=CATEGORIES)
+    p.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."))
+
     args = parser.parse_args()
+
+    if args.command == "new":
+        directory = new(args.root.resolve(), args.name, args.category)
+        for f in sorted(directory.iterdir()):
+            print(f"created {f.relative_to(args.root.resolve())}")
+        print("Next: fill in every TODO, then follow CONTRIBUTING.md from 'Adding a component'.")
+        return 0
 
     if args.command == "pack":
         directory = args.directory.resolve()

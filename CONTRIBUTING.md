@@ -117,9 +117,24 @@ real paths rather than editing a placeholder out of a line.
 
     git checkout -b disk-space-free-space-below-threshold-lin
 
-**3. Add the script and its README together.**
+**3. Start the component with the packer, then fill it in.**
 
-    mkdir -p Monitors/disk-space-free-space-below-threshold-lin
+    python3 tools/cpt.py new "Disk Space - Free Space Below Threshold [Lin]" monitors
+
+This creates the folder, named as the slug of the name, with everything the
+checks expect:
+- `component.json`: the right category and install type, a starting timeout
+  and an empty uid;
+- the README, from the template;
+- a `test.json` on the platforms the OS tags name;
+- a stub body that already passes that test.
+
+A monitor's stub prints its result block, refuses a bad `usrThreshold`, and
+its `test.json` holds a healthy run, a bad-input run and a second run.
+
+The command refuses a name without OS tags, with a version number, or one
+whose folder already exists. Replace every `TODO`, then add the folder:
+
     git add Monitors/disk-space-free-space-below-threshold-lin
 
 **4. Write the commit message into a file, then commit with it.**
