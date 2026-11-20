@@ -36,6 +36,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      # The packer builds every export below, so its own tests run first.
+      - name: Test the packer
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+
       # Enforces the two review-checklist items in CONTRIBUTING.md that a human
       # is otherwise expected to catch: a committed .cpt must carry no
       # attachment, and must match the script committed beside it.

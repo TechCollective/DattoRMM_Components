@@ -161,6 +161,9 @@ file; it is required when there is more than one.
 
 ## Using the tool
 
+    # start a new component: folder, component.json, README, test.json, stub body
+    python3 tools/cpt.py new "Disk Space - Free Space Below Threshold [Lin]" monitors
+
     # build an importable .cpt
     python3 tools/cpt.py pack Monitors/disk-space-free-space-below-threshold-lin
 
@@ -173,6 +176,24 @@ file; it is required when there is more than one.
 `pack` validates before it writes, and refuses on a missing `uid`, a bad
 `category`, a non-integer `timeout`, a duplicate variable name, or a `map`
 variable with no options.
+
+`new` gives a component that passes the lint, naming and discovery checks,
+and its own Tier 1 test, before anyone has written a line of it:
+- the folder is named as the slug of the display name;
+- the body is `.ps1` for `[Win]` and `.sh` for `[Mac]` and `[Lin]`;
+- the timeout is 120 seconds for a monitor and 600 otherwise;
+- the uid is empty;
+- the `test.json` runs on the platforms the OS tags name.
+
+A monitor's stub takes a `usrThreshold` input, prints its result block, and
+refuses bad input. Its `test.json` holds a healthy run, a bad-input run and a
+second run. `new` refuses a name without OS tags, with a version number, or
+with both `[Win]` and `[Mac]`/`[Lin]` (one body can't run on both), and a
+folder that already exists.
+
+The packer's tests (`tools/test_cpt.py`) run in CI before the build:
+
+    python3 -m unittest discover -s tools -p 'test_*.py'
 
 Builds are deterministic: ZIP timestamps are pinned, so rebuilding an unchanged
 component produces an identical file and CI raises no spurious diff.
