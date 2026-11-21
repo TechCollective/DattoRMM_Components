@@ -1,0 +1,141 @@
+{
+  "platforms": [
+    "linux"
+  ],
+  "description": "Real ext4, btrfs and fuse mounts (loop devices and a daemonless fuse mount) with df and btrfs shims first on the root PATH setting the numbers. Usage at 89%, 90% and 91% against the default 90% threshold gives OK, alert and alert. A threshold of 100 or abc is refused with exit 1. Btrfs metadata at 90% alerts with 0.5 GB unallocated and is OK with 10 GB. A fuse mount is named in the status under usrUnknownFs warn, alerts under alert and is hidden under ignore. TERM mid-run still prints one fallback result block, within 5 seconds.",
+  "variables": {
+    "usrDisks": "/mnt/tc-ext4"
+  },
+  "steps": [
+    {
+      "type": "command",
+      "label": "Fixtures: ext4, btrfs and fuse mounts under /mnt/tc-*, df and btrfs shims in /usr/local/sbin",
+      "script": "tests/setup.sh",
+      "outputContains": [
+        "/mnt/tc-ext4 ext4",
+        "/mnt/tc-btrfs btrfs",
+        "/mnt/tc-fuse fuse.tcfake",
+        "shims installed"
+      ],
+      "timeoutSeconds": 300
+    },
+    {
+      "type": "runComponent",
+      "label": "89% used, threshold 90: OK",
+      "variables": { "tcTestUsedPct": "89" },
+      "outputContains": [
+        "STATUS=OK - 1 filesystem(s) checked, none at or above 90% used (no free-space floor set); fullest is /mnt/tc-ext4 at 89%"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "90% used, threshold 90: alert (at the threshold counts)",
+      "expectExitCode": 1,
+      "variables": { "tcTestUsedPct": "90" },
+      "outputContains": [
+        "STATUS=ALERT - /mnt/tc-ext4 (/dev/loop",
+        "at 90% used, 5.0 GB free (alerts at >=90%)",
+        "<-Start Diagnostic->"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "91% used, threshold 90: alert",
+      "expectExitCode": 1,
+      "variables": { "tcTestUsedPct": "91" },
+      "outputContains": [
+        "STATUS=ALERT - /mnt/tc-ext4 (/dev/loop",
+        "at 91% used"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Threshold 100 is refused",
+      "expectExitCode": 1,
+      "variables": { "usrThreshold": "100" },
+      "outputContains": [
+        "STATUS=Check could not run: usrThreshold must be between 1 and 99 (given: 100)"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Threshold abc is refused",
+      "expectExitCode": 1,
+      "variables": { "usrThreshold": "abc" },
+      "outputContains": [
+        "STATUS=Check could not run: usrThreshold must be a whole number 1-99 (given: 'abc')"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Btrfs metadata 90% (pool threshold 85) with 0.5 GB unallocated: alert, though df shows 50%",
+      "expectExitCode": 1,
+      "variables": { "usrDisks": "/mnt/tc-btrfs", "tcTestBtrfsUnalloc": "536870912" },
+      "outputContains": [
+        "STATUS=ALERT - /mnt/tc-btrfs (btrfs) metadata 90% full with only 0.5 GB unallocated",
+        "/mnt/tc-btrfs: metadata 90%, 0.5 GB unallocated"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Btrfs metadata 90% with 10 GB unallocated: OK, and verified",
+      "variables": { "usrDisks": "/mnt/tc-btrfs", "tcTestBtrfsUnalloc": "10737418240" },
+      "outputContains": [
+        "STATUS=OK - 1 filesystem(s) checked"
+      ],
+      "outputNotContains": [
+        "not verified"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unknown filesystem, usrUnknownFs warn (default): named in the status, exit 0",
+      "variables": { "usrDisks": "/mnt/tc-ext4 /mnt/tc-fuse" },
+      "outputContains": [
+        "STATUS=OK - 1 filesystem(s) checked",
+        "1 not measured (fuse.tcfake at /mnt/tc-fuse)"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unknown filesystem, usrUnknownFs alert: alert",
+      "expectExitCode": 1,
+      "variables": { "usrDisks": "/mnt/tc-ext4 /mnt/tc-fuse", "usrUnknownFs": "alert" },
+      "outputContains": [
+        "STATUS=ALERT - 1 mount(s) are a filesystem type this monitor cannot measure; 1 filesystem(s) checked",
+        "fuse.tcfake at /mnt/tc-fuse"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Unknown filesystem, usrUnknownFs ignore: not mentioned, exit 0",
+      "variables": { "usrDisks": "/mnt/tc-ext4 /mnt/tc-fuse", "usrUnknownFs": "ignore" },
+      "outputContains": [
+        "STATUS=OK - 1 filesystem(s) checked"
+      ],
+      "outputNotContains": [
+        "tc-fuse"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "TERM mid-run (df hanging): one fallback result block at once, saying it was stopped by a signal; the job ends 143",
+      "script": "tests/kill.sh",
+      "outputContains": [
+        "exit status: 143.",
+        "result within 5 seconds of TERM",
+        "STATUS=Check failed before it could measure anything (stopped by a signal)",
+        "start markers: 1, end markers: 1, STATUS lines: 1"
+      ],
+      "timeoutSeconds": 60
+    },
+    {
+      "type": "command",
+      "label": "Clean up: shims and test mounts removed",
+      "script": "tests/cleanup.sh",
+      "outputContains": [
+        "test mounts left: 0"
+      ]
+    }
+  ]
+}

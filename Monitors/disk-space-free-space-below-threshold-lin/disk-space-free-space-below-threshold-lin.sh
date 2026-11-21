@@ -54,8 +54,13 @@ on_exit() {
 		# Reaching here means the script died before deciding anything -- a shell
 		# error, or a signal. Never report success: exit 0 with no result block
 		# would leave the monitor's last-known text stale and the job green.
+		# On a signal $? is 0 and bash exits with the signal's code (143 for
+		# TERM) whatever this trap says. Trapping TERM would fix the code but
+		# delay this block until the running df or du returns, up to 20s.
+		local why="shell exit ${code}"
+		[ "$code" -eq 0 ] && why="stopped by a signal"
 		printf '%s\n' '<-Start Result->'
-		printf 'STATUS=%s\n' "Check failed before it could measure anything (shell exit ${code}); see the component's raw job output for the error"
+		printf 'STATUS=%s\n' "Check failed before it could measure anything (${why}); see the component's raw job output for the error"
 		printf '%s\n' '<-End Result->'
 		exit 1
 	fi
