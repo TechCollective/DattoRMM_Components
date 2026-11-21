@@ -1,0 +1,88 @@
+{
+ "platforms": [
+  "linux"
+ ],
+ "description": "Loopback replies: exit 0, Connection up. A documentation-range address (192.0.2.1) never replies: exit 1, Connection down. Bad input (no targets, usrPingCount out of range, a target starting with a dash) is refused with exit 1 and Check could not run. TERM mid-run still prints one fallback result block.",
+ "variables": {
+  "usrPingCount": "1",
+  "usrReplyTimeoutSec": "1"
+ },
+ "steps": [
+  {
+   "type": "runComponent",
+   "label": "Healthy: 127.0.0.1 replies",
+   "variables": {
+    "usrTargets": "127.0.0.1"
+   },
+   "expectExitCode": 0,
+   "outputContains": [
+    "STATUS=Connection up: 1 of 1 target replied (127.0.0.1 1/1"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Alert: 192.0.2.1 (TEST-NET-1) never replies",
+   "variables": {
+    "usrTargets": "192.0.2.1"
+   },
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Connection down: 0 of 1 target replied (192.0.2.1 no"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Alert under usrRequire=all: loopback replies, 192.0.2.1 does not",
+   "variables": {
+    "usrTargets": "127.0.0.1, 192.0.2.1",
+    "usrRequire": "All"
+   },
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Connection degraded: 1 of 2 targets did not reply and all are required"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Bad input: nothing to check",
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: nothing to check"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Bad input: usrPingCount out of range",
+   "variables": {
+    "usrTargets": "127.0.0.1",
+    "usrPingCount": "99"
+   },
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: usrPingCount must be 1-10 (got '99')"
+   ]
+  },
+  {
+   "type": "runComponent",
+   "label": "Bad input: a target that would reach ping as an option",
+   "variables": {
+    "usrTargets": "-f"
+   },
+   "expectExitCode": 1,
+   "outputContains": [
+    "STATUS=Check could not run: usrTargets entry '-f' is not an IP address or hostname"
+   ]
+  },
+  {
+   "type": "command",
+   "label": "Killed mid-run: TERM 2 seconds into a 10-ping run still prints exactly one fallback result block and exits 1",
+   "run": "M=\"$PWD/Monitors/connection-health-ping-targets-not-responding-lin/connection-health-ping-targets-not-responding-lin.sh\"; test -f \"$M\" || { echo \"cannot find $M\"; exit 1; }; o=$(mktemp); env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root usrTargets=192.0.2.1 usrPingCount=10 usrReplyTimeoutSec=5 /bin/bash \"$M\" >\"$o\" 2>&1 & p=$!; sleep 2; kill -TERM \"$p\"; wait \"$p\"; rc=$?; cat \"$o\"; echo \"exit $rc\"; echo \"result blocks: $(grep -c '^<-Start Result->$' \"$o\") start, $(grep -c '^<-End Result->$' \"$o\") end\"; rm -f \"$o\"",
+   "outputContains": [
+    "STATUS=Check could not run: the monitor stopped unexpectedly (exit 143)",
+    "exit 1",
+    "result blocks: 1 start, 1 end"
+   ],
+   "timeoutSeconds": 60
+  }
+ ]
+}
