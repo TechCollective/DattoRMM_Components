@@ -1,0 +1,62 @@
+{
+  "platforms": ["windows"],
+  "description": "Runs the monitor as SYSTEM with no fakes: loopback (127.0.0.1) always replies and the documentation address 192.0.2.1 never does. Proves loopback is healthy, 192.0.2.1 alerts as down, one of each is healthy under Any and degraded under All, bad input is refused as 'Check could not run', and a second run is harmless. The WireGuard check is not covered: a runner has no tunnel or peer.",
+  "variables": { "usrPingCount": "1", "usrReplyTimeoutSec": "1" },
+  "steps": [
+    {
+      "type": "runComponent",
+      "label": "Loopback replies: healthy",
+      "expectExitCode": 0,
+      "variables": { "usrTargets": "127.0.0.1" },
+      "outputContains": [ "STATUS=Connection up: 1 of 1 target replied (127.0.0.1 1/1" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Second run is harmless",
+      "expectExitCode": 0,
+      "variables": { "usrTargets": "127.0.0.1" },
+      "outputContains": [ "STATUS=Connection up:" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "192.0.2.1 never answers: alert",
+      "expectExitCode": 1,
+      "variables": { "usrTargets": "192.0.2.1" },
+      "outputContains": [ "STATUS=Connection down: 0 of 1 target replied (192.0.2.1 no ", "<-Start Diagnostic->", "== 192.0.2.1 : 0/1 replies" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Any (default): one reply out of two is healthy",
+      "expectExitCode": 0,
+      "variables": { "usrTargets": "127.0.0.1, 192.0.2.1" },
+      "outputContains": [ "STATUS=Connection up: 1 of 2 targets replied" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "All: one reply out of two is degraded",
+      "expectExitCode": 1,
+      "variables": { "usrTargets": "127.0.0.1 192.0.2.1", "usrRequire": "all" },
+      "outputContains": [ "STATUS=Connection degraded: 1 of 2 targets did not reply and all are required" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Nothing to check: check could not run",
+      "expectExitCode": 1,
+      "outputContains": [ "STATUS=Check could not run: nothing to check" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Out-of-range ping count: check could not run",
+      "expectExitCode": 1,
+      "variables": { "usrTargets": "127.0.0.1", "usrPingCount": "11" },
+      "outputContains": [ "STATUS=Check could not run: usrPingCount must be 1-10 (got '11')" ]
+    },
+    {
+      "type": "runComponent",
+      "label": "A target that is not an address: check could not run",
+      "expectExitCode": 1,
+      "variables": { "usrTargets": "127.0.0.1;whoami" },
+      "outputContains": [ "STATUS=Check could not run: usrTargets entry '127.0.0.1;whoami' is not an IP address or hostname" ]
+    }
+  ]
+}
