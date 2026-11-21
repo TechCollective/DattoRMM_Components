@@ -7,9 +7,10 @@ state of the `dnf-automatic` or `yum-cron` unit.
 
 > **Status: Not Validated.** Imported from the Datto Component Library on
 > 2026-09-10 as part of the initial repository organisation. It has not been
-> reviewed against our monitor contract or security checklist, and the review
-> below is a reading of the script only — it has not been re-run. Treat the
-> defects in [Known limits](#known-limits) as unfixed.
+> reviewed against our monitor contract or security checklist. Its Debian
+> branch now has a Tier 1 test, which found and fixed three bugs (see
+> [Contents](#contents)); the RHEL branch is a reading of the script only.
+> Treat the defects in [Known limits](#known-limits) as unfixed.
 
 > **The alert text is currently unusable.** Every alert reads `Status=CRITICAL`
 > or `Status=WARNING` with no explanation — the human-readable message is
@@ -30,10 +31,22 @@ state of the `dnf-automatic` or `yum-cron` unit.
 |---|---|
 | `unattended-upgrades-not-running-lin.sh` | The component body. This file is the source of truth — paste it into Datto, don't edit it there. |
 | `README.md` | This file. |
+| `component.json` | Its metadata, from which CI builds an importable `.cpt`. The `uid` is empty until it is saved into Datto. |
+| `test.json`, `tests/` | Its Tier 1 test (Debian branch, on the Ubuntu runner): a real dry run is healthy, a last run 30 hours ago warns, 3 days ago is critical, and just after rotation the newest rotated log is read. |
 
 No `.cpt` export yet — this component has not been saved into Datto under this
-name. There are no input variables to preserve, so an export buys little beyond
-the component metadata.
+name.
+
+**Fixed with the Tier 1 test** (they were in the imported script):
+
+- A healthy Debian host printed `Status=OK` but exited `1` — so it always
+  alerted. `_out` ended in `[[ -n $detail ]] && …`, which returns 1 when there
+  is no diagnostic, and `set -e` exited on it.
+- An empty current log (just after rotation) killed the script with no result
+  block: the `grep` that found no timestamp failed the pipeline under
+  `pipefail`.
+- The rotated-log fallback read the *oldest* rotation (highest number) instead
+  of the newest (`.1.gz`), so after rotation it alerted on a month-old run.
 
 ---
 
