@@ -1,0 +1,15 @@
+{
+  "general": {
+    "name": "Unattended Upgrades - Not Running [Lin]",
+    "category": "monitors",
+    "description": "Alerts when a Linux host's automatic security updates are not installed, not enabled, or have not run recently.",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "120",
+    "securityLevel": "4",
+    "installType": "unix"
+  },
+  "variables": [],
+  "body": "unattended-upgrades-not-running-lin.sh"
+}
