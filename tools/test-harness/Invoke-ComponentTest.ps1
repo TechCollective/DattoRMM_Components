@@ -232,12 +232,27 @@ function Get-OutputProblem {
 }
 
 # A scheduled task that is stopped leaves the process it started running, so
-# a command that timed out is found by its encoded command line and killed.
-function Stop-EncodedCommand {
-    param([string]$Encoded)
+# a command that timed out is found by its command line - the encoded command,
+# or the path of its script's copy - and killed.
+function Stop-CommandByLine {
+    param([string]$Text)
     Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($Encoded) } |
+        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($Text) } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
+# A command step's script: a file inside the component folder, copied into the
+# work folder, which SYSTEM and the test user can both read. Returns the copy.
+function Copy-StepScript {
+    param([string]$Script)
+    $full = [IO.Path]::GetFullPath([IO.Path]::Combine($ComponentPath, $Script))
+    if (-not $full.StartsWith($ComponentPath.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Script $Script is outside the component folder."
+    }
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "Script not found: $Script" }
+    $copy = Join-Path $WorkRoot ('script-{0}-{1}' -f [guid]::NewGuid().ToString('N').Substring(0, 8), (Split-Path $full -Leaf))
+    Copy-Item -LiteralPath $full -Destination $copy
+    return $copy
 }
 
 # When a file check misses, look for the same file name where installers
@@ -426,11 +441,18 @@ foreach ($s in $steps) {
                 # plant what a component reacts to before it runs, and to check
                 # what it left behind. Passed as -EncodedCommand, so test.json
                 # needs no quoting.
-                $run = [string](Get-Prop $s 'run' '')
-                if (-not $run) { throw "A command step needs 'run'." }
+                # Or a .ps1 kept in the component folder, run with -File.
+                $run    = [string](Get-Prop $s 'run' '')
+                $script = [string](Get-Prop $s 'script' '')
+                if ($run -and $script) { throw "Give a command step either 'run' or 'script', not both." }
+                if ($script) {
+                    $cmdLine = Copy-StepScript $script
+                    $arg = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f $cmdLine
+                } elseif ($run) {
+                    $cmdLine = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($run))
+                    $arg = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $cmdLine"
+                } else { throw "A command step needs 'run' or 'script'." }
                 $secs = [int](Get-Prop $s 'timeoutSeconds' 120)
-                $enc  = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($run))
-                $arg  = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $enc"
                 switch ($as) {
                     'system'   { $r = Invoke-As -Label 'command' -Exe 'powershell.exe' -Arguments $arg -As system -TimeoutSeconds $secs }
                     'testuser' { New-TestUser; $r = Invoke-As -Label 'command' -Exe 'powershell.exe' -Arguments $arg -As testuser -TimeoutSeconds $secs }
@@ -441,7 +463,7 @@ foreach ($s in $steps) {
                 Write-Block "$label - output" $out
                 $want = [int](Get-Prop $s 'expectExitCode' 0)
                 if ($r.TimedOut) {
-                    Stop-EncodedCommand $enc
+                    Stop-CommandByLine $cmdLine
                     Add-Result $label $false "Timed out after ${secs}s as $as, and was stopped."
                 } elseif ($r.Code -ne $want) {
                     Add-Result $label $false "Exit code $($r.Code), expected $want, as $as."

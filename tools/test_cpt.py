@@ -10,11 +10,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
 CPT = TOOLS / "cpt.py"
 DISCOVER = TOOLS / "test-harness" / "discover.py"
+# A real Datto export, attachment-free, reviewed for public safety. See tools/README.md, "In CI".
+REFERENCE = TOOLS / "fixtures" / "disk-space-monitor-lin.cpt"
 
 
 def run(*args, cwd=None, env=None):
@@ -80,6 +83,17 @@ class NewCommandTest(unittest.TestCase):
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertEqual(sorted(m["platform"] for m in json.loads(r.stdout)), sorted(platforms))
 
+    def test_test_scripts_in_a_tests_folder_are_not_packed(self):
+        self.new("Docker - Prune Images [Lin]", "scripts")
+        d = self.root / "Scripts/docker-prune-images-lin"
+        without, with_tests = self.root / "without.cpt", self.root / "with.cpt"
+        self.assertEqual(run(sys.executable, str(CPT), "pack", str(d), "-o", str(without)).returncode, 0)
+        (d / "tests").mkdir()
+        (d / "tests/plant-state.sh").write_text("#!/usr/bin/env bash\necho planted\n")
+        r = run(sys.executable, str(CPT), "pack", str(d), "-o", str(with_tests))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(with_tests.read_bytes(), without.read_bytes())
+
     def test_the_shell_monitor_stub_does_what_its_test_json_expects(self):
         self.new("Disk Space - Free Space Below Threshold [Lin]", "monitors")
         body = self.root / "Monitors/disk-space-free-space-below-threshold-lin/disk-space-free-space-below-threshold-lin.sh"
@@ -127,6 +141,54 @@ class NewCommandTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("already exists", r.stderr)
         self.assertEqual(readme.read_text(), "ours\n")
+
+
+class ReferenceExportTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.dir = self.root / "disk-space-monitor-lin"
+        r = run(sys.executable, str(CPT), "unpack", str(REFERENCE), "-o", str(self.dir))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def pack(self):
+        out = self.root / "out.cpt"
+        return run(sys.executable, str(CPT), "pack", str(self.dir), "-o", str(out)), out
+
+    def test_verify_reproduces_the_committed_datto_export(self):
+        r = run(sys.executable, str(CPT), "verify", str(REFERENCE))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_unpack_then_pack_rebuilds_the_export_byte_for_byte(self):
+        r, out = self.pack()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with zipfile.ZipFile(REFERENCE) as a, zipfile.ZipFile(out) as b:
+            self.assertEqual(b.namelist(), ["command.bat", "resource.xml", "icon.png"])
+            for name in a.namelist():
+                self.assertEqual(a.read(name), b.read(name), name)
+        self.assertEqual(run(sys.executable, str(CPT), "verify", str(out)).returncode, 0)
+
+    def test_pack_refuses_an_invalid_manifest_and_writes_nothing(self):
+        path = self.dir / "component.json"
+        good = path.read_text()
+        cases = [
+            ("bad category", lambda m: m["general"].update(category="widgets"), "is not one of"),
+            ("non-integer timeout", lambda m: m["general"].update(timeout="60s"), "timeout must be an integer"),
+            ("duplicate variable", lambda m: m["variables"].append(dict(m["variables"][0])), "is a duplicate"),
+            ("map with no options", lambda m: m["variables"][4].update(options=[]), "is type map but has no options"),
+        ]
+        for label, breakit, says in cases:
+            with self.subTest(label):
+                manifest = json.loads(good)
+                breakit(manifest)
+                path.write_text(json.dumps(manifest))
+                r, out = self.pack()
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn(says, r.stderr)
+                self.assertFalse(out.exists())
 
 
 if __name__ == "__main__":

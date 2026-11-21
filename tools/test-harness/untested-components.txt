@@ -2,9 +2,7 @@
 # one. Touching one of these warns instead of failing. This list only shrinks:
 # give a component a test.json and remove its line here, in the same pull request.
 # Never add to it.
-Monitors/apt-update-available-for-package-lin
 Monitors/connection-health-ping-targets-not-responding-lin
-Monitors/connection-health-ping-targets-not-responding-win
 Monitors/disk-health-smart-failure-detected-mac-lin
 Monitors/disk-space-free-space-below-threshold-lin
 Monitors/unattended-upgrades-not-running-lin
