@@ -139,6 +139,20 @@ run_as() {   # who timeout command
     OUT=$(cat "$out" 2>/dev/null); rm -f "$out"
 }
 
+# A command step's script: a file inside the component folder. Sets SCRIPT to
+# its text, which run_as passes to bash -c: on a runner the test user cannot
+# reach the checkout or RUNNER_TEMP. Sets MISSING when refused.
+read_script() {   # path-relative-to-the-component
+    local root dir real
+    root=$(cd "$COMP" && pwd -P)
+    case "$1" in /*) MISSING="Script $1 is outside the component folder."; return 1 ;; esac
+    dir=$(cd "$COMP/$(dirname "$1")" 2>/dev/null && pwd -P) || { MISSING="Script not found: $1"; return 1; }
+    real="$dir/$(basename "$1")"
+    case "$real" in "$root"/*) ;; *) MISSING="Script $1 is outside the component folder."; return 1 ;; esac
+    [ -f "$real" ] || { MISSING="Script not found: $1"; return 1; }
+    SCRIPT=$(cat "$real")
+}
+
 # Check OUT against a step's outputContains / outputNotContains.
 # Sets MISSING (text of the first unmet expectation, or empty).
 check_output() {   # step-json
@@ -279,17 +293,26 @@ for ((i = 0; i < STEP_COUNT; i++)); do
     command)
         # Run a command and check its exit code and output. The workhorse for
         # "does the installed thing actually work, as the user who will use it".
-        cmd=$(expand "$(j '.run')")
+        run=$(j '.run // empty'); script=$(j '.script // empty')
+        if [ -n "$run" ] && [ -n "$script" ]; then add_result FAIL "$label" "Give a command step either 'run' or 'script', not both."; continue; fi
+        if [ -n "$script" ]; then
+            read_script "$script" || { add_result FAIL "$label" "$MISSING"; continue; }
+            cmd=$SCRIPT; what=$script
+        elif [ -n "$run" ]; then
+            cmd=$(expand "$run"); what=$cmd
+        else
+            add_result FAIL "$label" "A command step needs 'run' or 'script'."; continue
+        fi
         secs=$(j '.timeoutSeconds // 120')
         run_as "$as" "$secs" "$cmd"
         block "$label - output" "$OUT"
         want=$(j '.expectExitCode // 0')
-        if [ "$RC" -eq 124 ]; then add_result FAIL "$label" "Timed out after ${secs}s: $cmd"
-        elif [ "$RC" -ne "$want" ]; then add_result FAIL "$label" "Exit code $RC, expected $want, as $as: $cmd"
+        if [ "$RC" -eq 124 ]; then add_result FAIL "$label" "Timed out after ${secs}s: $what"
+        elif [ "$RC" -ne "$want" ]; then add_result FAIL "$label" "Exit code $RC, expected $want, as $as: $what"
         else
             check_output "$step"
             if [ -n "$MISSING" ]; then add_result FAIL "$label" "Exit code $RC as expected, but $MISSING"
-            else add_result PASS "$label" "Exit code $RC as expected, as $as: $cmd"; fi
+            else add_result PASS "$label" "Exit code $RC as expected, as $as: $what"; fi
         fi
         ;;
 

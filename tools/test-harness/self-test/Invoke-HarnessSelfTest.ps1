@@ -38,6 +38,11 @@ function Get-CommandCase([string]$Name, [hashtable]$Step, [string]$Says, [script
 }
 
 $monitorRule = "exactly one result block"
+$ext    = if ($platform -eq 'windows') { 'ps1' } else { 'sh' }
+$system = if ($platform -eq 'windows') { 'nt authority\system' } else { 'as root' }
+function Get-ScriptCase([string]$Name, [hashtable]$Step, [string]$Says) {
+    @{ Name = $Name; Category = 'scripts'; Pass = $false; Says = $Says; Steps = @(@{ type = 'command' } + $Step) }
+}
 $planted = 'C:\ProgramData\tc-harness-selftest'
 $cases = @(
     Get-RunCase 'Monitor, one result block'           'one'      'monitors' $true
@@ -57,6 +62,7 @@ $cases = @(
         @{ type = 'command'; as = 'testuser'; label = 'Plant a file as the test user'; outputContains = @('tctest')
            run = 'Set-Content "$env:LOCALAPPDATA\tc-planted.txt" x; whoami' }
         @{ type = 'file'; as = 'testuser'; path = '%LOCALAPPDATA%\tc-planted.txt' }
+        @{ type = 'command'; as = 'testuser'; script = 'tests/check.ps1'; outputContains = @('from the script file', 'tctest') }
         @{ type = 'command'; as = 'runner'; outputContains = @($env:USERNAME); run = 'whoami' }
         @{ type = 'command'; label = 'A non-zero exit and stderr, as expected'; expectExitCode = 3
            outputContains = @('to stderr'); outputNotContains = @('never printed'); run = "Write-Error 'to stderr'; exit 3" }
@@ -70,6 +76,20 @@ $cases = @(
             $id = [int](Get-Content -Raw "$planted\sleeper.pid")
             if (Get-Process -Id $id -ErrorAction SilentlyContinue) { "the timed-out command (process $id) is still running" } else { '' }
         }
+)
+$cases += @(
+    # A command step's script file, kept in the component folder.
+    @{ Name = 'Command script: runs the file from the component folder, as each identity'; Category = 'scripts'; Pass = $true
+       Steps = @(
+        @{ type = 'command'; script = "tests/check.$ext"; outputContains = @('from the script file', $system) }
+        # On Windows the case above runs this as the test user: the harness
+        # creates that account once per machine.
+        @{ type = 'command'; script = "tests/check.$ext"; as = 'testuser'; outputContains = @('from the script file', 'tctest'); platforms = @('linux', 'macos') }
+    ) }
+    Get-ScriptCase 'Command script: its output checks apply' @{ script = "tests/check.$ext"; outputContains = @('never printed') } 'output is missing: never printed'
+    Get-ScriptCase 'Command script: run and script both given' @{ script = "tests/check.$ext"; run = 'echo hi' } "either 'run' or 'script', not both"
+    Get-ScriptCase 'Command script: outside the component folder' @{ script = "../escape.$ext" } 'outside the component folder'
+    Get-ScriptCase 'Command script: missing file' @{ script = "tests/missing.$ext" } 'Script not found'
 )
 $cases = @($cases | Where-Object { -not $_.ContainsKey('Platform') -or $_.Platform -eq $platform })
 
