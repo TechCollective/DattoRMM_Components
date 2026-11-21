@@ -80,6 +80,17 @@ class NewCommandTest(unittest.TestCase):
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertEqual(sorted(m["platform"] for m in json.loads(r.stdout)), sorted(platforms))
 
+    def test_test_scripts_in_a_tests_folder_are_not_packed(self):
+        self.new("Docker - Prune Images [Lin]", "scripts")
+        d = self.root / "Scripts/docker-prune-images-lin"
+        without, with_tests = self.root / "without.cpt", self.root / "with.cpt"
+        self.assertEqual(run(sys.executable, str(CPT), "pack", str(d), "-o", str(without)).returncode, 0)
+        (d / "tests").mkdir()
+        (d / "tests/plant-state.sh").write_text("#!/usr/bin/env bash\necho planted\n")
+        r = run(sys.executable, str(CPT), "pack", str(d), "-o", str(with_tests))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(with_tests.read_bytes(), without.read_bytes())
+
     def test_the_shell_monitor_stub_does_what_its_test_json_expects(self):
         self.new("Disk Space - Free Space Below Threshold [Lin]", "monitors")
         body = self.root / "Monitors/disk-space-free-space-below-threshold-lin/disk-space-free-space-below-threshold-lin.sh"
