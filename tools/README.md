@@ -66,9 +66,6 @@ frame.resize((48, 48), Image.LANCZOS).save("tools/default-icon.png", "PNG", opti
 To give a component its own icon, drop a 48x48 RGBA `icon.png` beside its
 `component.json`.
 
-Two hand-built `.cpt` files already in this repo carry a 3-byte junk `icon.png`.
-That is not a real PNG. Replace those when their manifests get written.
-
 ## `resource.xml`
 
     <?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -171,7 +168,7 @@ file; it is required when there is more than one.
     python3 tools/cpt.py unpack "export.cpt" -o Monitors/new-component
 
     # prove the tool reproduces a real export exactly
-    python3 tools/cpt.py verify samples/*/*.cpt
+    python3 tools/cpt.py verify tools/fixtures/*.cpt
 
 `pack` validates before it writes, and refuses on a missing `uid`, a bad
 `category`, a non-integer `timeout`, a duplicate variable name, or a `map`
@@ -279,24 +276,36 @@ a regression in this.
 ## In CI
 
 [`.github/workflows/build-components.yml`](../.github/workflows/build-components.yml)
-runs on every pull request touching a category folder or `tools/`, and does three
-things:
+runs on every pull request, whatever it touches (it is a required check), and
+does four things:
 
-1. **`cpt.py audit`** — fails the build if any `.cpt` is committed under a
+1. **The packer's tests** (`tools/test_cpt.py`).
+2. **`cpt.py audit`** — fails the build if any `.cpt` is committed under a
    category folder. Exports are built, not stored.
-2. **`cpt.py verify`** — reproduces any reference export in `samples/` byte for
-   byte, so a change to the packer that breaks the format is caught here.
-   `samples/` is gitignored, so on GitHub this is normally a no-op.
-3. **`cpt.py pack-all`** — builds every component that has a `component.json`
+3. **`cpt.py verify`** — reproduces the reference export in
+   [`tools/fixtures/`](fixtures/) byte for byte, so a change to the packer that
+   breaks the format is caught here.
+4. **`cpt.py pack-all`** — builds every component that has a `component.json`
    and uploads them as the **component-exports** artifact.
 
-On a push to `main` a fourth step publishes the same exports to the rolling
+On a push to `main` a second job publishes the same exports to the rolling
 **`latest`** release, so each has a permanent URL rather than expiring with the
 artifact:
 
     https://github.com/TechCollective/DattoRMM_Components/releases/latest
 
-**Nothing is ever committed.** Built exports are artifacts and release assets,
+### The reference export
+
+`tools/fixtures/disk-space-monitor-lin.cpt` is the one export committed to the
+repo: a real Datto export of the disk space monitor, with no attachment. It
+exercises string variables, an empty default and a `map` drop-down. It was
+reviewed byte by byte before it was committed: its body is already in this
+repo's history, its icon is a Datto stock icon, and its `resource.xml` holds
+only the GitHub URL, Datto's uid for it and its input variables. No client
+names, hostnames, IPs or secrets. `samples/` stays gitignored; anything added
+to `tools/fixtures/` gets the same review, and never carries an attachment.
+
+**Nothing else is ever committed.** Built exports are artifacts and release assets,
 never files in git: an Applications export bundles the vendor's installer and
 this repo is public, and a zip in the tree goes stale in silence because no diff
 shows it drifting from the script beside it. `audit` enforces it.
@@ -363,7 +372,7 @@ It last passed on 2026-09-10: imported clean, all four variables intact.
 
 ### Adding a manifest to an existing component
 
-A component folder is only built once it has a `component.json`. Four of the
+A component folder is only built once it has a `component.json`. Three of the
 monitors in this repo predate the manifest and are reported as `skip` until one
 is written.
 

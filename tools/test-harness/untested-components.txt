@@ -3,7 +3,6 @@
 # give a component a test.json and remove its line here, in the same pull request.
 # Never add to it.
 Monitors/active-directory-domain-trust-secure-channel-win
-Monitors/apt-update-available-for-package-lin
 Monitors/disk-health-smart-failure-detected-mac-lin
 Monitors/disk-space-free-space-below-threshold-lin
 Monitors/unattended-upgrades-not-running-lin
