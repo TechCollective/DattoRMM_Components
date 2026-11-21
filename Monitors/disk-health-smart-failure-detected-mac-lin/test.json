@@ -1,0 +1,93 @@
+{
+  "platforms": [
+    "macos",
+    "linux"
+  ],
+  "description": "A shimmed disk (smartctl on Linux, diskutil on macOS, first on the root PATH) that passes gives exit 0; one that fails gives exit 1 naming the disk, with a diagnostic block; with no smartctl reachable at all, Linux refuses to call the host healthy (exit 1) and macOS, which reads diskutil, still reports the disk.",
+  "steps": [
+    {
+      "type": "command",
+      "label": "Install the smartctl and diskutil shims in /usr/local/sbin",
+      "script": "tests/install-shims.sh",
+      "outputContains": [
+        "shims installed: /usr/local/sbin/smartctl, /usr/local/sbin/diskutil"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Passed: exit 0, all disks healthy",
+      "variables": {
+        "tcTestHealth": "passed"
+      },
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=All 1 disks healthy"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Failed (Linux): exit 1 naming the disk and why, with the smartctl output as a diagnostic",
+      "platforms": [
+        "linux"
+      ],
+      "variables": {
+        "tcTestHealth": "failed"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=/dev/sda: overall health FAILED!",
+        "attributes failing now: Reallocated_Sector_Ct",
+        "812 reallocated sectors (max 0)",
+        "(0 of 1 disks healthy)",
+        "<-Start Diagnostic->",
+        "--- error / self-test log ---"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Failed (macOS): exit 1 naming the disk and its SMART status, with diskutil info as a diagnostic",
+      "platforms": [
+        "macos"
+      ],
+      "variables": {
+        "tcTestHealth": "failed"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=/dev/disk0 SMART status is 'Failing' (0 of 1 disks healthy)",
+        "<-Start Diagnostic->",
+        "===== /dev/disk0 ====="
+      ]
+    },
+    {
+      "type": "command",
+      "label": "Hide every smartctl on the root PATH, the shim and any real one",
+      "script": "tests/hide-smartctl.sh",
+      "outputContains": [
+        "no smartctl on the root PATH"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "smartctl missing (Linux): exit 1, check could not run",
+      "platforms": [
+        "linux"
+      ],
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: smartmontools is not installed"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "smartctl missing (macOS): not needed, diskutil still reads the disk, exit 0",
+      "platforms": [
+        "macos"
+      ],
+      "expectExitCode": 0,
+      "outputContains": [
+        "STATUS=All 1 disks healthy"
+      ]
+    }
+  ]
+}

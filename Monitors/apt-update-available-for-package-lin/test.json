@@ -1,0 +1,53 @@
+{
+  "platforms": ["linux"],
+  "description": "Runs the monitor as root on Ubuntu. A local file repository serves a planted package, tctest-apt-pkg, so the result does not depend on what Ubuntu has published that day: installed at the repository's version it is healthy, and once the repository carries a newer version it alerts. A package that does not exist reports healthy (the documented 'cannot tell up to date from not installed' limit), an empty PACKAGE is refused, and a second run is harmless.",
+  "steps": [
+    {
+      "type": "command",
+      "label": "Plant tctest-apt-pkg 1.0, installed, in a local repository",
+      "run": "set -e\nmkdir -p /opt/tctest-repo\n# publish VERSION: build the package and rewrite the repository index (by hand: the runner has no apt-utils)\ncat > /opt/tctest-publish.sh <<'EOF'\nset -e\nd=$(mktemp -d); mkdir -p \"$d/DEBIAN\"\nprintf 'Package: tctest-apt-pkg\\nVersion: %s\\nArchitecture: all\\nMaintainer: TC Test <test@example.com>\\nDescription: Tier 1 test package\\n' \"$1\" > \"$d/DEBIAN/control\"\ndpkg-deb -b \"$d\" \"/opt/tctest-repo/tctest-apt-pkg_$1_all.deb\" >/dev/null\ncd /opt/tctest-repo\nfor f in *.deb; do dpkg-deb -f \"$f\"; echo \"Filename: ./$f\"; echo \"Size: $(stat -c %s \"$f\")\"; echo \"SHA256: $(sha256sum \"$f\" | cut -d ' ' -f 1)\"; echo; done > Packages\n# apt compares whole-second mtimes, so a republish in the same second as the last update would read as unchanged\nrm -f /var/lib/apt/lists/_opt_tctest-repo_*\ngrep -q \"^Version: $1$\" Packages\nEOF\nbash /opt/tctest-publish.sh 1.0\ndpkg -i /opt/tctest-repo/tctest-apt-pkg_1.0_all.deb >/dev/null\necho 'deb [trusted=yes] file:/opt/tctest-repo ./' > /etc/apt/sources.list.d/tctest.list\necho planted 1.0",
+      "outputContains": ["planted 1.0"]
+    },
+    {
+      "type": "runComponent",
+      "label": "Real package, current: healthy",
+      "variables": { "PACKAGE": "tctest-apt-pkg" },
+      "expectExitCode": 0,
+      "outputContains": ["Alert=No updates available for tctest-apt-pkg"]
+    },
+    {
+      "type": "command",
+      "label": "Publish tctest-apt-pkg 2.0 to the local repository",
+      "run": "bash /opt/tctest-publish.sh 2.0 && echo published 2.0",
+      "outputContains": ["published 2.0"]
+    },
+    {
+      "type": "runComponent",
+      "label": "Real package, upgrade available: alert",
+      "variables": { "PACKAGE": "tctest-apt-pkg" },
+      "expectExitCode": 1,
+      "outputContains": ["Alert=Update available for tctest-apt-pkg", "<-Start Diagnostic->"]
+    },
+    {
+      "type": "runComponent",
+      "label": "Second run: same alert",
+      "variables": { "PACKAGE": "tctest-apt-pkg" },
+      "expectExitCode": 1,
+      "outputContains": ["Alert=Update available for tctest-apt-pkg"]
+    },
+    {
+      "type": "runComponent",
+      "label": "Nonexistent package: healthy",
+      "variables": { "PACKAGE": "tctest-no-such-package" },
+      "expectExitCode": 0,
+      "outputContains": ["Alert=No updates available for tctest-no-such-package"]
+    },
+    {
+      "type": "runComponent",
+      "label": "Empty PACKAGE: refused",
+      "variables": { "PACKAGE": "" },
+      "expectExitCode": 1,
+      "outputContains": ["Alert=Unhealthy: No package specified"]
+    }
+  ]
+}

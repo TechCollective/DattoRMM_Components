@@ -1,0 +1,59 @@
+{
+  "platforms": ["linux"],
+  "description": "The Debian branch, on the Ubuntu runner. A real unattended-upgrade --dry-run just now is healthy; a last run 30 hours ago is WARNING (exit 1) and 3 days ago CRITICAL (exit 2), naming when it ran. Just after rotation (empty log, last run in .1.gz, an older one in .2.gz) the newest rotated file is read and it is healthy. The runner's own log directory, and the package if the test installed it, are put back at the end.",
+  "steps": [
+    {
+      "type": "command",
+      "label": "Install unattended-upgrades if missing, set the runner's log aside, and do a real dry run",
+      "script": "tests/setup.sh",
+      "timeoutSeconds": 300,
+      "outputContains": ["INFO"]
+    },
+    {
+      "type": "runComponent",
+      "label": "Ran just now: healthy",
+      "expectExitCode": 0,
+      "outputContains": ["Status=OK"]
+    },
+    {
+      "type": "command",
+      "label": "Last run 30 hours ago",
+      "run": "printf '%s,000 INFO Starting unattended upgrades script\\n' \"$(date -d '30 hours ago' '+%F %T')\" > /var/log/unattended-upgrades/unattended-upgrades.log"
+    },
+    {
+      "type": "runComponent",
+      "label": "30 hours: WARNING",
+      "expectExitCode": 1,
+      "outputContains": ["Status=WARNING", "unattended-upgrades last ran at"]
+    },
+    {
+      "type": "command",
+      "label": "Last run 3 days ago",
+      "run": "printf '%s,000 INFO Starting unattended upgrades script\\n' \"$(date -d '3 days ago' '+%F %T')\" > /var/log/unattended-upgrades/unattended-upgrades.log"
+    },
+    {
+      "type": "runComponent",
+      "label": "3 days: CRITICAL",
+      "expectExitCode": 2,
+      "outputContains": ["Status=CRITICAL", "unattended-upgrades last ran at"]
+    },
+    {
+      "type": "command",
+      "label": "Just rotated: empty log, last run 2 hours ago in unattended-upgrades.log.1.gz, 32 days ago in .2.gz",
+      "script": "tests/plant-rotated.sh"
+    },
+    {
+      "type": "runComponent",
+      "label": "Just rotated: the newest rotated log (.1.gz) is read, healthy",
+      "expectExitCode": 0,
+      "outputContains": ["Status=OK"]
+    },
+    {
+      "type": "command",
+      "label": "Put the runner back as it was",
+      "script": "tests/restore.sh",
+      "timeoutSeconds": 300,
+      "outputContains": ["restored"]
+    }
+  ]
+}

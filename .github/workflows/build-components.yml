@@ -46,18 +46,11 @@ jobs:
       - name: Audit committed .cpt files
         run: python3 tools/cpt.py audit
 
-      # Proves the packer still reproduces a real Datto export byte for byte,
-      # whenever a reference export is available to check against. samples/ is
-      # gitignored, so this is normally a no-op and never fails the build.
-      - name: Verify packer against reference exports
-        run: |
-          shopt -s nullglob
-          references=(samples/*/*.cpt)
-          if [ ${#references[@]} -eq 0 ]; then
-            echo "No reference exports in samples/ - skipping."
-            exit 0
-          fi
-          python3 tools/cpt.py verify "${references[@]}"
+      # Proves the packer still reproduces a real Datto export byte for byte.
+      # The reference is committed in tools/fixtures/; samples/ stays
+      # gitignored. See tools/README.md.
+      - name: Verify packer against the reference export
+        run: python3 tools/cpt.py verify tools/fixtures/*.cpt
 
       - name: Build every component with a manifest
         id: build

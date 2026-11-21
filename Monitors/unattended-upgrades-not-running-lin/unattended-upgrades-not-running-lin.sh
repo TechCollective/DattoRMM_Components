@@ -15,7 +15,8 @@ UNK=3
 _out() {
   local status="$1" detail="${3:-}"   # $2, the one-line summary, is not printed
   echo "<-Start Result->"; echo "Status=${status}"; echo "<-End Result->"
-  [[ -n $detail ]] && { echo "<-Start Diagnostic->"; echo "$detail"; echo "<-End Diagnostic->"; }
+  # if, not &&: with no detail a false && would return 1 and set -e would exit 1 on OK
+  if [[ -n $detail ]]; then echo "<-Start Diagnostic->"; echo "$detail"; echo "<-End Diagnostic->"; fi
 }
 
 need_cmd() { command -v "$1" &>/dev/null || { _out "UNKNOWN" "UNKNOWN: $1 not found." ; exit $UNK; }; }
@@ -84,16 +85,17 @@ check_debian() {
   # 1. Grab the newest timestamp line from the **end** of the current log.
   local last_line
   last_line=$(tac "$log_file" \
-              | grep -m1 -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}')
-  
+              | grep -m1 -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}') || true
+
   # 2. If the current log was empty (e.g. just rotated), fall back to the
-  #    newest rotated file (highest number) and take its last timestamp line.
+  #    newest rotated file (logrotate's lowest number, .1.gz) and take its
+  #    last timestamp line.
   if [[ -z $last_line ]]; then
     local newest_rotated
-    newest_rotated=$(ls -1v "${log_file}".*.gz 2>/dev/null | tail -n1) || true
+    newest_rotated=$(ls -1v "${log_file}".*.gz 2>/dev/null | head -n1) || true
     if [[ -n $newest_rotated ]]; then
       last_line=$(zgrep -h -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}' \
-                         "$newest_rotated" | tail -n1)
+                         "$newest_rotated" | tail -n1) || true
     fi
   fi
 
