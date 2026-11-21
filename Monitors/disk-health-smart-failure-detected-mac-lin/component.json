@@ -1,0 +1,99 @@
+{
+  "general": {
+    "name": "Disk Health - SMART Failure Detected [Mac] [Lin]",
+    "category": "monitors",
+    "description": "Reads SMART data on every physical disk and alerts on a failed self-assessment, failing attribute or threshold breach. Read-only. Linux needs smartmontools. https://github.com/TechCollective/DattoRMM_Components",
+    "uid": "",
+    "hash": "",
+    "version": "1",
+    "timeout": "300",
+    "securityLevel": "4",
+    "installType": "unix"
+  },
+  "body": "disk-health-smart-failure-detected-mac-lin.sh",
+  "variables": [
+    {
+      "name": "reallocMax",
+      "type": "string",
+      "direction": "false",
+      "description": "Max reallocated sectors (ATA attribute 5); also the SCSI grown-defect-list cap.",
+      "defaultVal": "0"
+    },
+    {
+      "name": "pendingMax",
+      "type": "string",
+      "direction": "false",
+      "description": "Max pending (197) and offline-uncorrectable (198) sectors.",
+      "defaultVal": "0"
+    },
+    {
+      "name": "crcMax",
+      "type": "string",
+      "direction": "false",
+      "description": "Max interface CRC errors (199). Usually a cable fault.",
+      "defaultVal": "10"
+    },
+    {
+      "name": "tempMax",
+      "type": "string",
+      "direction": "false",
+      "description": "Max drive temperature in C (attribute 194 or 190).",
+      "defaultVal": "55"
+    },
+    {
+      "name": "nvmeWearMax",
+      "type": "string",
+      "direction": "false",
+      "description": "Max NVMe Percentage Used.",
+      "defaultVal": "90"
+    },
+    {
+      "name": "nvmeSpareMin",
+      "type": "string",
+      "direction": "false",
+      "description": "Min NVMe Available Spare percent.",
+      "defaultVal": "10"
+    },
+    {
+      "name": "failOnPastTrip",
+      "type": "map",
+      "direction": "false",
+      "description": "true: alert on attributes that tripped In_the_past. false: report them only.",
+      "defaultVal": "false",
+      "options": [
+        {
+          "name": "false",
+          "value": "false"
+        },
+        {
+          "name": "true",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "name": "failOnUnreadable",
+      "type": "map",
+      "direction": "false",
+      "description": "true: alert when any one disk's SMART data cannot be read. false: report it only.",
+      "defaultVal": "false",
+      "options": [
+        {
+          "name": "false",
+          "value": "false"
+        },
+        {
+          "name": "true",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "name": "smartctlTimeout",
+      "type": "string",
+      "direction": "false",
+      "description": "Seconds allowed per smartctl call, where timeout(1) exists.",
+      "defaultVal": "20"
+    }
+  ]
+}

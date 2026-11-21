@@ -21,6 +21,8 @@ breach in wear, temperature, reallocated sectors or interface errors.
 | Path | What it is |
 |---|---|
 | `disk-health-smart-failure-detected-mac-lin.sh` | The component body. This file is the source of truth — paste it into Datto, don't edit it there. |
+| `component.json` | Metadata and the nine input variables, for `tools/cpt.py pack`. |
+| `test.json`, `tests/` | The Tier 1 test: shimmed `smartctl` (Linux) and `diskutil` (macOS) report a passing disk, a failing one, and no `smartctl` at all. |
 | `README.md` | This file. |
 
 No `.cpt` export yet — this component has not been saved into Datto. Export one

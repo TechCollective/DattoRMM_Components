@@ -215,8 +215,8 @@
         "STOPPED, UNLISTED  name:tc-old2  - not yet recorded for removal: the prune records it once it has been stopped 168h, then removes it 144h later; Add it to keep it"
       ],
       "outputNotContains": [
-        "2026-11-21",
-        "2026-11-27",
+        "recorded for removal 2026-11-21",
+        "remove it from 2026-11-27",
         "nothing is removed until the list is reviewed"
       ]
     },
