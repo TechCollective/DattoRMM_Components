@@ -25,8 +25,8 @@ breach in wear, temperature, reallocated sectors or interface errors.
 | `test.json`, `tests/` | The Tier 1 test: shimmed `smartctl` (Linux) and `diskutil` (macOS) report a passing disk, a failing one, and no `smartctl` at all. |
 | `README.md` | This file. |
 
-No `.cpt` export yet — this component has not been saved into Datto. Export one
-once it has, so its nine input variables can be restored without retyping.
+Not yet saved into Datto, so `component.json` has no uid. Import the `.cpt` CI
+builds from it, which carries all nine input variables, then record the uid.
 
 ---
 
