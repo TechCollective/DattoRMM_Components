@@ -34,8 +34,8 @@ state of the `dnf-automatic` or `yum-cron` unit.
 | `component.json` | Its metadata, from which CI builds an importable `.cpt`. The `uid` is empty until it is saved into Datto. |
 | `test.json`, `tests/` | Its Tier 1 test (Debian branch, on the Ubuntu runner): a real dry run is healthy, a last run 30 hours ago warns, 3 days ago is critical, and just after rotation the newest rotated log is read. |
 
-No `.cpt` export yet — this component has not been saved into Datto under this
-name.
+Not yet saved into Datto, so `component.json` has no uid. Import the `.cpt` CI
+builds from it, then record the uid.
 
 **Fixed with the Tier 1 test** (they were in the imported script):
 
@@ -47,6 +47,11 @@ name.
   `pipefail`.
 - The rotated-log fallback read the *oldest* rotation (highest number) instead
   of the newest (`.1.gz`), so after rotation it alerted on a month-old run.
+
+**Fixed since:** it ran under `set -euo pipefail` with no `EXIT` trap, so any
+unexpected death printed no result block. An `EXIT` trap now prints a fallback
+`Status=UNKNOWN` block (exit `3`) when nothing else did; the test sends it TERM
+mid-run to prove it.
 
 ---
 
@@ -139,7 +144,7 @@ was ported without collapsing its state model.
 | RHEL: unit disabled | `Status=WARNING` | `1` | **alert** |
 | RHEL: unit enabled but inactive | `Status=WARNING` | `1` | **alert** |
 | Unsupported distribution | `Status=UNKNOWN` | `3` | **alert** |
-| The script dies unexpectedly | **No result block is emitted.** Datto renders this as an alert with no text in it | non-zero | **alert** |
+| The script dies unexpectedly | `Status=UNKNOWN: check failed before it could decide (…)` | `3` (`143` on TERM) | **alert** |
 
 ## How to tell it worked
 
@@ -193,14 +198,10 @@ Read as unfixed defects, in rough order of how much they matter.
   with no indication of which host state produced it. A technician has to open
   the diagnostic block to learn anything — and the RHEL "not installed" path is
   the only one whose diagnostic names the problem clearly.
-- **No result block on unexpected death.** There is no `EXIT` trap, and the
-  script runs under `set -euo pipefail`, so any unset variable or failed command
-  in a pipeline exits immediately with nothing on stdout. That combination makes
-  a silent, textless alert *more* likely, not less.
 - **`check_rhel` references `$PRETTY_NAME`**, which only exists if
   `/etc/os-release` was readable and sourced. Under `set -u` an unreadable
-  `/etc/os-release` on an RPM host is an unbound-variable crash — the textless
-  alert above.
+  `/etc/os-release` on an RPM host is an unbound-variable crash, which the
+  `EXIT` trap reports only as `Status=UNKNOWN`.
 - **Thresholds are hardcoded.** See [Input variables](#input-variables).
 - **Four exit codes where Datto has two.** Everything non-zero is one alert.
 - **The RHEL branch checks configuration, not outcome.** An enabled, active

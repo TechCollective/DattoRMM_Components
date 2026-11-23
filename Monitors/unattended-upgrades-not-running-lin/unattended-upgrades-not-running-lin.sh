@@ -17,7 +17,27 @@ _out() {
   echo "<-Start Result->"; echo "Status=${status}"; echo "<-End Result->"
   # if, not &&: with no detail a false && would return 1 and set -e would exit 1 on OK
   if [[ -n $detail ]]; then echo "<-Start Diagnostic->"; echo "$detail"; echo "<-End Diagnostic->"; fi
+  emitted=1
 }
+
+# set -e (or a signal) can end the script before any _out; this guarantees the
+# one result block anyway, and never as OK.
+emitted=0
+on_exit() {
+  local code=$?
+  if [[ $emitted -eq 0 ]]; then
+    # On a signal $? is 0 and bash exits with the signal's code (143 for TERM)
+    # whatever this trap says.
+    local why="shell exit ${code}"
+    [[ $code -ne 0 ]] || why="stopped by a signal"
+    echo "<-Start Result->"
+    echo "Status=UNKNOWN: check failed before it could decide (${why}); see the component's raw job output for the error"
+    echo "<-End Result->"
+    exit $UNK
+  fi
+  exit "$code"
+}
+trap on_exit EXIT
 
 need_cmd() { command -v "$1" &>/dev/null || { _out "UNKNOWN" "UNKNOWN: $1 not found." ; exit $UNK; }; }
 

@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+#!/bin/bash
 # Runs as root before the first run. Puts the runner in a known state and
 # records what it changed, for tests/restore.sh to undo.
 set -eu

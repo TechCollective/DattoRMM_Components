@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+#!/bin/bash
 # Undoes tests/setup.sh: the runner's own log directory back, and the package
 # removed again if the test installed it.
 set -eu

@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+#!/bin/bash
 # Just after logrotate: the current log is empty and the last run, two hours
 # ago, is only in the newest rotated file, .1.gz. .2.gz is a month older.
 set -eu
