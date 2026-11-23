@@ -3,7 +3,7 @@
     "name": "Java - Uninstall All Versions [Mac]",
     "category": "scripts",
     "description": "Removes system-wide Java from any vendor and Oracle's plug-in; never touches Java bundled inside apps. Report mode changes nothing.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Scripts/java-uninstall-all-versions-mac",
-    "uid": "",
+    "uid": "2c3e8003-d363-4afa-bd87-358a9c4c2f18",
     "hash": "",
     "version": "1",
     "timeout": "900",
@@ -40,8 +40,8 @@
       "name": "usrUdfNumber",
       "type": "string",
       "direction": "false",
-      "description": "UDF to write a one-line summary to, 1 to 300. Blank = write no UDF. Never overwrites a value another component wrote.",
-      "defaultVal": ""
+      "description": "UDF to write a one-line summary to, 1 to 300. Default 13 (Java Status in the Datto RMM - UDFs doc). Blank = no UDF. Never overwrites a value another component wrote.",
+      "defaultVal": "13"
     }
   ]
 }

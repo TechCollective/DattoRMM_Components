@@ -99,7 +99,7 @@ pull request.
 |---|---|---|---|
 | `usrMode` | Selection | Remove | `Remove` or `Report`. Anything else is refused with exit 1. |
 | `usrKeep` | String | blank | Comma-separated text matched, case-insensitively and anywhere, against product names and folder names. A match is left installed, e.g. `Java 8 Update 401` or `Corretto`. Each term must be at least 3 characters, or the run is refused. |
-| `usrUdfNumber` | String | blank | 1 to 300, or blank for no UDF. Anything else is refused. It never overwrites a UDF value that doesn't start with `Java: `. |
+| `usrUdfNumber` | String | 13 | UDF 13 is Java Status in the [Datto RMM - UDFs](https://techcollective.itglue.com/3577506/docs/19691248) doc. 1 to 300, or blank for no UDF. Anything else is refused. It never overwrites a UDF value that doesn't start with `Java: `. |
 
 No customer-specific value is hardcoded.
 

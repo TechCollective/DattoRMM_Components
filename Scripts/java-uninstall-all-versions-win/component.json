@@ -34,8 +34,8 @@
       "name": "usrUdfNumber",
       "type": "string",
       "direction": "false",
-      "description": "UDF to write a one-line summary to, 1 to 300. Blank = write no UDF. Never overwrites a value another component wrote.",
-      "defaultVal": ""
+      "description": "UDF to write a one-line summary to, 1 to 300. Default 13 (Java Status in the Datto RMM - UDFs doc). Blank = no UDF. Never overwrites a value another component wrote.",
+      "defaultVal": "13"
     }
   ]
 }
