@@ -4,16 +4,16 @@
 
 # Vendor and project domains the components and docs link or download from
 techcollective.com          # our own site, in the README
-github.com
-googlecloudplatform.github.io
-python.org
-gnu.org
-fsf.org
-microsoft.com
-google.com
-ui.com                      # Ubiquiti UniFi downloads and API
+github.com                  # this repo and upstream projects, linked from components and READMEs
+googlecloudplatform.github.io # the IAP Desktop project page, in its README
+python.org                  # Python downloads, in the IAP Connect README
+gnu.org                     # the GPL text, and a bash tarball in the Docker images test
+fsf.org                     # the FSF address in the GPL text
+microsoft.com               # Microsoft docs links, and the PowerShell image tools/check.sh uses
+google.com                  # Google Cloud CLI downloads and docs
+ui.com                     # Ubiquiti UniFi downloads and API
 ubnt.com                    # Ubiquiti firmware downloads
-datto.com
+datto.com                   # Datto RMM docs, in the README
 adoptium.net                # Temurin JDK used in the Java uninstall test
 
 # Known false positives
@@ -21,6 +21,6 @@ adoptium.net                # Temurin JDK used in the Java uninstall test
 3.6.0.100                   # a UniFi Endpoint version number in a test
 3.7.4.0                     # a version number in a code comment
 10.98.0.2                   # WireGuard tunnel addresses inside the tests' throwaway network namespaces
-10.99.0.1
-10.99.0.2
+10.99.0.1                   # WireGuard tunnel address in the same namespaces
+10.99.0.2                   # WireGuard tunnel address in the same namespaces
 system.io                   # the .NET namespace in PowerShell

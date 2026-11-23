@@ -372,9 +372,9 @@ It last passed on 2026-09-10: imported clean, all four variables intact.
 
 ### Adding a manifest to an existing component
 
-A component folder is only built once it has a `component.json`. Three of the
-monitors in this repo predate the manifest and are reported as `skip` until one
-is written.
+A component folder is only built once it has a `component.json`; until then it
+is reported as `skip`. Every component in this repo has one now, so this is for
+a folder added without one, such as a script brought in from outside.
 
 Write one by hand — `name`, `category`, `installType`, `timeout`,
 `securityLevel`, and the input variables. Leave `uid` and `hash` blank. Nothing
