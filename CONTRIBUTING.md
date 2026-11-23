@@ -175,6 +175,14 @@ Whoever reviews the pull request confirms all of it. The
 - [ ] No keys, tokens, tenant ids, licence keys or account numbers
 - [ ] No thresholds, paths or exclusions tuned for one customer — those are input variables
 - [ ] No output captured from a real device
+- [ ] The **Public safety** check passes. It runs a secret scanner (gitleaks)
+  over the pull request's commits, and `tools/check-public-safety.py`, which
+  flags IPv4 addresses outside loopback and the documentation ranges
+  (192.0.2.x, 198.51.100.x, 203.0.113.x) and domains other than example.com,
+  .net and .org. Fix a hit by switching to a documentation address or example
+  domain. A vendor domain or a false positive goes in
+  `tools/public-safety-allowlist.txt` (or, for the secret scanner,
+  `.gitleaks.toml`) with the reason on the same line.
 
 **The component:**
 
