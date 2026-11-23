@@ -75,9 +75,11 @@ jobs:
             echo
             echo "> A component folder is only built once it has a \`component.json\`."
             echo "> To add one to an existing component, export it from Datto and run"
-            echo "> \`python3 tools/cpt.py unpack \"export.cpt\" -o <folder>\` — that keeps the"
-            echo "> component's existing \`uid\`, so importing updates it rather than"
-            echo "> creating a duplicate."
+            echo "> \`python3 tools/cpt.py unpack \"export.cpt\" -o <folder>\` to write it."
+            echo ">"
+            echo "> Datto does not honour the \`uid\` in an imported \`.cpt\`, so an import"
+            echo "> always creates a **new** component. Check the Component Library"
+            echo "> afterwards and delete the one it supersedes."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload exports
