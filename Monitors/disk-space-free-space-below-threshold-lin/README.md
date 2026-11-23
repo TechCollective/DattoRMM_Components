@@ -16,9 +16,11 @@ metadata exhaustion and LVM thin pool exhaustion, which `df` alone cannot see.
 |---|---|
 | `disk-space-free-space-below-threshold-lin.sh` | The component body. This file is the source of truth — paste it into Datto, don't edit it there. |
 | `README.md` | This file. |
+| `component.json` | Datto metadata and input variables; CI builds the `.cpt` from it. |
+| `test.json`, `tests/` | The Tier 1 test and its fixture scripts (loop mounts, df and btrfs shims). |
 
-No `.cpt` export yet — this component has not been saved into Datto. Export one
-once it has, so its six input variables can be restored without retyping.
+Not yet saved into Datto, so `component.json` has no uid. Import the `.cpt` CI
+builds from it, which carries all six input variables, then record the uid.
 
 ---
 
@@ -118,7 +120,7 @@ No client-specific value is hardcoded. Every threshold is an input variable.
 Deliberate, because it matters for triage:
 
 - **Cannot read the mount table, a required binary is missing, an input variable is invalid, or `df` failed on every filesystem** → exit 1 with `STATUS=Check could not run: <reason>`. Not knowing whether a disk is full is dangerous.
-- **The script dies unexpectedly** → exit 1 with `STATUS=Check failed before it could measure anything`. Never green.
+- **The script dies unexpectedly** → exit 1 with `STATUS=Check failed before it could measure anything (shell exit N)`; killed by a signal, the status says `(stopped by a signal)` and the job ends with the signal's code (143 for TERM). Never green.
 - **A filesystem type it cannot measure** (ZFS/NFS/fuse) → named in the status text, exit governed by `usrUnknownFs`, default `warn` (no alert). Alerting by default would flood any ZFS estate; hiding it is what the original did wrong. `warn` makes it visible without paging.
 - **A local filesystem mounted read-only** → named in the status text on both paths, does not alert.
 - **Btrfs present but `btrfs-progs` missing**, or **`dmsetup` failing** → named in the status text on both paths, does not itself alert.
