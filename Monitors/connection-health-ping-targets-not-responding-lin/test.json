@@ -76,7 +76,7 @@
   {
    "type": "command",
    "label": "Killed mid-run: TERM 2 seconds into a 10-ping run still prints exactly one fallback result block and exits 1",
-   "run": "M=\"$PWD/Monitors/connection-health-ping-targets-not-responding-lin/connection-health-ping-targets-not-responding-lin.sh\"; test -f \"$M\" || { echo \"cannot find $M\"; exit 1; }; o=$(mktemp); env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root usrTargets=192.0.2.1 usrPingCount=10 usrReplyTimeoutSec=5 /bin/bash \"$M\" >\"$o\" 2>&1 & p=$!; sleep 2; kill -TERM \"$p\"; wait \"$p\"; rc=$?; cat \"$o\"; echo \"exit $rc\"; echo \"result blocks: $(grep -c '^<-Start Result->$' \"$o\") start, $(grep -c '^<-End Result->$' \"$o\") end\"; rm -f \"$o\"",
+   "script": "tests/kill.sh",
    "outputContains": [
     "STATUS=Check could not run: the monitor stopped unexpectedly (exit 143)",
     "exit 1",
