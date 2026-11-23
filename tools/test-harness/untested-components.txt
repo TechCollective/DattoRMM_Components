@@ -3,5 +3,4 @@
 # give a component a test.json and remove its line here, in the same pull request.
 # Never add to it.
 Monitors/active-directory-domain-trust-secure-channel-win
-Monitors/connection-health-ping-targets-not-responding-lin
 Monitors/disk-space-free-space-below-threshold-lin
