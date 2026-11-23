@@ -2,4 +2,3 @@
 # one. Touching one of these warns instead of failing. This list only shrinks:
 # give a component a test.json and remove its line here, in the same pull request.
 # Never add to it.
-Monitors/active-directory-domain-trust-secure-channel-win
