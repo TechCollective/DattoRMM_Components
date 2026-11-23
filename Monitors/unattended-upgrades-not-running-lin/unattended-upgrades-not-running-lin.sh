@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Datto RMM mixed-distro “unattended updates” monitor
+# Datto RMM “unattended updates” monitor, Debian family only. On any other
+# system it reports OK and checks nothing: there is no unattended-upgrades to check.
 #
 #   0 OK | 1 WARNING | 2 CRITICAL | 3 UNKNOWN
 #
@@ -45,55 +46,11 @@ need_cmd() { command -v "$1" &>/dev/null || { _out "UNKNOWN" "UNKNOWN: $1 not fo
 OS_FAMILY=other; PRETTY="unknown"
 if [[ -r /etc/os-release ]]; then
   . /etc/os-release
-  PRETTY=${PRETTY_NAME:-$NAME}
-  case "${ID_LIKE:-}$ID" in
+  PRETTY=${PRETTY_NAME:-${NAME:-unknown}}
+  case "${ID_LIKE:-}${ID:-}" in
     *debian*|*ubuntu*|*linuxmint*) OS_FAMILY=debian ;;
-    *rhel*|*centos*|*fedora*|*rocky*|*almalinux*|*ol*) OS_FAMILY=rhel ;;
   esac
 fi
-
-# ───── RHEL / CentOS / Rocky / Alma check ─────────────────────────────
-check_rhel() {
-  # 1. Select package, unit and mgr based on what’s installed
-  local mgr pkg unit
-  if command -v dnf &>/dev/null; then
-    mgr="dnf"; pkg="dnf-automatic";       unit="dnf-automatic-install.timer"
-  else
-    mgr="yum"; pkg="yum-cron";            unit="yum-cron.service"
-  fi
-
-  # 2. Build a reusable diagnostic header
-  local diag_header="OS        : $PRETTY_NAME
-PkgMgr    : $mgr
-AutoPkg   : $pkg
-Unit/Timer: $unit"
-
-  # 3-A  package present?
-  if ! rpm -q "$pkg" &>/dev/null; then
-    _out "CRITICAL" "CRITICAL: $pkg not installed" \
-        "$diag_header\nProblem   : package missing."
-    exit $CRIT
-  fi
-
-  # 3-B  unit enabled?
-  if ! systemctl is-enabled --quiet "$unit"; then
-    _out "WARNING" "WARNING: $unit is disabled" \
-        "$diag_header\nProblem   : timer/service disabled."
-    exit $WARN
-  fi
-
-  # 3-C  unit active?
-  if ! systemctl is-active --quiet "$unit"; then
-    _out "WARNING" "WARNING: $unit is inactive" \
-        "$diag_header\nProblem   : timer/service not running."
-    exit $WARN
-  fi
-
-  # 4. Everything good
-  _out "OK" "OK: auto-updates healthy" "$diag_header"
-  exit $OK
-}
-
 
 # ───── Debian / Ubuntu check ──────────────────────────────────────────
 check_debian() {
@@ -142,10 +99,8 @@ check_debian() {
 }
 
 
-
 # ───── dispatcher ─────────────────────────────────────────────────────
 case $OS_FAMILY in
-  rhel)    check_rhel    ;;
   debian)  check_debian  ;;
-  *)       _out "UNKNOWN" "UNKNOWN: unsupported distro ($PRETTY)" ; exit $UNK ;;
+  *)       _out "OK: not a Debian-based system ($PRETTY); nothing to check" ; exit $OK ;;
 esac

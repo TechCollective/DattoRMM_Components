@@ -1,6 +1,6 @@
 {
   "platforms": ["linux"],
-  "description": "The Debian branch, on the Ubuntu runner. A real unattended-upgrade --dry-run just now is healthy; a last run 30 hours ago is WARNING (exit 1) and 3 days ago CRITICAL (exit 2), naming when it ran. Just after rotation (empty log, last run in .1.gz, an older one in .2.gz) the newest rotated file is read and it is healthy. TERM mid-run still prints one fallback result block, within 5 seconds. The runner's own log directory, and the package if the test installed it, are put back at the end.",
+  "description": "The Debian branch, on the Ubuntu runner. A real unattended-upgrade --dry-run just now is healthy; a last run 30 hours ago is WARNING (exit 1) and 3 days ago CRITICAL (exit 2), naming when it ran. Just after rotation (empty log, last run in .1.gz, an older one in .2.gz) the newest rotated file is read and it is healthy. TERM mid-run still prints one fallback result block, within 5 seconds. On a system that is not Debian-based (a Fedora os-release swapped in) it reports OK and checks nothing. The runner's own log directory, its os-release, and the package if the test installed it, are put back at the end.",
   "steps": [
     {
       "type": "command",
@@ -59,6 +59,18 @@
         "start markers: 1, end markers: 1, Status lines: 1"
       ],
       "timeoutSeconds": 60
+    },
+    {
+      "type": "command",
+      "label": "Not a Debian system: the runner's os-release swapped for a Fedora one",
+      "script": "tests/fake-fedora.sh",
+      "outputContains": ["now: Fedora Linux 41"]
+    },
+    {
+      "type": "runComponent",
+      "label": "Not a Debian system: OK, nothing checked",
+      "expectExitCode": 0,
+      "outputContains": ["Status=OK: not a Debian-based system (Fedora Linux 41); nothing to check"]
     },
     {
       "type": "command",

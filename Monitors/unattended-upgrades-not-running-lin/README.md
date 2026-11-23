@@ -1,15 +1,14 @@
 # Unattended Upgrades - Not Running [Lin]
 
-A Datto RMM custom monitor for Linux. Confirms that the host's automatic
-security-update mechanism is installed, enabled and actually running — on Debian
-family by the age of the last `unattended-upgrades` run, on RHEL family by the
-state of the `dnf-automatic` or `yum-cron` unit.
+A Datto RMM custom monitor for Debian-family Linux (Debian, Ubuntu, Linux
+Mint). Confirms that `unattended-upgrades` is actually running, by the age of
+its last run. On any other Linux it reports OK and checks nothing.
 
 > **Status: Not Validated.** Imported from the Datto Component Library on
 > 2026-09-10 as part of the initial repository organisation. It has not been
 > reviewed against our monitor contract or security checklist. Its Debian
 > branch now has a Tier 1 test, which found and fixed three bugs (see
-> [Contents](#contents)); the RHEL branch is a reading of the script only.
+> [Contents](#contents)).
 > Treat the defects in [Known limits](#known-limits) as unfixed.
 
 > **The alert text is currently unusable.** Every alert reads `Status=CRITICAL`
@@ -57,8 +56,7 @@ mid-run to prove it.
 
 ## What it does
 
-Detects the distribution family from `/etc/os-release` (`ID` and `ID_LIKE`), then
-takes one of two branches.
+Detects the distribution family from `/etc/os-release` (`ID` and `ID_LIKE`).
 
 **Debian, Ubuntu, Linux Mint.** Requires the `unattended-upgrade` binary. Finds
 the most recent timestamp in `/var/log/unattended-upgrades/unattended-upgrades.log`,
@@ -66,22 +64,15 @@ falling back to the newest rotated `.gz` if the current log is empty (it will be
 just after rotation), and falling back again to the log file's mtime if neither
 yields a timestamp. Alerts on the age of that run.
 
-**RHEL, CentOS, Fedora, Rocky, AlmaLinux, Oracle Linux.** Picks
-`dnf-automatic` / `dnf-automatic-install.timer` where `dnf` exists, otherwise
-`yum-cron` / `yum-cron.service`. Checks in order that the package is installed,
-the unit is enabled, and the unit is active.
+**Anything else** — RHEL, Fedora, SUSE, Arch, Alpine, or no `/etc/os-release`
+at all — reports `Status=OK: not a Debian-based system (<name>); nothing to
+check` and exits `0`. `unattended-upgrades` is a Debian tool, so there is
+nothing to check there, and a device that is wrongly targeted should not alert.
+An earlier version had an RHEL branch (`dnf-automatic` / `yum-cron`); it was
+removed because this monitor is only meant for Debian-family hosts.
 
-**Anything else** — Arch, SUSE, Alpine, Gentoo — reports UNKNOWN, which Datto
-treats as an alert.
-
-**It is read-only.** It reads `/etc/os-release`, the unattended-upgrades log,
-and `rpm -q` / `systemctl is-enabled` / `systemctl is-active`. It installs
-nothing, upgrades nothing, and makes no network call.
-
-Note the two branches measure different things. The Debian branch measures
-*outcome* — did it actually run recently. The RHEL branch measures
-*configuration* — is the timer switched on. A RHEL host whose timer is enabled
-and active but failing every run reports healthy.
+**It is read-only.** It reads `/etc/os-release` and the unattended-upgrades log.
+It installs nothing, upgrades nothing, and makes no network call.
 
 ## Installing it in Datto
 
@@ -90,10 +81,10 @@ Automation → Components → New Component.
 | Field | Value |
 |---|---|
 | Name | `Unattended Upgrades - Not Running [Lin]` |
-| Description | Alerts when a Linux host's automatic security updates are not installed, not enabled, or have not run recently. |
+| Description | Alerts when a Debian-family Linux host's unattended-upgrades has not run recently. |
 | Category | **Monitors** — permanent, cannot be changed after the first save |
 | Script type | Shell (Unix, macOS) |
-| Target OS | Linux, Debian and RHEL families only |
+| Target OS | Linux, Debian family (Debian, Ubuntu, Mint); any other Linux reports OK |
 | Level | *not standardised yet — decide at save time* |
 | Timeout | Always set one |
 | Attachments | None |
@@ -139,11 +130,7 @@ was ported without collapsing its state model.
 | Debian: last run over 52 h ago | `Status=CRITICAL` | `2` | **alert** |
 | Debian: `unattended-upgrade` binary missing | `Status=UNKNOWN` | `3` | **alert** |
 | Debian: log unreadable — including when not run as root | `Status=CRITICAL` | `2` | **alert** |
-| RHEL: package installed, unit enabled and active | `Status=OK` | `0` | healthy |
-| RHEL: `dnf-automatic` / `yum-cron` not installed | `Status=CRITICAL` | `2` | **alert** |
-| RHEL: unit disabled | `Status=WARNING` | `1` | **alert** |
-| RHEL: unit enabled but inactive | `Status=WARNING` | `1` | **alert** |
-| Unsupported distribution | `Status=UNKNOWN` | `3` | **alert** |
+| Not a Debian-family system | `Status=OK: not a Debian-based system (…); nothing to check` | `0` | healthy |
 | The script dies unexpectedly | `Status=UNKNOWN: check failed before it could decide (…)` | `3` (`143` on TERM) | **alert** |
 
 ## How to tell it worked
@@ -184,8 +171,7 @@ Do not backdate the real log — you will hide a genuine failure.
 Never a customer first.
 
 1. One internal Debian or Ubuntu device, run as a **Scripts** component, raw
-   output read. Then one RHEL-family device — the two branches share nothing but
-   the output helper and the dispatcher.
+   output read.
 2. One site, one device in it, with the job scoped to that device.
 3. Wider, only after the first two.
 
@@ -196,29 +182,17 @@ Read as unfixed defects, in rough order of how much they matter.
 - **The alert text is the state word and nothing else.** `_out` takes a `short`
   message argument and never uses it, so every alert reads `Status=CRITICAL`
   with no indication of which host state produced it. A technician has to open
-  the diagnostic block to learn anything — and the RHEL "not installed" path is
-  the only one whose diagnostic names the problem clearly.
-- **`check_rhel` references `$PRETTY_NAME`**, which only exists if
-  `/etc/os-release` was readable and sourced. Under `set -u` an unreadable
-  `/etc/os-release` on an RPM host is an unbound-variable crash, which the
-  `EXIT` trap reports only as `Status=UNKNOWN`.
+  the diagnostic block to learn anything.
 - **Thresholds are hardcoded.** See [Input variables](#input-variables).
 - **Four exit codes where Datto has two.** Everything non-zero is one alert.
-- **The RHEL branch checks configuration, not outcome.** An enabled, active
-  timer whose every run fails reports healthy. `systemctl show -p Result` on the
-  service, or the timestamp of the last successful run, would be the equivalent
-  of what the Debian branch measures.
 - **The mtime fallback overstates freshness.** If no timestamp line is found,
   the script uses the log file's mtime — which `logrotate` updates when it
   compresses, making a long-dead service look like it ran at rotation time.
-- **`\n` in the RHEL diagnostic is printed literally.** `_out` uses `echo "$detail"`
-  without `-e`, so the multi-line diagnostic header arrives as one line
-  containing the characters `\n`.
 - **No timeout on any external call.** `zgrep` across large rotated logs is the
   realistic hazard.
-- **Never run against:** SUSE, Arch, Alpine, Gentoo, or any host using a
-  configuration-management tool rather than a native timer to apply updates —
-  all of which report UNKNOWN and therefore alert.
+- **A non-Debian host reports healthy.** That is deliberate, but it means the
+  monitor proves nothing there: target it only at Debian-family devices, and
+  watch other distributions' updates some other way.
 
 ## Open questions
 
@@ -228,9 +202,6 @@ Read as unfixed defects, in rough order of how much they matter.
   (GPL-3.0). This repository is public and GPL-3.0, so that is compatible — but
   confirm whether any code was carried across from it into this version before
   treating this as an in-house work, and record the answer here either way.
-- **Should an unsupported distribution alert?** It currently does. If the
-  component is only targeted at Debian and RHEL device groups, exiting `0` with
-  "not applicable" would be quieter and just as correct.
 - **The result keyword.** This script emits `Status=`, the newer monitors emit
   `STATUS=`, the older ones emit `Alert=`. Establish which Datto actually parses
   and make all of them agree.

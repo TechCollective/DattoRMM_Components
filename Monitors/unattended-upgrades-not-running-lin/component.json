@@ -2,7 +2,7 @@
   "general": {
     "name": "Unattended Upgrades - Not Running [Lin]",
     "category": "monitors",
-    "description": "Alerts when a Linux host's automatic security updates are not installed, not enabled, or have not run recently.",
+    "description": "Alerts when a Debian-family Linux host's unattended-upgrades has not run recently.",
     "uid": "",
     "hash": "",
     "version": "1",
