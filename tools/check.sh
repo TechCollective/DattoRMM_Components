@@ -36,8 +36,13 @@ fi
 
 # shellcheck disable=SC2317  # called through step, which shellcheck cannot follow
 in_container() {
+    # In a worktree, .git is a file naming the main repo's .git by absolute
+    # path, so mount that too, at the same path.
+    local common mounts=(-v "$PWD":/repo:ro)
+    common=$(git rev-parse --path-format=absolute --git-common-dir)
+    [ -f .git ] && mounts+=(-v "$common":"$common":ro)
     # Same pins as .github/workflows/lint-components.yml.
-    docker run --rm -v "$PWD":/repo:ro -w /repo mcr.microsoft.com/powershell:7.4-ubuntu-22.04 bash -c '
+    docker run --rm "${mounts[@]}" -w /repo mcr.microsoft.com/powershell:7.4-ubuntu-22.04 bash -c '
         set -e
         apt-get update -qq >/dev/null && apt-get install -y -qq git jq sudo curl xz-utils >/dev/null 2>&1
         git config --global --add safe.directory /repo
