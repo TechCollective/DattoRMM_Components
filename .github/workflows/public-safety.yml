@@ -1,0 +1,47 @@
+name: Public safety
+
+# This repo and its CI logs are public. Two checks on every pull request:
+#
+#   - gitleaks scans every commit in the pull request for keys and tokens.
+#     False positives: .gitleaks.toml.
+#   - tools/check-public-safety.py flags IPv4 addresses and domains that could
+#     belong to a real device or client. Vendor domains and false positives:
+#     tools/public-safety-allowlist.txt.
+#
+# Runs on every pull request so "Public safety" can be a required check.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Public safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # gitleaks reads every commit in the pull request
+
+      # Pinned, and checked against its checksum, so a new release cannot fail
+      # a pull request that changed nothing.
+      - name: Install gitleaks 8.30.1
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/gitleaks.tar.gz" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Secret scan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        # A manual run has no base, so it scans the whole history.
+        run: gitleaks git --no-banner --redact --verbose ${BASE:+--log-opts="$BASE..HEAD"} .
+
+      - name: Addresses and domains
+        if: ${{ !cancelled() }}  # report these even when the secret scan failed
+        run: python3 tools/check-public-safety.py

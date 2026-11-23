@@ -1,0 +1,26 @@
+# Allowlist for tools/check-public-safety.py. One entry per line, reason after #.
+# A domain also admits its subdomains. Never add a client's domain or address:
+# replace it with a documentation address (192.0.2.x) or example.com instead.
+
+# Vendor and project domains the components and docs link or download from
+techcollective.com          # our own site, in the README
+github.com
+googlecloudplatform.github.io
+python.org
+gnu.org
+fsf.org
+microsoft.com
+google.com
+ui.com                      # Ubiquiti UniFi downloads and API
+ubnt.com                    # Ubiquiti firmware downloads
+datto.com
+adoptium.net                # Temurin JDK used in the Java uninstall test
+
+# Known false positives
+0.0.0.0                     # the default route in WireGuard docs and code
+3.6.0.100                   # a UniFi Endpoint version number in a test
+3.7.4.0                     # a version number in a code comment
+10.98.0.2                   # WireGuard tunnel addresses inside the tests' throwaway network namespaces
+10.99.0.1
+10.99.0.2
+system.io                   # the .NET namespace in PowerShell
