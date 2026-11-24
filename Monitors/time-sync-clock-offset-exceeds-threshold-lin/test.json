@@ -1,0 +1,188 @@
+{
+  "platforms": [
+    "linux"
+  ],
+  "description": "Shims for chronyc, ntpq and timedatectl first on the root PATH stand in for each time service in its real output format. For each of chronyd, ntpd and systemd-timesyncd: a small offset is OK and one over the default 60s threshold alerts with exit 1, ntpd's milliseconds and timesyncd's '1min 3.2s' converted to seconds. A clock reported not synchronised alerts. No readable service is OK when the kernel says synced and alerts when it does not. A threshold of abc or 0 is refused with exit 1. TERM mid-run (chronyc hanging) still prints one fallback result block, within 5 seconds.",
+  "steps": [
+    {
+      "type": "command",
+      "label": "Shims for chronyc, ntpq and timedatectl in /usr/local/sbin",
+      "script": "tests/setup.sh",
+      "outputContains": [
+        "shims installed"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "chronyd, 0.000123s: OK",
+      "variables": {
+        "tcTestSource": "chrony",
+        "tcTestOffset": "0.000123"
+      },
+      "outputContains": [
+        "STATUS=OK - clock is 0.000s off NTP time (chronyd), within 60s"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "chronyd, -75.5s: alert",
+      "expectExitCode": 1,
+      "variables": {
+        "tcTestSource": "chrony",
+        "tcTestOffset": "-75.5"
+      },
+      "outputContains": [
+        "STATUS=ALERT - clock is 75.500s off NTP time (chronyd), over the 60s threshold",
+        "<-Start Diagnostic->"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "chronyd, -75.5s with usrThreshold 120: OK",
+      "variables": {
+        "tcTestSource": "chrony",
+        "tcTestOffset": "-75.5",
+        "usrThreshold": "120"
+      },
+      "outputContains": [
+        "STATUS=OK - clock is 75.500s off NTP time (chronyd), within 120s"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "chronyd, not synchronised: alert",
+      "expectExitCode": 1,
+      "variables": {
+        "tcTestSource": "chrony",
+        "tcTestSynced": "no"
+      },
+      "outputContains": [
+        "STATUS=ALERT - clock is not synchronised (chronyd): chronyd reports Leap status: Not synchronised"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "ntpd, 12.345 ms: OK, in seconds",
+      "variables": {
+        "tcTestSource": "ntp",
+        "tcTestOffset": "12.345"
+      },
+      "outputContains": [
+        "STATUS=OK - clock is 0.012s off NTP time (ntpd), within 60s"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "ntpd, -90000 ms: alert",
+      "expectExitCode": 1,
+      "variables": {
+        "tcTestSource": "ntp",
+        "tcTestOffset": "-90000"
+      },
+      "outputContains": [
+        "STATUS=ALERT - clock is 90.000s off NTP time (ntpd), over the 60s threshold"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "systemd-timesyncd, -49.131ms: OK",
+      "variables": {
+        "tcTestSource": "timesyncd",
+        "tcTestOffset": "-49.131ms"
+      },
+      "outputContains": [
+        "STATUS=OK - clock is 0.049s off NTP time (systemd-timesyncd), within 60s"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "systemd-timesyncd, +1min 3.2s: alert",
+      "expectExitCode": 1,
+      "variables": {
+        "tcTestSource": "timesyncd",
+        "tcTestOffset": "+1min 3.2s"
+      },
+      "outputContains": [
+        "STATUS=ALERT - clock is 63.200s off NTP time (systemd-timesyncd), over the 60s threshold"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "systemd-timesyncd, NTPSynchronized=no: alert",
+      "expectExitCode": 1,
+      "variables": {
+        "tcTestSource": "timesyncd",
+        "tcTestSynced": "no"
+      },
+      "outputContains": [
+        "STATUS=ALERT - clock is not synchronised (systemd-timesyncd): timedatectl reports NTPSynchronized=no"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "No readable service, kernel says synced (old systemd, openntpd): OK",
+      "variables": {
+        "tcTestSource": "none"
+      },
+      "outputContains": [
+        "STATUS=OK - clock synchronised (timedatectl NTPSynchronized=yes)"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "No time service running, kernel says not synced: alert",
+      "expectExitCode": 1,
+      "variables": {
+        "tcTestSource": "none",
+        "tcTestSynced": "no"
+      },
+      "outputContains": [
+        "STATUS=ALERT - no running time sync service found"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Threshold abc is refused",
+      "expectExitCode": 1,
+      "variables": {
+        "tcTestSource": "chrony",
+        "usrThreshold": "abc"
+      },
+      "outputContains": [
+        "STATUS=Check could not run: usrThreshold must be whole seconds 1-86400 (given: 'abc')"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "Threshold 0 is refused",
+      "expectExitCode": 1,
+      "variables": {
+        "tcTestSource": "chrony",
+        "usrThreshold": "0"
+      },
+      "outputContains": [
+        "STATUS=Check could not run: usrThreshold must be between 1 and 86400 seconds (given: 0)"
+      ]
+    },
+    {
+      "type": "command",
+      "label": "TERM mid-run (chronyc hanging): one fallback result block at once, saying it was stopped by a signal; the job ends 143",
+      "script": "tests/kill.sh",
+      "outputContains": [
+        "exit status: 143.",
+        "result within 5 seconds of TERM",
+        "STATUS=Check failed before it could decide (stopped by a signal)",
+        "start markers: 1, end markers: 1, STATUS lines: 1"
+      ],
+      "timeoutSeconds": 60
+    },
+    {
+      "type": "command",
+      "label": "Clean up: shims removed",
+      "script": "tests/cleanup.sh",
+      "outputContains": [
+        "shims left: 0"
+      ]
+    }
+  ]
+}
