@@ -1,0 +1,15 @@
+{
+  "general": {
+    "name": "Time Monitor [LIN]",
+    "category": "monitors",
+    "description": "Monitor Linux machines' time",
+    "uid": "01638a93-cd93-4e39-8b26-71d1191c40ff",
+    "hash": "",
+    "version": "2",
+    "timeout": "3600",
+    "securityLevel": "1",
+    "installType": "unix"
+  },
+  "variables": [],
+  "body": "time-sync-clock-offset-exceeds-threshold-lin.sh"
+}
