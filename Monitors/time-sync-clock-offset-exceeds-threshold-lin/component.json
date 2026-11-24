@@ -1,15 +1,23 @@
 {
   "general": {
-    "name": "Time Monitor [LIN]",
+    "name": "Time Sync - Clock Offset Exceeds Threshold [Lin]",
     "category": "monitors",
-    "description": "Monitor Linux machines' time",
+    "description": "Alerts when the clock is not synchronised, or is more than a set number of seconds off NTP time, per chronyd, ntpd or systemd-timesyncd. Read-only.\nSource: https://github.com/TechCollective/DattoRMM_Components/tree/main/Monitors/time-sync-clock-offset-exceeds-threshold-lin",
     "uid": "01638a93-cd93-4e39-8b26-71d1191c40ff",
     "hash": "",
     "version": "2",
-    "timeout": "3600",
+    "timeout": "120",
     "securityLevel": "1",
     "installType": "unix"
   },
-  "variables": [],
+  "variables": [
+    {
+      "name": "usrThreshold",
+      "type": "string",
+      "direction": "false",
+      "description": "Whole seconds, 1-86400. Alerts when the clock is more than this off NTP time.",
+      "defaultVal": "60"
+    }
+  ],
   "body": "time-sync-clock-offset-exceeds-threshold-lin.sh"
 }
