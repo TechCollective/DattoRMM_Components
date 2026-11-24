@@ -47,7 +47,7 @@ recorded). It is a rewrite, not a patch. The original:
 3. Needed `ntpdate` and `bc`, neither installed on a stock Ubuntu 24.04, and
    read the offset from a fixed field of `ntpdate` output, which differs
    between versions.
-4. Hard-coded the server (`pool.ntp.org`) and the 60-second threshold.
+4. Hard-coded the server (the public NTP pool) and the 60-second threshold.
 5. Sent no diagnostic with the alert.
 
 The one thing it did that this does not: it checked against an outside server,
