@@ -1,4 +1,13 @@
 # Monitor Script to test domain trust using both nltest and Test-ComputerSecureChannel
+# Exit 0 = healthy or not domain-joined, Exit 1 = alert.
+
+# Anything unhandled still produces a result block and alerts.
+trap {
+    Write-Output '<-Start Result->'
+    Write-Output ("STATUS=Check could not run: the monitor stopped unexpectedly (" + ($_.Exception.Message -replace '[\r\n]+', ' ') + ")")
+    Write-Output '<-End Result->'
+    exit 1
+}
 
 function check_domain {
     param ($computerSystem)
@@ -14,7 +23,8 @@ function check_domain {
 function test_nltest {
     param ($domain)
     Try {
-        nltest /sc_verify:$domain
+        # Out-Host: otherwise nltest's transcript joins the return value and the function always reads as true.
+        nltest /sc_verify:$domain | Out-Host
         $exitCode = $LASTEXITCODE
         If ($exitCode -eq 0) {
             Write-Host "INFO=nltest succeeded. Exit code: $exitCode"
@@ -49,14 +59,15 @@ function evaluate_results {
         Write-Host '<-Start Result->'
         Write-Host "STATUS=Secure channel is functioning correctly. Both nltest and Test-ComputerSecureChannel passed for domain $domain."
         Write-Host '<-End Result->'
-        return
-    } Else {
-        Write-Host '<-Start Result->'
-        Write-Host "STATUS=Secure channel verification failed for domain $domain."
-        Write-Host "DETAILS=nltest result: $($nltestPassed), Test-ComputerSecureChannel result: $($secureChannelPassed)"
-        Write-Host '<-End Result->'
-        return
+        exit 0
     }
+    $failed = @()
+    If (-not $nltestPassed) { $failed += 'nltest' }
+    If (-not $secureChannelPassed) { $failed += 'Test-ComputerSecureChannel' }
+    Write-Host '<-Start Result->'
+    Write-Host "STATUS=Secure channel verification failed for domain $domain. Failed: $($failed -join ' and ')."
+    Write-Host '<-End Result->'
+    exit 1
 }
 
 function main {
