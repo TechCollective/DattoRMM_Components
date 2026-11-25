@@ -7,7 +7,7 @@
 # The harness runs this from a copy in its work root (the working directory).
 # The monitor body is there too, in the run-NN folder an earlier runComponent
 # step left, so this step must come after one.
-$body = Get-ChildItem -Path (Join-Path $PWD 'run-*') -Filter 'connection-health-ping-targets-not-responding-win.ps1' |
+$body = Get-ChildItem -Path (Join-Path $PWD 'run-*\connection-health-ping-targets-not-responding-win.ps1') |
     Select-Object -First 1
 if (-not $body) { 'cannot find the monitor body under a run-* folder of ' + $PWD; exit 1 }
 
