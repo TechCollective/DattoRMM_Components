@@ -272,7 +272,8 @@ harness checks blocks only on `runComponent` steps). Copy
 
 **Windows:** nothing can print a block after a kill. `Stop-Process` (and
 anything else built on `TerminateProcess`) ends `powershell.exe` at once:
-no `trap`, `finally` or exit handler runs. The step
+no `trap`, `finally` or exit handler runs, so the `trap` fallbacks in the
+Windows monitors cover errors, never a kill. The step
 `Monitors/connection-health-ping-targets-not-responding-win/tests/kill.ps1`
 proves it: stopped mid-ping, the monitor prints no result block at all. This
 holds for every PowerShell monitor, so the other Windows monitors carry no kill

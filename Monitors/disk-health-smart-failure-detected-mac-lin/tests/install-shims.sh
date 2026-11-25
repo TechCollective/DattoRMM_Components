@@ -2,8 +2,8 @@
 # Put fake smartctl and diskutil first on the root PATH (/usr/local/sbin), so
 # the monitor reads one disk whose health the test chooses. The runComponent
 # variable tcTestHealth reaches the shims through the monitor's environment:
-# "passed" (the default), "failed", or "hang" (sleep 600, for the kill test). Linux reads smartctl; macOS reads
-# diskutil and never calls smartctl.
+# "passed" (the default), "failed", or "hang" (sleep 600, for the kill test).
+# Linux reads smartctl; macOS reads diskutil and never calls smartctl.
 set -e
 mkdir -p /usr/local/sbin
 
