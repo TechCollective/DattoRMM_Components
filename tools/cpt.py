@@ -516,8 +516,11 @@ def stage_release(directory: pathlib.Path) -> int:
         "Download a `.cpt` and import it in Datto RMM via "
         "**Components → New Component → Import Component**.",
         "",
-        "Each file keeps its component's `uid`, so importing one that already "
-        "exists updates it rather than creating a duplicate.",
+        "Every import creates a new component, even for one that already "
+        "exists: Datto does not honour the `uid` in the file. To update an "
+        "existing component, paste the script into it instead. If you import "
+        "anyway, delete the old component, re-point its policies and jobs, and "
+        "record the new `uid` in `component.json`.",
         "",
     ]
     if dropped:
