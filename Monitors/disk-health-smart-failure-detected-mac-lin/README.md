@@ -128,7 +128,7 @@ default (see [Known limits](#known-limits)).
 | `nvmeSpareMin` | String | `10` | Min NVMe `Available Spare` percent. Most drives set their own threshold near 10. |
 | `failOnPastTrip` | Selection | `false` | `true` alerts on attributes showing `In_the_past`. Default reports them without alerting: a trip during a hot afternoon two years ago is not today's problem. |
 | `failOnUnreadable` | Selection | `false` | `true` alerts when any one disk's SMART data cannot be read. Default reports it. Set `true` only on hosts with fixed internal disks and no removable media. |
-| `smartctlTimeout` | String | `20` | Seconds per `smartctl` call. Used only where `timeout(1)` exists. A sleeping disk can take 10 s to answer. |
+| `smartctlTimeout` | String | `20` | Seconds per `smartctl` call on Linux (where `timeout(1)` exists) or `diskutil` call on macOS (through `perl`, which macOS ships). A disk that does not answer in time is reported unreadable. A sleeping disk can take 10 s to answer. |
 
 No customer-specific value is hardcoded. Every threshold is an input variable.
 
@@ -199,8 +199,9 @@ Never a customer first.
   capped by `smartctlTimeout`, but the number of failing disks is not, and each
   one adds a second `smartctl -l error -l selftest`. On a JBOD with many failing
   disks this can exceed Datto's 60-second post-alert window.
-- **`timeout(1)` is used when present and skipped when absent** — on macOS it is
-  usually absent, so `smartctlTimeout` does nothing there.
+- **The time limit needs `timeout(1)` on Linux and `perl` on macOS**, and is
+  skipped without them. macOS has no `timeout(1)`, so `diskutil` is run under a
+  `perl` alarm instead.
 - **A sleeping disk is woken.** `smartctl -H -A` spins up a standby drive. On a
   short monitor interval this defeats drive power management.
 - **Temperature is judged against one threshold for every device family.** An

@@ -21,7 +21,7 @@ WINDOWS_STUB
 #    nvmeSpareMin      10     min NVMe "Available Spare" percent
 #    failOnPastTrip    false  alert on attributes that tripped In_the_past
 #    failOnUnreadable  false  alert when a disk's SMART data cannot be read
-#    smartctlTimeout   20     seconds allowed per smartctl call
+#    smartctlTimeout   20     seconds allowed per smartctl or diskutil call
 #
 #  "I could not tell" policy: a missing smartmontools, or a host where no
 #  disk at all could be read, exits 1 -- an unmonitored disk is not a
@@ -94,13 +94,27 @@ note_temp() {
 
 # ============================================================== macOS path ==
 if [ "$(uname -s)" = "Darwin" ]; then
-    DISKS=$(diskutil list physical 2>/dev/null | awk '/^\/dev\/disk/{print $1}')
+    # macOS has no timeout(1), but ships perl. The alarm outlives exec, so a
+    # diskutil still running after $TMO seconds gets SIGALRM: exit 142. Bash
+    # 3.2 holds a TERM until a command substitution returns, so without this
+    # a hung diskutil would also hold back the fallback result block.
+    diskutil_limited() {
+        if command -v perl >/dev/null 2>&1; then
+            perl -e 'alarm shift; exec @ARGV or exit 127' "$TMO" diskutil "$@"
+        else
+            diskutil "$@"   # shortcut: no limit without perl, as Linux without timeout(1)
+        fi
+    }
+    LIST=$(diskutil_limited list physical 2>/dev/null)
+    [ $? -eq 142 ] && bail "diskutil list did not answer within ${TMO}s"
+    DISKS=$(printf '%s\n' "$LIST" | awk '/^\/dev\/disk/{print $1}')
     [ -n "$DISKS" ] && DISKS=$(printf '%s\n' "$DISKS" | sort -u)
     [ -n "$DISKS" ] || bail "no physical disks reported by diskutil"
 
     for DEV in $DISKS; do
         TOTAL=$((TOTAL + 1))
-        INFO=$(diskutil info "$DEV" 2>&1)
+        INFO=$(diskutil_limited info "$DEV" 2>&1)
+        if [ $? -eq 142 ]; then add_unread "$DEV"; continue; fi
         # exact value, not a substring: "Not Supported" must not match "Supported"
         ST=$(printf '%s\n' "$INFO" | awk -F': *' '/SMART Status/{print $2; exit}' \
              | sed 's/[[:space:]]*$//')
