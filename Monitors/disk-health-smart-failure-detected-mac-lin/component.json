@@ -92,7 +92,7 @@
       "name": "smartctlTimeout",
       "type": "string",
       "direction": "false",
-      "description": "Seconds allowed per smartctl call, where timeout(1) exists.",
+      "description": "Seconds allowed per smartctl call (where timeout(1) exists) or diskutil call (where perl exists).",
       "defaultVal": "20"
     }
   ]

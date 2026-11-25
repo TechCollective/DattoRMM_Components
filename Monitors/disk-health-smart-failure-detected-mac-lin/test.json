@@ -3,7 +3,7 @@
     "macos",
     "linux"
   ],
-  "description": "A shimmed disk (smartctl on Linux, diskutil on macOS, first on the root PATH) that passes gives exit 0; one that fails gives exit 1 naming the disk, with a diagnostic block; with no smartctl reachable at all, Linux refuses to call the host healthy (exit 1) and macOS, which reads diskutil, still reports the disk. TERM mid-run still prints one fallback result block, within 5 seconds.",
+  "description": "A shimmed disk (smartctl on Linux, diskutil on macOS, first on the root PATH) that passes gives exit 0; one that fails gives exit 1 naming the disk, with a diagnostic block; with no smartctl reachable at all, Linux refuses to call the host healthy (exit 1) and macOS, which reads diskutil, still reports the disk. A macOS disk whose diskutil hangs is reported unreadable once smartctlTimeout is up. TERM mid-run still prints one fallback result block, within 5 seconds.",
   "steps": [
     {
       "type": "command",
@@ -57,6 +57,36 @@
         "STATUS=/dev/disk0 SMART status is 'Failing' (0 of 1 disks healthy)",
         "<-Start Diagnostic->",
         "===== /dev/disk0 ====="
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "diskutil info hanging (macOS): the disk is unreadable once smartctlTimeout is up, not a hung monitor; exit 1",
+      "platforms": [
+        "macos"
+      ],
+      "variables": {
+        "tcTestHealth": "hang",
+        "smartctlTimeout": "3"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: SMART data unreadable on all 1 disks (/dev/disk0)"
+      ]
+    },
+    {
+      "type": "runComponent",
+      "label": "diskutil list hanging (macOS): check could not run once smartctlTimeout is up; exit 1",
+      "platforms": [
+        "macos"
+      ],
+      "variables": {
+        "tcTestHealth": "hang-list",
+        "smartctlTimeout": "3"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: diskutil list did not answer within 3s"
       ]
     },
     {
