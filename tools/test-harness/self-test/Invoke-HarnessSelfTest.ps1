@@ -24,10 +24,10 @@ $fixture    = Join-Path $PSScriptRoot $(if ($platform -eq 'windows') { 'monitor-
 $work       = Join-Path ([IO.Path]::GetTempPath()) 'harness-self-test'
 
 # Each case: the category the fixture is saved as, the test.json steps, and
-# what the harness must conclude. Says is text a failing run must show, so a
-# failure for some other reason does not count as the right answer. After, if
-# given, runs once the harness is done and returns what is wrong, or ''.
-# Platform limits a case to one platform.
+# what the harness must conclude. Says is the text (one string or several) a
+# failing run must show, so a failure for some other reason does not count as
+# the right answer. After, if given, runs once the harness is done and returns
+# what is wrong, or ''. Platform limits a case to one platform or a list.
 function Get-RunCase([string]$Name, [string]$Blocks, [string]$Category, [bool]$Pass, [string]$Says = '') {
     @{ Name = $Name; Category = $Category; Pass = $Pass; Says = $Says
        Steps = @(@{ type = 'runComponent'; variables = @{ fixtureBlocks = $Blocks } }) }
@@ -90,8 +90,22 @@ $cases += @(
     Get-ScriptCase 'Command script: run and script both given' @{ script = "tests/check.$ext"; run = 'echo hi' } "either 'run' or 'script', not both"
     Get-ScriptCase 'Command script: outside the component folder' @{ script = "../escape.$ext" } 'outside the component folder'
     Get-ScriptCase 'Command script: missing file' @{ script = "tests/missing.$ext" } 'Script not found'
+
+    # A step that hangs with its child in another process group, both
+    # ignoring TERM: the timeout must stop all of it, and the run go on.
+    @{ Name = 'Command timeout: stops a hung step whose child left its process group'; Category = 'scripts'; Pass = $false
+       Platform = @('linux', 'macos')
+       Says = @('Timed out after 10s: tests/hang.sh', '[PASS] 2. The next step')
+       Steps = @(
+        @{ type = 'command'; script = 'tests/hang.sh'; timeoutSeconds = 10 }
+        @{ type = 'command'; label = 'The next step'; run = 'true' }
+       )
+       After = {
+            $id = [int](Get-Content -Raw '/tmp/tc-harness-selftest-hang.pid')
+            if (Get-Process -Id $id -ErrorAction SilentlyContinue) { "the hung step's child (process $id) is still running" } else { '' }
+       } }
 )
-$cases = @($cases | Where-Object { -not $_.ContainsKey('Platform') -or $_.Platform -eq $platform })
+$cases = @($cases | Where-Object { -not $_.ContainsKey('Platform') -or $_.Platform -contains $platform })
 
 # The harness's own CI behaviour (annotations, the step summary) is for real
 # components. A case expected to fail must not paint the pull request red.
@@ -120,7 +134,7 @@ try {
         }
         $passed = $LASTEXITCODE -eq 0
 
-        $right = ($passed -eq $c.Pass) -and ($c.Pass -or $out.Contains($c.Says))
+        $right = ($passed -eq $c.Pass) -and ($c.Pass -or -not @($c.Says | Where-Object { -not $out.Contains($_) }))
         if ($right -and $c.ContainsKey('After') -and $c.After) {
             $afterProblem = & $c.After
             if ($afterProblem) { $right = $false; $out += "`nAfter the run: $afterProblem" }

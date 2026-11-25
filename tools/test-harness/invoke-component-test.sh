@@ -72,17 +72,39 @@ block() {        # title text
 
 # ---------------------------------------------------------------- helpers
 
+# The given pids and every process below them, by parent pid, each once. A
+# step's children can leave its process group (set -m), so a group kill misses
+# them. Breadth-first: q is the queue, and each pid taken adds its children.
+tree_pids() {
+    ps -A -o pid= -o ppid= | awk -v roots="$*" '
+        { kids[$2] = kids[$2] " " $1 }
+        END { n = split(roots, q, " ")
+              for (i = 1; i <= n; i++) {
+                  if (seen[q[i]]++) continue
+                  print q[i]; m = split(kids[q[i]], k, " "); for (j = 1; j <= m; j++) q[++n] = k[j] } }'
+}
+
 # Run "$@" with a time limit. macOS has no timeout(1), so this is portable.
-# Sets RC; RC=124 means it was stopped for running too long.
+# Sets RC; RC=124 means it was stopped for running too long. On timeout every
+# process the command started gets TERM, then KILL, through sudo: the command
+# usually runs under sudo, which the runner user may not signal. The tree is
+# taken at TERM, before anything is orphaned, and again at KILL. The KILL is
+# sent even when the command itself ended on TERM: a child ignoring TERM
+# outlives it.
 run_limited() {
     local secs=$1; shift
     local flag="$WORK/.timeout.$$.$RANDOM"
     "$@" & local pid=$!
-    ( sleep "$secs"; touch "$flag"; kill -TERM "$pid" 2>/dev/null; sleep 5; kill -KILL "$pid" 2>/dev/null ) &
+    # shellcheck disable=SC2046  # pids are numbers, one per word: splitting is what kill needs
+    ( sleep "$secs"; touch "$flag"; pids=$(tree_pids "$pid"); sudo kill -TERM $pids 2>/dev/null
+      sleep 5; sudo kill -KILL $(tree_pids $pids) 2>/dev/null ) &
     local wd=$!
     wait "$pid"; RC=$?
-    kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
-    if [ -e "$flag" ]; then RC=124; rm -f "$flag"; fi
+    if [ -e "$flag" ]; then
+        wait "$wd"; RC=124; rm -f "$flag"
+    else
+        kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+    fi
 }
 
 # Fill {testuser} and {testuser_home} in a string from test.json.
