@@ -10,9 +10,6 @@ checks, `nltest /sc_verify` and `Test-ComputerSecureChannel`.
 > below is a reading of the script only — it has not been re-run. Treat the
 > defects in [Known limits](#known-limits) as unfixed.
 
-> **This monitor cannot currently alert.** Every path exits `0`. See
-> [Exit behaviour](#exit-behaviour) before targeting it at anything.
-
 > **Currently saved in Datto as `Domain Trust`** (component uid
 > `32794eee-0268-4724-8b4d-c9069ee0931b`, version 4). That name carries no OS
 > tag and no condition. Rename it to the heading above at the next edit; the
@@ -36,7 +33,8 @@ checks, `nltest /sc_verify` and `Test-ComputerSecureChannel`.
 2. If the host is not domain-joined, reports that and stops.
 3. Runs `nltest /sc_verify:<domain>` and records whether it returned 0.
 4. Runs `Test-ComputerSecureChannel` and records whether it returned true.
-5. Reports success only if **both** passed; otherwise reports which one failed.
+5. Reports success only if **both** passed; otherwise names the check that
+   failed and exits `1`.
 
 **It is read-only on the endpoint.** `Test-ComputerSecureChannel` is called
 without `-Repair`, so nothing is reset and no password is changed. It does make
@@ -86,22 +84,14 @@ script is a pass/fail from a Windows API.
 
 Datto monitors have exactly two states: exit `0` healthy, exit `1` alert.
 
-**This script never exits `1`.** `main` returns normally on every path and
-PowerShell exits `0`. The table below is what the script *reports*; the exit
-column is what Datto actually acts on.
-
 | Host state | Reported | Exit |
 |---|---|---|
 | Not joined to a domain | `STATUS=Computer is not joined to a domain.` | `0` |
 | Both checks pass | `STATUS=Secure channel is functioning correctly...` | `0` |
-| Either or both checks fail | `STATUS=Secure channel verification failed for domain <d>` plus a `DETAILS=` line | **`0` — no alert is raised** |
+| Either or both checks fail | `STATUS=Secure channel verification failed for domain <d>. Failed: <check>[ and <check>].` | `1` |
 | WMI unavailable or `Win32_ComputerSystem` unreadable | `$computerSystem` is null, `PartOfDomain` reads as false, reports "not joined to a domain" | `0` |
-| `nltest.exe` missing | Caught, `INFO=nltest encountered an error: ...`, treated as a failed check | `0` |
-| The script dies unexpectedly | **No result block is emitted.** Datto renders this as an alert with no text in it | non-zero |
-
-So the only condition that currently produces an alert is the script crashing.
-This is the first thing to fix; until it is fixed, the component is a reporting
-script, not a monitor.
+| `nltest.exe` missing | Caught, `INFO=nltest encountered an error: ...`, counted as a failed check | `1` |
+| The script dies unexpectedly | `STATUS=Check could not run: the monitor stopped unexpectedly (<error>)` | `1` |
 
 ## How to tell it worked
 
@@ -115,7 +105,7 @@ STATUS=Secure channel is functioning correctly. Both nltest and Test-ComputerSec
 ```
 
 On a broken secure channel, expect `INFO=` lines from the failing check, then a
-result block containing both a `STATUS=` and a `DETAILS=` line.
+result block whose `STATUS=` line names the check that failed, and exit `1`.
 
 To exercise the failure path safely, use a lab machine whose computer account has
 been reset or removed in AD. Do not test this by breaking a real machine's trust
@@ -130,21 +120,20 @@ Never a customer first.
 2. One site, one device in it, with the job scoped to that device.
 3. Wider, only after the first two.
 
+The Tier 1 test covers only the not-joined path. The failure path cannot be
+reached on a GitHub runner: the runner is not on a domain, and the component
+runs in a fresh `powershell.exe -NoProfile`, so a stub for `Win32_ComputerSystem`,
+`nltest` or `Test-ComputerSecureChannel` planted by a test step never reaches
+it. Prove the failure path on the lab machine described above.
+
 ## Known limits
 
 Read as unfixed defects, in rough order of how much they matter.
 
-- **It never alerts.** No path calls `exit 1`. See
-  [Exit behaviour](#exit-behaviour).
 - **"Cannot tell" is reported as "not joined".** If WMI is unavailable,
   `$computerSystem` is null and `-not ($computerSystem.PartOfDomain)` is true, so
   a host whose state could not be read is indistinguishable from a workgroup
   machine. Both report healthy.
-- **No result block on unexpected death**, so a crash renders as an alert with
-  no text.
-- **The result block carries two lines.** The failure path emits `STATUS=` and
-  `DETAILS=` inside one marker pair. Our contract is one `STATUS=` line; confirm
-  what Datto's parser does with the second.
 - **`INFO=` lines are written outside the result markers**, and `nltest` writes
   its own transcript to stdout unsuppressed. Both land in the ticket note ahead
   of the result block.

@@ -1,6 +1,6 @@
 {
   "platforms": ["windows"],
-  "description": "Runs the monitor as SYSTEM. The runner is not domain-joined, so this proves the not-joined path: the documented status and exit 0. Run twice to prove a second run is harmless. The joined paths need a domain and are Tier 2.",
+  "description": "Runs the monitor as SYSTEM. The runner is not domain-joined, so this proves the not-joined path: the documented status and exit 0. Run twice to prove a second run is harmless. The joined paths need a domain and are Tier 2: the component runs with -NoProfile in its own process, so a test step cannot stub WMI, nltest or Test-ComputerSecureChannel for it.",
   "steps": [
     {
       "type": "runComponent",
@@ -20,6 +20,13 @@
       "label": "Domain-joined with a working secure channel: healthy",
       "expectExitCode": 0,
       "outputContains": ["STATUS=Secure channel is functioning correctly."]
+    },
+    {
+      "type": "runComponent",
+      "tier": 2,
+      "label": "Domain-joined with a broken secure channel: alerts",
+      "expectExitCode": 1,
+      "outputContains": ["STATUS=Secure channel verification failed for domain"]
     }
   ]
 }
