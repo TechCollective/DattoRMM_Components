@@ -15,6 +15,7 @@ CHECK = Path(__file__).resolve().parent / "check-public-safety.py"
 PUBLIC_IP = ".".join(["8"] * 4)
 PRIVATE_IP = ".".join(["10", "1", "2", "3"])
 UNLISTED_DOMAIN = "client-" + "site." + "com"
+UNCOMMON_TLD_DOMAINS = ["client-" + "site." + "health", "client-" + "site." + "xyz"]
 
 
 class PublicSafetyCheckTest(unittest.TestCase):
@@ -53,6 +54,13 @@ class PublicSafetyCheckTest(unittest.TestCase):
     def test_an_unlisted_domain_fails_even_in_capitals_or_an_email(self):
         self.assertFlags(f"curl https://{UNLISTED_DOMAIN}/x\n", UNLISTED_DOMAIN)
         self.assertFlags(f"mail admin@{UNLISTED_DOMAIN.upper()}\n", UNLISTED_DOMAIN)
+
+    def test_a_domain_on_an_uncommon_tld_fails(self):
+        for domain in UNCOMMON_TLD_DOMAINS:
+            self.assertFlags(f"curl https://{domain}/x\n", domain)
+
+    def test_file_names_and_code_on_a_tld_are_not_domains(self):
+        self.assertPasses("tests/kill.sh test.json README.md cpt.py path.name subprocess.run\n")
 
     def test_loopback_documentation_addresses_and_example_domains_pass(self):
         self.assertPasses("127.0.0.1 127.8.9.10 192.0.2.7 198.51.100.200 203.0.113.1\n"

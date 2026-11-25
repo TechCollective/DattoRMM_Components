@@ -15,6 +15,7 @@ ui.com                     # Ubiquiti UniFi downloads and API
 ubnt.com                    # Ubiquiti firmware downloads
 datto.com                   # Datto RMM docs, in the README
 adoptium.net                # Temurin JDK used in the Java uninstall test
+iana.org                    # the TLD list the public-safety scan reads, and where to refresh it
 
 # Known false positives
 0.0.0.0                     # the default route in WireGuard docs and code
