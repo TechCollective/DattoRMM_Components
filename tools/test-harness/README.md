@@ -273,7 +273,7 @@ harness checks blocks only on `runComponent` steps). Copy
 macOS runs monitors with `/bin/bash` 3.2, which holds a TERM sent to bash
 alone until the command it is running returns, so a hung command delays the
 fallback block indefinitely. TERM to the whole process group (bash and the hung
-command) prints it at once, so a macOS kill test stops the group: see
+command) prints it at once, so a macOS kill test also stops the hung command: see
 `Monitors/disk-health-smart-failure-detected-mac-lin/tests/kill.sh`. Whether
 Datto stops the group or only bash is part of the open question below.
 
