@@ -74,7 +74,7 @@ pull request.
 |---|---|---|---|
 | `usrMode` | Selection | Remove | `Remove` or `Report`, case-insensitive. Anything else is refused with exit 1. |
 | `usrKeep` | String | blank | Comma-separated text matched, case-insensitively, against each bundle's folder name, product name, vendor and version, e.g. `corretto-17`. The Oracle plug-in matches as `Oracle Java Plug-in [version]`. Each term must be at least 3 characters, or the run is refused. |
-| `usrUdfNumber` | String | blank | 1 to 300, or blank for no UDF. Anything else is refused. It never overwrites a UDF value that doesn't start with `Java: `. |
+| `usrUdfNumber` | String | 13 | UDF 13 is "Java Status" in the Datto RMM - UDFs list (Setup → Account Settings → User-Defined Fields). 1 to 300, or blank for no UDF. Anything else is refused. It never overwrites a UDF value that doesn't start with `Java: `. |
 
 ## Exit behaviour
 
