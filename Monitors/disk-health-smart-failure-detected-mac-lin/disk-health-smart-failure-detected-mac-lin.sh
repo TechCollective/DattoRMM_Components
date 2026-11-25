@@ -52,7 +52,22 @@ emit() {
     printf '<-Start Result->\n'
     printf 'STATUS=%s\n' "$(printf '%s' "$1" | tr '\n\r' '  ')"
     printf '<-End Result->\n'
+    EMITTED=1
 }
+EMITTED=0
+# A monitor that dies without a result block alerts with no text, and one that
+# exits 0 without one leaves the last status stale. Guarantee one that alerts.
+# On a signal (Datto stopping the job) $? is 0 and bash still exits 128+n.
+on_exit() {
+    code=$?
+    if [ "$EMITTED" -eq 0 ]; then
+        why="shell exit $code"; [ "$code" -eq 0 ] && why="stopped by a signal"
+        emit "Check failed before it could read the disks ($why); see the component's raw job output for the error"
+        exit 1
+    fi
+    exit "$code"
+}
+trap on_exit EXIT
 emit_diag() {
     [ -n "$1" ] || return 0
     printf '<-Start Diagnostic->\n%s\n<-End Diagnostic->\n' "$1"

@@ -1,6 +1,6 @@
 {
   "platforms": ["linux"],
-  "description": "Runs the monitor as root on Ubuntu. A local file repository serves a planted package, tctest-apt-pkg, so the result does not depend on what Ubuntu has published that day: installed at the repository's version it is healthy, and once the repository carries a newer version it alerts. A package that does not exist reports healthy (the documented 'cannot tell up to date from not installed' limit), an empty PACKAGE is refused, and a second run is harmless.",
+  "description": "Runs the monitor as root on Ubuntu. A local file repository serves a planted package, tctest-apt-pkg, so the result does not depend on what Ubuntu has published that day: installed at the repository's version it is healthy, and once the repository carries a newer version it alerts. A package that does not exist reports healthy (the documented 'cannot tell up to date from not installed' limit), an empty PACKAGE is refused, and a second run is harmless. TERM mid-run still prints one fallback result block, within 5 seconds.",
   "steps": [
     {
       "type": "command",
@@ -48,6 +48,18 @@
       "variables": { "PACKAGE": "" },
       "expectExitCode": 1,
       "outputContains": ["Alert=Unhealthy: No package specified"]
+    },
+    {
+      "type": "command",
+      "label": "TERM mid-run (apt-get hanging): one fallback result block at once, saying it was stopped by a signal; the job ends 143",
+      "script": "tests/kill.sh",
+      "outputContains": [
+        "exit status: 143.",
+        "result within 5 seconds of TERM",
+        "Alert=Unhealthy: check failed before it finished (stopped by a signal)",
+        "start markers: 1, end markers: 1, Alert lines: 1"
+      ],
+      "timeoutSeconds": 60
     }
   ]
 }

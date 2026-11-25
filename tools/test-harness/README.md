@@ -258,6 +258,41 @@ not work:
 Nothing a test prints may identify a customer — the logs of this public repo
 are public.
 
+### Killed monitors
+
+A monitor stopped mid-run (Datto's timeout, or someone stopping the job) should
+still leave a result block, or Datto shows an alert with no text.
+
+**macOS and Linux:** a shell monitor's EXIT trap prints a fallback block when
+bash gets TERM (see `CODING_STANDARDS.md`). Each monitor proves it with a
+`command` step running `tests/kill.sh`: start the body as the harness would,
+with a shim hanging, send TERM, and count the result blocks itself (the
+harness checks blocks only on `runComponent` steps). Copy
+`Monitors/disk-space-free-space-below-threshold-lin/tests/kill.sh`.
+
+macOS runs monitors with `/bin/bash` 3.2, which holds a TERM sent to bash
+alone until the command it is running returns, so a hung command delays the
+fallback block indefinitely. TERM to the whole process group (bash and the hung
+command) prints it at once, so a macOS kill test also stops the hung command: see
+`Monitors/disk-health-smart-failure-detected-mac-lin/tests/kill.sh`. Whether
+Datto stops the group or only bash is part of the open question below.
+
+**Windows:** nothing can print a block after a kill. `Stop-Process` (and
+anything else built on `TerminateProcess`) ends `powershell.exe` at once:
+no `trap`, `finally` or exit handler runs, so the `trap` fallbacks in the
+Windows monitors cover errors, never a kill. The step
+`Monitors/connection-health-ping-targets-not-responding-win/tests/kill.ps1`
+proves it: stopped mid-ping, the monitor prints no result block at all. This
+holds for every PowerShell monitor, so the other Windows monitors carry no kill
+test of their own. A Windows monitor's defence is its own time limit: finish,
+or give up with a block, well inside the component timeout.
+
+**Open question, for someone with Datto access:** what Datto itself records
+when it stops a Windows monitor (its timeout, or a stopped job), and whether it
+stops the process this way at all; and on macOS, whether it signals the whole
+process group or only bash. Confirm it on an internal device and record
+the answer here.
+
 ## Testing the harness
 
 Every result above depends on the harness being right, so the harness has its

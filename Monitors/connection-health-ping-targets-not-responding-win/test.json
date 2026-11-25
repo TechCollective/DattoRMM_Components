@@ -1,6 +1,6 @@
 {
   "platforms": ["windows"],
-  "description": "Runs the monitor as SYSTEM with no fakes: loopback (127.0.0.1) always replies and the documentation address 192.0.2.1 never does. Proves loopback is healthy, 192.0.2.1 alerts as down, one of each is healthy under Any and degraded under All, bad input is refused as 'Check could not run', and a second run is harmless. The WireGuard check is not covered: a runner has no tunnel or peer.",
+  "description": "Runs the monitor as SYSTEM with no fakes: loopback (127.0.0.1) always replies and the documentation address 192.0.2.1 never does. Proves loopback is healthy, 192.0.2.1 alerts as down, one of each is healthy under Any and degraded under All, bad input is refused as 'Check could not run', and a second run is harmless. The WireGuard check is not covered: a runner has no tunnel or peer. Stopping it mid-run prints no result block, which no PowerShell monitor can prevent (see Killed monitors in the harness README).",
   "variables": { "usrPingCount": "1", "usrReplyTimeoutSec": "1" },
   "steps": [
     {
@@ -57,6 +57,13 @@
       "expectExitCode": 1,
       "variables": { "usrTargets": "127.0.0.1;whoami" },
       "outputContains": [ "STATUS=Check could not run: usrTargets entry '127.0.0.1;whoami' is not an IP address or hostname" ]
+    },
+    {
+      "type": "command",
+      "label": "Stopped mid-run (192.0.2.1, 10 pings): no result block at all, since a killed PowerShell process cannot print one",
+      "script": "tests/kill.ps1",
+      "outputContains": [ "process stopped, exit code", "start markers: 0, STATUS lines: 0" ],
+      "timeoutSeconds": 60
     }
   ]
 }
