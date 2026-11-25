@@ -223,7 +223,7 @@ landed.
 | `as` | `root` | `root`, `testuser` (a login shell as the test user), or `runner`. |
 | `expectExitCode` | `0` | |
 | `outputContains` / `outputNotContains` | none | Case-insensitive, stdout and stderr together. |
-| `timeoutSeconds` | `120` | |
+| `timeoutSeconds` | `120` | A command still running then fails. It and every process it started get TERM, then KILL 5 seconds later, even ones in another process group. |
 
 A user-facing script that ends by waiting for input gets end-of-file and
 exits, so a `command` can run one up to the point where it would need a
@@ -302,7 +302,7 @@ and Linux) that prints whatever result blocks a variable asks for, and checks
 the harness passes what it should pass and fails what it should fail, for the
 reason it should.
 
-The workflow runs it on Windows and Linux whenever anything under
+The workflow runs it on Windows, macOS and Linux whenever anything under
 `tools/test-harness/` or the workflow changes, and the **Component tests**
 check fails if it does. Locally it needs `pwsh`, and the same throwaway
 machine the harness does — a container works for the Linux side:

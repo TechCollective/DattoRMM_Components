@@ -72,13 +72,27 @@ block() {        # title text
 
 # ---------------------------------------------------------------- helpers
 
+# The given pids and every process below them, by parent pid. A step's
+# children can leave its process group (set -m), so a group kill misses them.
+tree() {
+    ps -A -o pid= -o ppid= | awk -v roots="$*" '
+        { kids[$2] = kids[$2] " " $1 }
+        END { n = split(roots, q, " ")
+              for (i = 1; i <= n; i++) { print q[i]; m = split(kids[q[i]], k, " "); for (j = 1; j <= m; j++) q[++n] = k[j] } }'
+}
+
 # Run "$@" with a time limit. macOS has no timeout(1), so this is portable.
-# Sets RC; RC=124 means it was stopped for running too long.
+# Sets RC; RC=124 means it was stopped for running too long. On timeout every
+# process the command started gets TERM, then KILL, through sudo: the command
+# usually runs under sudo, which the runner user may not signal. The tree is
+# taken at TERM, before anything is orphaned, and again at KILL.
 run_limited() {
     local secs=$1; shift
     local flag="$WORK/.timeout.$$.$RANDOM"
     "$@" & local pid=$!
-    ( sleep "$secs"; touch "$flag"; kill -TERM "$pid" 2>/dev/null; sleep 5; kill -KILL "$pid" 2>/dev/null ) &
+    # shellcheck disable=SC2046  # the pid lists are meant to split
+    ( sleep "$secs"; touch "$flag"; pids=$(tree "$pid"); sudo kill -TERM $pids 2>/dev/null
+      sleep 5; sudo kill -KILL $(tree $pids) 2>/dev/null ) &
     local wd=$!
     wait "$pid"; RC=$?
     kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
