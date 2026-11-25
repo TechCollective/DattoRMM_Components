@@ -15,7 +15,24 @@ write_DRMMAlert() {
     printf '<-Start Result->\n'
     printf "Alert=%s\n" "$message"
     printf '<-End Result->\n'
+    blnEmitted=1
 }
+
+# A monitor that dies without a result block alerts with no text, and one that
+# exits 0 without one leaves the last status stale. Guarantee one that alerts.
+# On a signal (Datto stopping the job) $? is 0 and bash still exits 128+n.
+blnEmitted=0
+on_exit() {
+    local code=$?
+    if [[ "$blnEmitted" -eq 0 ]]; then
+        local why="shell exit $code"
+        [[ "$code" -eq 0 ]] && why="stopped by a signal"
+        write_DRMMAlert "Unhealthy: check failed before it finished ($why); see the component's raw job output for the error"
+        exit 1
+    fi
+    exit "$code"
+}
+trap on_exit EXIT
 
 write_Diagnostic() {
     local message="$1"

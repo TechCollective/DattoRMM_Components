@@ -3,7 +3,7 @@
     "macos",
     "linux"
   ],
-  "description": "A shimmed disk (smartctl on Linux, diskutil on macOS, first on the root PATH) that passes gives exit 0; one that fails gives exit 1 naming the disk, with a diagnostic block; with no smartctl reachable at all, Linux refuses to call the host healthy (exit 1) and macOS, which reads diskutil, still reports the disk.",
+  "description": "A shimmed disk (smartctl on Linux, diskutil on macOS, first on the root PATH) that passes gives exit 0; one that fails gives exit 1 naming the disk, with a diagnostic block; with no smartctl reachable at all, Linux refuses to call the host healthy (exit 1) and macOS, which reads diskutil, still reports the disk. TERM mid-run still prints one fallback result block, within 5 seconds.",
   "steps": [
     {
       "type": "command",
@@ -58,6 +58,18 @@
         "<-Start Diagnostic->",
         "===== /dev/disk0 ====="
       ]
+    },
+    {
+      "type": "command",
+      "label": "TERM mid-run (smartctl or diskutil hanging): one fallback result block at once, saying it was stopped by a signal; the job ends 143",
+      "script": "tests/kill.sh",
+      "outputContains": [
+        "exit status: 143.",
+        "result within 5 seconds of TERM",
+        "STATUS=Check failed before it could read the disks (stopped by a signal)",
+        "start markers: 1, end markers: 1, STATUS lines: 1"
+      ],
+      "timeoutSeconds": 60
     },
     {
       "type": "command",
