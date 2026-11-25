@@ -6,6 +6,9 @@ This repo and its CI logs are public. Every tracked text file is searched for
   - IPv4 addresses outside loopback (127.0.0.0/8) and the documentation
     ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24), and
   - domains outside the reserved example domains (example.com, .net, .org).
+    A domain is a dotted name whose last label is a real TLD, from IANA's list
+    in tools/tlds-alpha-by-domain.txt, refreshed with:
+      curl -sSf https://data.iana.org/TLD/tlds-alpha-by-domain.txt -o tools/tlds-alpha-by-domain.txt
 
 Anything else must be listed in tools/public-safety-allowlist.txt: a vendor
 domain the components download from, or a known false positive. One entry per
@@ -25,13 +28,19 @@ import sys
 DOCUMENTATION = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
 EXAMPLE_DOMAINS = ("example.com", "example.net", "example.org")
 IPV4 = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?!\.?\w)")
-# shortcut: only these TLDs are searched, because .sh, .app, .ps1 and the like
-# are file names far more often than domains here; add a TLD when one turns up.
 DOMAIN = re.compile(
-    r"(?<![\w.-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+"
-    r"(?:com|net|org|io|dev|co|us|uk|ca|de|gov|edu|cloud|ai|info|biz|tech|local|lan|internal|corp))"
+    r"(?<![\w.-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+([a-z][a-z0-9-]*[a-z0-9]))"
     r"(?![\w-]|\.[\w-])",  # not "System.Net.WebClient"
     re.IGNORECASE)
+TLDS = {line.strip().lower()
+        for line in (pathlib.Path(__file__).resolve().parent / "tlds-alpha-by-domain.txt").read_text().splitlines()
+        if line.strip() and not line.startswith("#")}
+TLDS |= {"local", "lan", "internal", "corp"}  # not delegated, but used for internal AD and LAN names
+# Real TLDs that are far more often something else here; a client domain on one of these passes.
+TLDS -= {"md", "py", "sh", "pub", "ls"}  # file names: README.md, kill.sh, a.pub keys, tc-cfg.ls listings
+TLDS -= {"name", "new", "read", "run", "open", "data", "id", "group", "host", "target", "properties",
+         "directory", "ping", "discover", "email", "pid", "app", "java", "tc", "ee", "xxx"}
+# ^ code: path.name, subprocess.run, $_.psobject.properties, com.oracle.java, v3.7.4.xxx placeholders
 
 
 def allowed_ip(token, allow):
@@ -69,7 +78,8 @@ def main():
             continue  # binary
         for n, line in enumerate(data.decode("utf-8", errors="replace").splitlines(), 1):
             hits = [t for t in IPV4.findall(line) if not allowed_ip(t, allow)]
-            hits += [t for t in (d.lower() for d in DOMAIN.findall(line)) if not allowed_domain(t, allow)]
+            hits += [d.lower() for d, tld in DOMAIN.findall(line)
+                     if tld.lower() in TLDS and not allowed_domain(d.lower(), allow)]
             for token in hits:
                 print(f"{rel}:{n}: {token}")
                 found += 1
