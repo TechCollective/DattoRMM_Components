@@ -2,7 +2,8 @@
 # Put fake smartctl and diskutil first on the root PATH (/usr/local/sbin), so
 # the monitor reads one disk whose health the test chooses. The runComponent
 # variable tcTestHealth reaches the shims through the monitor's environment:
-# "passed" (the default), "failed", or "hang" (sleep 600, for the kill test).
+# "passed" (the default), "failed", "hang" (sleep 600, for the kill test), or
+# "hang-list" (diskutil list sleeps 600 instead).
 # Linux reads smartctl; macOS reads diskutil and never calls smartctl.
 set -e
 mkdir -p /usr/local/sbin
@@ -43,7 +44,9 @@ cat > /usr/local/sbin/diskutil <<'EOF'
 #!/bin/sh
 # Test shim: one physical disk, /dev/disk0, Verified or Failing per $tcTestHealth.
 case "$1" in
-    list) printf '/dev/disk0 (internal, physical):\n   #:  TYPE NAME  SIZE  IDENTIFIER\n' ;;
+    list)
+        [ "$tcTestHealth" = hang-list ] && exec sleep 600
+        printf '/dev/disk0 (internal, physical):\n   #:  TYPE NAME  SIZE  IDENTIFIER\n' ;;
     info)
         [ "$tcTestHealth" = hang ] && exec sleep 600
         st=Verified; [ "$tcTestHealth" = failed ] && st=Failing

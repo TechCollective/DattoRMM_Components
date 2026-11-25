@@ -75,6 +75,21 @@
       ]
     },
     {
+      "type": "runComponent",
+      "label": "diskutil list hanging (macOS): check could not run once smartctlTimeout is up; exit 1",
+      "platforms": [
+        "macos"
+      ],
+      "variables": {
+        "tcTestHealth": "hang-list",
+        "smartctlTimeout": "3"
+      },
+      "expectExitCode": 1,
+      "outputContains": [
+        "STATUS=Check could not run: diskutil list did not answer within 3s"
+      ]
+    },
+    {
       "type": "command",
       "label": "TERM mid-run (smartctl or diskutil hanging): one fallback result block at once, saying it was stopped by a signal; the job ends 143",
       "script": "tests/kill.sh",

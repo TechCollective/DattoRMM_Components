@@ -102,7 +102,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
         if command -v perl >/dev/null 2>&1; then
             perl -e 'alarm shift; exec @ARGV or exit 127' "$TMO" diskutil "$@"
         else
-            diskutil "$@"   # shortcut: no limit without perl, as Linux without timeout(1)
+            diskutil "$@"   # shortcut: no limit without perl, as Linux without timeout(1); upgrade if Apple drops perl
         fi
     }
     LIST=$(diskutil_limited list physical 2>/dev/null)
