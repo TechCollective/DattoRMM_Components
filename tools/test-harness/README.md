@@ -270,6 +270,13 @@ with a shim hanging, send TERM, and count the result blocks itself (the
 harness checks blocks only on `runComponent` steps). Copy
 `Monitors/disk-space-free-space-below-threshold-lin/tests/kill.sh`.
 
+macOS runs monitors with `/bin/bash` 3.2, which holds a TERM sent to bash
+alone until the command it is running returns, so a hung command delays the
+fallback block indefinitely. TERM to the whole process group (bash and the hung
+command) prints it at once, so a macOS kill test stops the group: see
+`Monitors/disk-health-smart-failure-detected-mac-lin/tests/kill.sh`. Whether
+Datto stops the group or only bash is part of the open question below.
+
 **Windows:** nothing can print a block after a kill. `Stop-Process` (and
 anything else built on `TerminateProcess`) ends `powershell.exe` at once:
 no `trap`, `finally` or exit handler runs, so the `trap` fallbacks in the
@@ -282,7 +289,8 @@ or give up with a block, well inside the component timeout.
 
 **Open question, for someone with Datto access:** what Datto itself records
 when it stops a Windows monitor (its timeout, or a stopped job), and whether it
-stops the process this way at all. Confirm it on an internal device and record
+stops the process this way at all; and on macOS, whether it signals the whole
+process group or only bash. Confirm it on an internal device and record
 the answer here.
 
 ## Testing the harness
